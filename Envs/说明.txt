@@ -1,0 +1,2 @@
+2D_opponent.py + battle3dof1v1_missile0812以下版本使用3dof计算动力学
+battle3dof1v1_missile0901及后续版本使用jsbsim代为解算动力学

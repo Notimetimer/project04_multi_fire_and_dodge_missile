@@ -1,0 +1,267 @@
+import os
+import json
+import re
+import time
+import torch
+import numpy as np
+import argparse
+import random
+import pandas as pd
+from multiprocessing import Pool, cpu_count # 引入多进程库
+
+from _context import * # 包含 project_root
+from Envs.Tasks.ChooseStrategyEnv2_2 import ChooseStrategyEnv
+from Algorithms.PPOHybrid23_0 import PolicyNetHybrid, HybridActorWrapper
+from Envs.battle6dof1v1_missile0919 import launch_missile_immediately
+# --- 2. 辅助函数 ---
+from Utilities.LocateDirAndAgents2 import get_latest_log_dir
+# [新增] 引入绘图函数
+from read_n_draw_inter_experiment_tests import draw_combat_matrix
+
+# --- 1. 配置参数 ---
+TOTAL_ROUNDS = 100    # 每对任务之间对抗 100 场
+TEAM_SIZE = 50        # 每队从 Elo 排行中取前 50 名
+action_cycle_multiplier = 30
+dt_maneuver = 0.2
+using_explore_maneuver = 1  # 是否在实验间测试的时候允许动作有随机性
+
+# --- 2. 核心辅助函数 ---
+
+def get_top_elo_agents(log_dir, top_n=50):
+    """
+    修改后的筛选逻辑 (参考 find_top_agents2.py)：
+    1. 优先从 Hall of Fame (hall_of_fame.json) 中选择
+    2. 不够则从 Elite Pool (elite_elo_ratings.json) 中补充
+    3. 如果还不够，从全局 Elo (elo_ratings.json) 中补充
+    4. 排除 Rule 开头的，去重
+    """
+    # 路径准备
+    full_json_path = os.path.join(log_dir, "elo_ratings.json")
+    elite_json_path = os.path.join(log_dir, "elite_elo_ratings.json")
+    hof_json_path = os.path.join(log_dir, "hall_of_fame.json")
+
+    # 1. 加载所有池子数据
+    def load_json_safe(p, default):
+        if os.path.exists(p):
+            with open(p, 'r', encoding='utf-8') as f:
+                try:
+                    return json.load(f)
+                except:
+                    return default
+        return default
+
+    # 加载数据
+    global_elo_dict = load_json_safe(full_json_path, {})
+    elite_elo_ratings = load_json_safe(elite_json_path, {})
+    hall_of_fame_keys = load_json_safe(hof_json_path, [])
+
+    selected_agents = []
+    seen_keys = set()
+
+    # 辅助过滤函数：只保留 'actor_rein' 开头的文件名 (排除 'Rule_' 和 '__CURRENT_MAIN__' 等)
+    def is_valid_agent(k):
+        return k.startswith('actor_rein')
+
+    # --- 策略 A: 优先检索名人堂 (HoF) ---
+    # 兼容 HoF 是 list 或 dict 的情况
+    if isinstance(hall_of_fame_keys, dict):
+        hof_iterable = hall_of_fame_keys.keys()
+    elif isinstance(hall_of_fame_keys, list):
+        hof_iterable = hall_of_fame_keys
+    else:
+        hof_iterable = []
+
+    # 过滤无效的和没有 Elo 记录的
+    hof_candidates = [k for k in hof_iterable if k in global_elo_dict and is_valid_agent(k)]
+    # 按 Elo 分数降序排列
+    hof_sorted = sorted(hof_candidates, key=lambda k: global_elo_dict[k], reverse=True)
+
+    for k in hof_sorted:
+        if len(selected_agents) < top_n:
+            selected_agents.append(k)
+            seen_keys.add(k)
+
+    # --- 策略 B: 补充精英池 (Elite) ---
+    # 同样过滤 Rule 开头的
+    elite_candidates = [k for k in elite_elo_ratings.keys() if is_valid_agent(k)]
+    # 使用 global_elo_dict 的分数来排序 (通常更全)
+    elite_sorted = sorted(elite_candidates, key=lambda k: global_elo_dict.get(k, elite_elo_ratings[k]), reverse=True)
+
+    for k in elite_sorted:
+        if k not in seen_keys and len(selected_agents) < top_n:
+            selected_agents.append(k)
+            seen_keys.add(k)
+
+    # --- 策略 C: 如果还不够，从全局 Elo 表中兜底 ---
+    if len(selected_agents) < top_n:
+        global_candidates = [k for k in global_elo_dict.keys() if is_valid_agent(k)]
+        global_sorted = sorted(global_candidates, key=lambda k: global_elo_dict[k], reverse=True)
+        for k in global_sorted:
+            if k not in seen_keys and len(selected_agents) < top_n:
+                selected_agents.append(k)
+                seen_keys.add(k)
+
+    # 3. 构造完整文件路径
+    top_agents_paths = []
+    for k in selected_agents:
+        # 拼接 .pt 后缀
+        full_path = os.path.join(log_dir, f"{k}.pt")
+        # 确保文件实际存在
+        if os.path.exists(full_path):
+            top_agents_paths.append(full_path)
+    
+    if len(top_agents_paths) < top_n:
+        print(f"注意：{log_dir} 仅找到 {len(top_agents_paths)} 个有效智能体，不足 {top_n} 个。")
+        
+    return top_agents_paths
+
+# --- 保持原样，完全不改动 ---
+def run_battle(env, blue_wrapper, red_wrapper, device):
+    """仿真逻辑 (保持与文件 1 一致)"""
+    env.reset(red_init_ammo=6, blue_init_ammo=6)
+    done = False
+    r_label, b_label = 0, 0
+    
+    for count in range(3000):
+        if done: break
+        if count % action_cycle_multiplier == 0:
+            r_obs, r_check = env.obs_1v1('r', pomdp=1)
+            b_obs, b_check = env.obs_1v1('b', pomdp=1)
+            with torch.no_grad():
+                r_act, _, _, _ = red_wrapper.get_action(r_obs, explore={'cat':using_explore_maneuver,'bern':1})
+                b_act, _, _, _ = blue_wrapper.get_action(b_obs, explore={'cat':using_explore_maneuver,'bern':1})
+            if r_act['bern'][0]: launch_missile_immediately(env, 'r')
+            if b_act['bern'][0]: launch_missile_immediately(env, 'b')
+            r_label, b_label = r_act['cat'][0], b_act['cat'][0]
+
+        r_maneuver = env.maneuver14LR(env.RUAV, r_label)
+        b_maneuver = env.maneuver14LR(env.BUAV, b_label)
+        env.step(r_maneuver, b_maneuver)
+        done, _, _, _ = env.combat_terminate_and_reward('b', b_label, b_act['bern'][0], action_cycle_multiplier)
+    
+    if env.win: return 1.0   # 蓝胜
+    if env.lose: return 0.0  # 红胜
+    return 0.5               # 平局
+
+# --- 新增：并行工作函数 (包装器) ---
+def worker_process_battle(args_pack):
+    """
+    为了并行化，需要在子进程内实例化环境和模型，
+    然后调用未修改的 run_battle。
+    """
+    blue_path, red_path = args_pack
+    
+    # 强制在 Worker 中使用 CPU，避免多进程 CUDA 冲突
+    device = torch.device("cpu")
+    # 限制单进程线程数，防止 CPU 争抢
+    torch.set_num_threads(1) 
+    
+    # 1. 初始化环境
+    env = ChooseStrategyEnv(argparse.Namespace(max_episode_len=600, R_cage=55e3), tacview_show=0)
+    state_dim, action_dims = env.obs_dim, {'cont':0, 'cat':env.fly_act_dim, 'bern':env.fire_dim}
+    
+    # 2. 初始化模型结构 (使用 CPU)
+    # 变量名保持 blue_wrapper / red_wrapper 以匹配 run_battle 签名要求
+    blue_wrapper = HybridActorWrapper(PolicyNetHybrid(state_dim, [128,128,128], action_dims), action_dims, None, device).to(device)
+    red_wrapper = HybridActorWrapper(PolicyNetHybrid(state_dim, [128,128,128], action_dims), action_dims, None, device).to(device)
+    
+    # 3. 加载权重
+    try:
+        blue_wrapper.load_state_dict(torch.load(blue_path, map_location=device, weights_only=True))
+        red_wrapper.load_state_dict(torch.load(red_path, map_location=device, weights_only=True))
+    except Exception as e:
+        print(f"模型加载出错: {e}")
+        return 0.5
+    
+    blue_wrapper.eval()
+    red_wrapper.eval()
+    
+    # 4. 调用原始函数
+    return run_battle(env, blue_wrapper, red_wrapper, device)
+
+# --- 3. 主程序 ---
+if __name__ == "__main__":
+    # --- [在此处修改输入列表] ---
+    mission_names = [
+        'IL_and_PFSP_分阶段_纯自博弈_平衡_并行-run-20260129-203500', # 任务1
+        'IL_and_PFSP_带自模仿_混规则对手_平衡_并行-run-20260129-214607', # 任务2
+        '无IL_PFSP_分阶段_混规则对手_平衡_并行-run-20260129-215015', # 任务3
+        'IL_and_PFSP_分阶段_混规则对手_平衡_并行-run-20260201-130236',
+    ]
+    
+    team_labels = [
+        '1',
+        '2',
+        '3',
+        '4',
+    ]
+    
+    # 强制校验长度
+    if len(mission_names) != len(team_labels):
+        raise ValueError(f"输入错误：任务目录数量({len(mission_names)}) 与 标签数量({len(team_labels)}) 不一致！")
+
+    logs_root_dir = os.path.join(project_root, "logs","combat")
+    
+    # 1. 准备各算法的 Top 50 精英队
+    teams = []
+    print("正在准备各任务精英智能体...")
+    for name in mission_names:
+        log_dir = os.path.join(logs_root_dir, name)
+        if not os.path.exists(log_dir):
+            # 尝试自动查找
+            log_dir = get_latest_log_dir(logs_root_dir, name)
+            
+        if not log_dir:
+            raise FileNotFoundError(f"未找到任务目录: {name}")
+        teams.append(get_top_elo_agents(log_dir, TEAM_SIZE))
+
+    num_teams = len(teams)
+    results_matrix = np.zeros((num_teams, num_teams))
+    np.fill_diagonal(results_matrix, 0.5)
+
+    # 并行配置
+    num_processes = min(cpu_count(), 20)  # 限制最大进程数，防止卡死
+    print(f"\n开始跨任务博弈矩阵计算 ({num_teams}x{num_teams})...")
+    print(f"并行进程数: {num_processes}")
+    start_time = time.time()
+    
+    # 创建进程池
+    with Pool(processes=num_processes) as pool:
+        for i in range(num_teams):      # 行 i 为蓝方 (Evaluated)
+            for j in range(num_teams):  # 列 j 为红方 (Opponent)
+                if i == j: continue
+                
+                # 同样使用对称性，只跑 i > j
+                if i > j:
+                    print(f"正在对抗: [Row]{team_labels[i]} (Blue) vs [Col]{team_labels[j]} (Red)...")
+                    
+                    # 准备 100 场对局的任务参数
+                    battle_tasks = []
+                    for _ in range(TOTAL_ROUNDS):
+                        blue_path = random.choice(teams[i])
+                        red_path = random.choice(teams[j])
+                        battle_tasks.append((blue_path, red_path))
+                    
+                    # 并行执行
+                    # map 会按顺序返回结果列表 [1.0, 0.0, 0.5, ...]
+                    results = pool.map(worker_process_battle, battle_tasks)
+                    
+                    total_score = sum(results)
+                    win_rate = total_score / TOTAL_ROUNDS
+                    
+                    results_matrix[i, j] = win_rate       # i 打赢 j 的胜率
+                    results_matrix[j, i] = 1.0 - win_rate # j 打赢 i 的胜率
+                    print(f"  -> {team_labels[i]} 对阵 {team_labels[j]} 胜率: {win_rate:.2f}")
+
+    print(f"\n矩阵计算完成！总耗时: {time.time() - start_time:.2f}s")
+
+    # 保存博弈矩阵为 CSV 以便后续分析/绘图
+    os.makedirs(os.path.join(project_root, "结果展示", "outputs"), exist_ok=True)
+    csv_path = os.path.join(project_root, "结果展示", "outputs", "combat_matrix.csv")
+    df = pd.DataFrame(results_matrix, index=team_labels, columns=team_labels)
+    df.to_csv(csv_path, float_format="%.4f", encoding="utf-8-sig")
+    print(f"博弈矩阵已保存到: {csv_path}")
+
+    # 4. [修改] 调用外部函数进行绘图
+    print("正在调用 read_n_draw_inter_experiment_tests 进行绘图...")
+    draw_combat_matrix(csv_path, team_labels)

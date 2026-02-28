@@ -1,0 +1,10 @@
+过走廊改为在圆柱内部飞修改项：
+1、边界改为函数定义的圆柱 √
+修改：
+	_calculate_threat 威胁计算 √
+	_is_outside_boundary出界判断 √
+2、reset 出生点改为某个平面/某条直径线上，向垂直于直径的方向出射 √
+3、_generate_initial_velocity 初速修改 √
+4、step √
+5、get_reward √
+

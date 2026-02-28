@@ -1,0 +1,65 @@
+target_alive
+    目标存活标志 0 死 1 活
+    
+target_observable
+    目标可见性标志 0 完全不可见，1 有角度信息，2 完全可见
+
+target_tracked
+    目标可跟踪标志 bool
+
+missile_in_mid_term
+    导弹中制导状态 bool
+
+locked_by_target
+    目标雷达跟踪标志 bool
+
+warning
+    导弹告警标志 bool
+
+target_information
+    目标相对高度 m
+    目标本机视线角，也就是目标线对机头的相对方位角（ATA/AO） (rad), 如果看不到，在get_obs置为pi
+    目标高程角（EA） (rad), 如果看不到，在get_obs置为0
+    目标相对距离 m
+    夹角 (rad)
+    目标速度 m/s
+    目标水平进入角
+    目标垂直进入角
+
+ego_main
+    本机速度 m/s
+    本机高度 m
+    sinθ
+    cosθ
+    sinφ
+    cosφ
+    剩余导弹量
+
+ego_control
+    p
+    q
+    r
+    theta_v
+    psi_v
+    （中间量，非环境提供）高度误差
+    （中间量，非环境提供）航向角误差
+    （中间量，非环境提供）速度误差
+    迎角
+    侧滑角
+
+weapon
+    导弹预计碰撞时间 s, 如果没有在飞行导弹，在get_obs中置为4(120s)
+
+threat
+    最近来袭导弹相对方位角(rad), 如果没有导弹，在get_obs置为pi
+    最近来袭导弹相对俯仰角(rad), 如果没有导弹，在get_obs置为0
+    最近来袭导弹距离模糊值(0:<8km, 1: <20km, 2:>20km), 如果没有导弹，在get_obs置为最大
+
+
+    （暂无）目标相对方位角速度 (rad/s) / 0.35
+    （暂无）目标相对俯仰角速度 (rad/s) / 0.35
+    （暂无）目标接近速率
+
+border
+    速度延长线上和地图边界的水平距离
+    地图边界相对飞机在 左/中/右

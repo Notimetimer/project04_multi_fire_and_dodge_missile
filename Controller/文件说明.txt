@@ -1,0 +1,4 @@
+Controller + actor_latest + baseline_actor 是强化学习训练的控制器，输入量为期望高度、速度和航向
+基于PID的控制器是 F16PIDController2， 其中类包含姿态控制器和高度控制器，前身是F16PIDController0.1，
+F16PIDController0.1 调用方式有问题，导致参数不能正常调用，F16PIDController2已修复该问题并重新调参
+F16PIDController3 向高度控制器添加了积分环节
