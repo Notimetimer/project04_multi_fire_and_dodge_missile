@@ -67,7 +67,7 @@ def sigmoid(x):
     return 1 / (1 + exp(-x))
 
 
-class Battle(object):
+class MvMBattle(object):
     def __init__(self, args, tacview_show=0):
         # super(Battle, self).__init__() 
         # self.p2p_control = False
@@ -77,8 +77,6 @@ class Battle(object):
         self.alive_b_missiles = None
         self.alive_r_missiles = None
         self.alive_missiles = None
-        self.BUAV = None
-        self.RUAV = None
         self.dt_maneuver = dt_maneuver
         self.dt_move = dt_move
         self.UAV_ids = None
@@ -176,6 +174,9 @@ class Battle(object):
         self.win = 0
         self.lose = 0
         self.draw = 0
+        
+        interval_of_birth_ = 5e2*np.array([1, 0, 0]) # 出生点南北走向，间隔500m
+
         # 红方初始化
         for i in range(self.Rnum):
             UAV = UAVModel(dt=self.dt_move)
@@ -192,7 +193,7 @@ class Battle(object):
             UAV.side = 'r'
             UAV.color = np.array([1, 0, 0])
             # 红方出生点
-            UAV.pos_ = red_birth_state['position']  # np.array([-38841.96119795, 9290.02131746, -1686.95469864])
+            UAV.pos_ = red_birth_state['position']+(i-self.Rnum/2)*interval_of_birth_  # np.array([-38841.96119795, 9290.02131746, -1686.95469864])
             # 不能出生在外面
             init_R = norm([UAV.pos_[0], UAV.pos_[2]])
             safe_R_cage = self.R_cage-5e3
@@ -233,7 +234,7 @@ class Battle(object):
             UAV.side = 'b'
             UAV.color = np.array([0, 0, 1])
             # 蓝方出生点
-            UAV.pos_ = blue_birth_state['position']  # np.array([38005.14540582, 6373.80721704, -1734.42509136])
+            UAV.pos_ = blue_birth_state['position']+(i-self.Bnum/2)*interval_of_birth_  # np.array([38005.14540582, 6373.80721704, -1734.42509136])
             # 不能出生在外面
             init_R = norm([UAV.pos_[0], UAV.pos_[2]])
             safe_R_cage = self.R_cage-5e3
@@ -258,57 +259,39 @@ class Battle(object):
         self.running = True
         self.UAVs = self.RUAVs + self.BUAVs
         self.UAVsTable = {**self.RUAVsTable, **self.BUAVsTable}
-        self.UAV_ids = [UAV.id for UAV in self.UAVs]
+        self.UAV_ids = [UAV.id for UAV in self.UAVs] # 顺序一致
         self.UAV_hit = [False for _ in range(len(self.UAVs))]
 
-        # todo 1v1的残留
-        self.RUAV = self.RUAVs[0]
-        self.BUAV = self.BUAVs[0]
-
-        # print(red_birth_state)
-        # print(blue_birth_state)
-
-    def launch_missile(self, side='r'):
+    def launch_missile(self, source_id, target_id):
         """
-        立即发射导弹
+        source_id: 发射导弹的无人机 id
+        target_id: 被击中的无人机 id
         """
-        if side == 'r':
-            uav = self.RUAV
-            ally_missiles = self.Rmissiles
-            target = self.BUAV
-        if side == 'b':
-            uav = self.BUAV
-            ally_missiles = self.Bmissiles
-            target = self.RUAV
-        else:
-            print("请检查阵营")
-            raise ValueError
+        uav = self.UAVsTable[source_id]['entity']
+        target = self.UAVsTable[target_id]['entity'] # 指向目标机的实例
+        side = uav.side
 
         # 发射导弹
         if uav.ammo>0 and not uav.dead:
             new_missile = uav.launch_missile(target, self.t, missile_class)
             uav.ammo -= 1
-            new_missile.side = 'r' if side == 'r' else 'b'
+            new_missile.side = side
             if side == 'r':
                 self.Rmissiles.append(new_missile)
             else:
                 self.Bmissiles.append(new_missile)
             self.missiles = self.Rmissiles + self.Bmissiles
-            # print(f"{'红方' if side == 'r' else '蓝方'}发射导弹")
 
-
-    def step(self, r_actions, b_actions):
+    # todo 输入动作打包为大小不确定的量
+    def step(self, actions):
+        "actions 为一个list，长度为2*N，前N个是红方动作，后N个是蓝方动作"
+        # "actions_of_ids: {id: action}"
         report_move_time_rate = int(round(self.dt_maneuver / self.dt_move))
         # 输入动作（范围为[-1,1]
         self.t += self.dt_maneuver
         self.t = round(self.t, 2)  # 保留两位小数
 
-        actions = [r_actions] + [b_actions]
-        self.r_actions = r_actions.copy()
-        self.b_actions = b_actions.copy()
-
-        # # 记录 step 开始时的“已存在”导弹 id（用于判断导弹是否为在本 step 开始时就已存在）
-        # initial_alive_ids = {m.id for m in (self.Rmissiles + self.Bmissiles) if not m.dead}
+        # actions = [actions_of_ids[id] for id in self.UAV_ids]
 
         # 在整个 maneuver step 开始时只重置一次 escape_once（不要在内层子步或导弹循环中再次重置）
         for UAV in self.UAVs:
@@ -332,13 +315,9 @@ class Battle(object):
                 else:
                     rudder = None
                 # print('target_height',target_height)
-
-                if UAV.blue:
-                    # 如果 BLUE_BIRTH_STATE 包含 p2p 则使用其值，否则为 False
-                    p2p = self.BLUE_BIRTH_STATE.get('p2p', False)
-                if UAV.red:
-                    # 对红方同样兼容 RED_BIRTH_STATE 中可能存在的 p2p 字段
-                    p2p = self.RED_BIRTH_STATE.get('p2p', False)
+                
+                # 多对多彻底放弃端到端控制
+                p2p = False
 
                 # 防撞地系统
                 if self.shielded:
@@ -387,11 +366,14 @@ class Battle(object):
             # self.missiles = self.Rmissiles + self.Bmissiles
             for missile in self.alive_missiles[:]:  # 使用切片创建副本以允许删除
                 target = self.get_target_by_id(missile.target_id)
+                # todo 干扰或更换目标逻辑 
+                # track_target = f(target, missile, self.UAVs, self.chaffs)
+
                 if target is None:  # 目标不存在, 不更换目标而是击毁导弹
                     missile.dead = True
                     continue
                 elif target.dead:  # test 目标死亡, 不更换目标而是击毁导弹
-                    missile.dead = True # todo 改成missile.target = None, 并在missile类里改成丢失目标飞直线，并且无法触发hit
+                    missile.dead = True # todo 多对多环境中改成missile.target = None, 并在missile类里改成丢失目标飞直线，并且无法触发hit
                     continue
                 else:
                     missile.target = target
@@ -451,18 +433,9 @@ class Battle(object):
             # 飞机接收毁伤判别信息
             for i, UAV in enumerate(self.UAVs):
                 # 飞机被导弹命中判断
-                if UAV.red:
-                    adv = self.BUAV
-                if UAV.blue:
-                    adv = self.RUAV
                 if self.UAV_hit[i]:
                     UAV.dead = True
                     UAV.got_hit = True
-                # 其他毁伤判断
-                adv = self.UAVs[1 - i]
-                pt_ = adv.pos_
-                L_ = pt_ - UAV.pos_
-                distance = np.linalg.norm(L_)
 
                 # 出界判别
                 if self.crash(UAV):
@@ -477,19 +450,6 @@ class Battle(object):
                 UAV.dead = True
                 # self.running = False
 
-        r_dones = False
-        b_dones = False
-        if self.RUAV.dead:
-            r_dones = True
-        if self.BUAV.dead:
-            b_dones = True
-
-        self.RUAV = self.UAVs[0]
-        self.BUAV = self.UAVs[1]
-
-        # if terminate:
-        #     self.running = False
-
         return 0, 0, 0, 0, 0  # 废弃不再使用了
 
     def update_missile_state(self):
@@ -500,20 +460,33 @@ class Battle(object):
         self.alive_b_missiles = alive_b_missiles
         self.alive_missiles = alive_r_missiles + alive_b_missiles
 
-    def get_state(self, side):
+    # todo 观测信息要考虑到多对多的情况，不再只是两架飞机
+    def get_state(self, id):
         '''
         在这里统一汇总所有用得到的状态量，计算状态量可见性并分配各各个子策略的观测
         这里不缩放，统一在get_obs缩放（因为有些会直接输入到规则里面）
-        默认值在这里设定
+        观测3层结构：
+        state_of_agent = dict{
+            标志位（非向量）信息，
+            己方信息向量（固定），
+            队友信息list[向量，按id排序，以可见性开头,如果队友死亡，将其置为空],
+            己方导弹信息list[向量，按id排序，以可见性开头,如果导弹死亡/不可见，将其置为空],
+            敌机信息向量list[向量，按id排序，以可见性开头,如果敌机死亡/不可见，将其置为空],
+            敌方导弹信息list[向量，按id排序，以可见性开头,如果敌方导弹死亡/不可见，将其置为空],
+        }
+
+        具体某个非自己的向量信息索引方法： state_of_agent["key"][x] 到向量，后再接一个 [y] 索引具体维度
         '''
+        state_list = []
 
-        if side == 'r':
-            own = self.RUAV
-            adv = self.BUAV
 
-        else:  # if side=='b':
-            own = self.BUAV
-            adv = self.RUAV
+        uav = self.UAVsTable[id]['entity']
+        side = uav.side
+
+        # 先自己、然后队友，最后敌机，队友和敌机内部按照id排序
+        # 1. 己方信息向量（固定）
+        
+
 
 
         alive_r_missiles, alive_b_missiles = self.alive_r_missiles, self.alive_b_missiles
@@ -964,59 +937,12 @@ class Battle(object):
         self.obs_init = self.scale_state(self.state_init)
         return observation
 
-    # def get_reward(self, missiled_combat='Flase'):  # 策略选择器奖励
-    #     if missiled_combat == True:
-    #         # 添加导弹命中相关的奖励和惩罚
-    #         pass
-    #     '结果奖励部分'
-    #     RUAV = self.RUAV
-    #     BUAV = self.BUAV
-    #     UAVs = [RUAV, BUAV]
-    #     A = [0, 0]  # R, B
-    #     rewards = [0, 0]  # R, B
-    #     for i, UAV in enumerate(UAVs):  # UAVs[0]为红方，UAVs[1]为蓝方
-
-    #         r_obs_n = self.base_obs('r')
-    #         b_obs_n = self.base_obs('b')
-
-    #         rewards[0] = 0
-    #         rewards[1] = 0
-
-    #     # todo 奖励改成元组形式，第一项喂给经验池，第二项用作episode_return
-    #     return (rewards[0], rewards[0]), (rewards[1], rewards[1])
-
+    # 通过id获取目标信息
     def get_target_by_id(self, target_id):
         for uav in self.UAVs:
             if uav.id == target_id:
                 return uav
         return None
-
-    # def get_terminate(self):
-    #     # # 超时强制结束回合
-    #     # if self.t > self.game_time_limit:
-    #     #     return True
-
-    #     if all(self.UAV_hit):
-    #         return True
-    #     missile_dead_list = []
-    #     uav_dead_list = []
-    #     # battle和uav各自所属的missile没有同步，判断起来不方便，现改为所有发射的导弹都挂了,且无人机有一方坠落，
-    #     # 则仿真就结束
-    #     for missile in self.missiles:
-    #         missile_dead_list.append(missile.dead)
-    #     for uav in self.UAVs:
-    #         uav_dead_list.append(uav.dead)
-
-    #     if all(missile_dead_list) and any(uav_dead_list):
-    #         return True
-
-    #     # r_dead = [self.RUAV.got_hit]
-    #     # b_dead = [self.BUAV.got_hit]
-    #     # if self.running == False:
-    #     #     return True
-    #     # if all(r_dead) or all(b_dead):
-    #     #     return True
-    #     return False
 
     def crash(self, UAV):
         if UAV.alt < self.min_alt:
@@ -1040,38 +966,6 @@ class Battle(object):
             out = False
         return out
 
-    # # 近距处理
-    # def close_range_kill(self,):
-    #     for ruav in self.RUAVs:
-    #         if ruav.dead:
-    #             continue
-    #         for buav in self.BUAVs:
-    #             if buav.dead:
-    #                 continue
-    #             elif norm(ruav.pos_ - buav.pos_) >= 8e3:
-    #                 continue
-    #             else:
-    #                 Lbr_ = ruav.pos_ - buav.pos_
-    #                 Lrb_ = buav.pos_ - ruav.pos_
-    #                 dist = norm(Lbr_)
-    #                 # 求解hot-cold关系
-    #                 cos_ATA_r = np.dot(Lrb_, ruav.vel_) / (dist * ruav.speed)
-    #                 cos_ATA_b = np.dot(Lbr_, buav.vel_) / (dist * buav.speed)
-    #                 # 双杀
-    #                 if cos_ATA_r >= cos(pi / 3) and cos_ATA_b >= cos(pi / 3):
-    #                     ruav.dead = True
-    #                     buav.dead = True
-    #                     ruav.got_hit = True
-    #                     buav.got_hit = True
-    #                 # 单杀
-    #                 if cos_ATA_r >= cos(pi / 3) and cos_ATA_b < cos(pi / 3):
-    #                     buav.dead = True
-    #                     buav.got_hit = True
-    #                 if cos_ATA_r < cos(pi / 3) and cos_ATA_b >= cos(pi / 3):
-    #                     ruav.dead = True
-    #                     ruav.got_hit = True
-
-
     def render(self, t_bias=0):
         if self.tacview_show:
             send_t = self.t + t_bias
@@ -1082,13 +976,13 @@ class Battle(object):
                 if not UAV.dead:
                     if UAV.side == 'r':
                         color = 'Red'
-                        pilot = 'Maverick'
+                        pilot = 'red'+str(UAV.id)
                     elif UAV.side == 'b':
                         color = 'Blue'
-                        pilot = 'Ice'
+                        pilot = 'blue'+str(UAV.id)
                     else:
                         color = 'Black'
-                        pilot = 'invader'
+                        pilot = 'invader'+str(UAV.id)
 
                     data_to_send += (
                         f"#{send_t:.2f}\n"
@@ -1096,6 +990,7 @@ class Battle(object):
                         f"{UAV.phi * 180 / pi:.6f}|{UAV.theta * 180 / pi:.6f}|{UAV.psi * 180 / pi:.6f},"
                         f"Name=F16,Pilot={pilot},Color={color}\n"
                     )
+                    # 带雷达范围显示
                     # data_to_send+=(
                     #     f"{UAV.id+1000},T={loc_LLH[0]:.6f}|{loc_LLH[1]:.6f}|{loc_LLH[2]:.6f}|"
                     #     f"0|{UAV.theta * 180 / pi:.6f}|{UAV.psi * 180 / pi:.6f},"
@@ -1147,7 +1042,7 @@ class Battle(object):
             pass
 
     def visualize_cage(self, ):
-        # 航路点画法
+        # 航路点画法, 适用于复杂边界形状
         # temp = np.zeros((19,3))
         # cage = np.zeros((19,3))
         # cage_dot_id = 10000
@@ -1281,6 +1176,8 @@ class Battle(object):
 
         return cmd
 
+
+# todo 开火逻辑需要重写，从而适配多对多
 
 def launch_missile_if_possible(env, side='r'):
     """
