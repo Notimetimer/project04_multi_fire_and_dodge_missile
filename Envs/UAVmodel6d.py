@@ -381,10 +381,10 @@ class UAVModel(object):
         new_missile = missile_class(self.pos_, self.vel_, target.pos_, target.vel_, current_time)  # test
         if self.blue:  # target.red:
             new_missile.side = 'b'
-            new_missile.id = 301 + self.missile_count
+            new_missile.id = None
         if self.red:  # target.blue:
             new_missile.side = 'r'
-            new_missile.id = 101 + self.missile_count
+            new_missile.id = None
         # 根据距离调整导弹参数
         distance = np.linalg.norm(target.pos_ - self.pos_)
         new_missile.max_g = 40  # 最大过载

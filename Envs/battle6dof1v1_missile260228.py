@@ -261,6 +261,8 @@ class MvMBattle(object):
         self.UAVsTable = {**self.RUAVsTable, **self.BUAVsTable}
         self.UAV_ids = [UAV.id for UAV in self.UAVs] # 顺序一致
         self.UAV_hit = [False for _ in range(len(self.UAVs))]
+        self.r_missile_count = 0  # 红方累计发射导弹数
+        self.b_missile_count = 0  # 蓝方累计发射导弹数
 
     def launch_missile(self, source_id, target_id):
         """
@@ -278,8 +280,12 @@ class MvMBattle(object):
             new_missile.side = side
             if side == 'r':
                 self.Rmissiles.append(new_missile)
+                self.r_missile_count += 1
+                new_missile.id = 101 + self.r_missile_count
             else:
                 self.Bmissiles.append(new_missile)
+                self.b_missile_count += 1
+                new_missile.id = 301 + self.b_missile_count
             self.missiles = self.Rmissiles + self.Bmissiles
 
     # todo 输入动作打包为大小不确定的量
@@ -479,15 +485,53 @@ class MvMBattle(object):
         原始环境提供的状态信息，通过列表给出，供检查用，不可以直接输入进神经网络
         需要使用外挂状态输入结构转换（先填充为最大可处理数量的信息，未存在的导弹也要用填充值填充）
         '''
+        # 原先将所有量打包成一个 numpy array，这里改为 dict 结构
+        self.key_order = [
+            # 我机信息
+            "ego_alive",
+            "ego_main",
+            "ego_control",
+            "ego_ammo",
+            "border",
+            # 队友信息
+            "ally_info",  # [存活、相对方位、相对俯仰角、相对距离、速度、航向角、俯仰角]*数量
+            # 敌机信息
+            "eny_info",  # [存活、可见性、是否能锁定、是否锁定我、相对方位、相对俯仰角、相对距离、速度、hot/cold]*数量
+            # 导弹信息（不区分发射机，预留接力制导空间）
+            "weapon_info",  # [剩余命中时间、相对方位、是否可引导]*数量
+            # 告警信息
+            "RWR_info",  # [距离, 相对方位、相对俯仰]*数量
+        ]
+
         state_list = []
 
 
-        uav = self.UAVsTable[id]['entity']
-        side = uav.side
+        ego = self.UAVsTable[id]['entity']
+        side = ego.side
 
         # 先自己、然后队友，最后敌机，队友和敌机内部按照id排序
+        # 0. 标识符
+        ego_alive = not ego.dead  # 自己活着没
+
+
         # 1. 己方信息向量（固定）
-        
+        v_ = ego.vel_
+        vh_ = ego.vel_ * np.array([1, 0, 1])  # 掩模 取水平速度
+        vv_ = ego.vel_[1]  # 掩模 取垂直速度
+        v = norm(v_)
+        # 速度观测量
+        v_own = v
+        # 本机高度
+        h_own = own.alt
+        # 本机俯仰角
+        sin_theta = sin(own.theta)
+        cos_theta = cos(own.theta)
+        # 本机滚转角
+        sin_phi = sin(own.phi)
+        cos_phi = cos(own.phi)
+
+        # 剩余导弹量
+        ammo = own.ammo
 
 
 
@@ -643,21 +687,7 @@ class MvMBattle(object):
 
         d, d_hor, left_or_right = calc_intern_dist2cylinder(self.R_cage, own.pos_, own.psi_v, own.theta_v)
 
-        # 原先将所有量打包成一个 numpy array，这里改为 dict 结构
-        self.key_order = [
-            "target_alive",  # 1 暂未使用
-            "target_observable",  # 1 仅用于动作切换
-            "target_locked",  # 1
-            "missile_in_mid_term",  # 1 仅用于动作切换
-            "locked_by_target",  # 1 仅用于动作切换
-            "warning",  # 1
-            "target_information",  # 8
-            "ego_main",  # 7
-            "ego_control",  # 7
-            "weapon",  # 1 仅用于动作切换
-            "threat",  # 4
-            "border",  # 2
-        ]
+        
 
         one_side_states = {
             # 单独键（标量或布尔）
