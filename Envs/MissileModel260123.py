@@ -403,7 +403,7 @@ class missile_class:
 
         v_rel_ = vtt_-vmt_
         L_dot = np.dot(v_rel_, line_t_)/distance
-        self.time2hit = -distance/L_dot if L_dot<0 else 120 # 弹目距离
+        self.time2hit = -distance/L_dot if L_dot<0 else 0 # 弹目距离
         vmt = np.linalg.norm(vmt_)
         if np.dot(vmt_, line_t_) / vmt / distance > cos(self.sight_angle_max):
             self.in_angle = 1
@@ -574,7 +574,7 @@ if __name__ == '__main__':
     list_pm_ = p_carrier_
     list_vm_ = v_carrier_
     list_vm = np.linalg.norm(list_vm_)
-    list_pt_ = np.array([5e3, 3e3, 0])  # 目标
+    list_pt_ = np.array([25e3, 3e3, 0])  # 目标
     list_vt_ = np.array([-300, 0, 0]) # np.array([-150, 0, -150])
     # missile1 = missile_class(list_pm_, list_vm_, t)
     Target = target(list_pt_, list_vt_)

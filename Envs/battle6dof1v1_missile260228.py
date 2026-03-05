@@ -218,6 +218,7 @@ class MvMBattle(object):
             UAV.reset(lon0=lon_uav, lat0=lat_uav, h0=h_uav, v0=UAV.speed, psi0=UAV.psi, phi0=UAV.gamma,
                       theta0=UAV.theta, o00=o00)
             UAV.got_hit = False
+            UAV.radar_on = 1
             UAV.escape_once = 0
             self.RUAVs.append(UAV)
             self.RUAVsTable[UAV.id] = {'entity': UAV, 'side': UAV.side, 'dead': UAV.dead}
@@ -256,6 +257,7 @@ class MvMBattle(object):
             UAV.reset(lon0=lon_uav, lat0=lat_uav, h0=h_uav, v0=UAV.speed, psi0=UAV.psi, phi0=UAV.gamma,
                       theta0=UAV.theta, o00=o00)
             UAV.got_hit = False
+            UAV.radar_on = 1
             UAV.escape_once = 0
             self.BUAVs.append(UAV)
             self.BUAVsTable[UAV.id] = {'entity': UAV, 'side': UAV.side, 'dead': UAV.dead}
@@ -283,6 +285,7 @@ class MvMBattle(object):
             new_missile = uav.launch_missile(target, self.t, missile_class)
             uav.ammo -= 1
             new_missile.side = side
+            new_missile.guider_id = source_id
             if side == 'r':
                 self.Rmissiles.append(new_missile)
                 self.r_missile_count += 1
@@ -433,6 +436,7 @@ class MvMBattle(object):
                         target.vel_ = last_vtt_
                         target.dead = True
                         target.got_hit = True
+                        target.radar_on = 0
                         self.UAV_hit[self.UAV_ids.index(target.id)] = True
 
                 if missile.dead == True and not hit:
@@ -447,10 +451,12 @@ class MvMBattle(object):
                 if self.UAV_hit[i]:
                     UAV.dead = True
                     UAV.got_hit = True
+                    UAV.radar_on = 0
 
                 # 出界判别
                 if self.crash(UAV):
                     UAV.dead = True
+                    UAV.radar_on = 0
                 # self.running = False
 
         # r_reward_n, b_reward_n = self.get_reward()
@@ -459,6 +465,7 @@ class MvMBattle(object):
         for UAV in self.UAVs:
             if UAV.got_hit or self.crash(UAV):  # or self.out_range(UAV): ###
                 UAV.dead = True
+                UAV.radar_on = 0
                 # self.running = False
 
         # 更新UAV信息
@@ -528,6 +535,9 @@ class MvMBattle(object):
         # 0. 标识符
         ego_alive = not ego.dead  # 自己活着没
 
+        # 边界信息
+        d, d_hor, left_or_right = calc_intern_dist2cylinder(self.R_cage, ego.pos_, ego.psi_v, ego.theta_v)
+
         #------------------------
         # 1. 己方信息向量（固定结构）
         #------------------------
@@ -579,9 +589,9 @@ class MvMBattle(object):
         # 所有队友:
         # [存活、相对方位、相对俯仰角、相对距离、速度、航向角、俯仰角]*数量
         ally_uavs = [uav for uav in ego_side_uavs if uav is not ego]
-        for uav in ally_uavs:
+        for ally in ally_uavs:
             # 相对方位角
-            L_ = uav.pos_ - ego.pos_
+            L_ = ally.pos_ - ego.pos_
             q_beta = atan2(L_[2], L_[0])
             L_h = np.sqrt(L_[0] ** 2 + L_[2] ** 2)
             L_v = L_[1]
@@ -592,14 +602,14 @@ class MvMBattle(object):
             # 相对距离
             dist = norm(L_)
             # 相对航向角（队友航向角-我机航向角）
-            delta_psi_ally = sub_of_radian(uav.psi, ego.psi)
+            delta_psi_ally = sub_of_radian(ally.psi, ego.psi)
             # 队友速度
-            v_ally = norm(uav.vel_)
+            v_ally = norm(ally.vel_)
             # 队友俯仰角
-            theta_ally = uav.theta
+            theta_ally = ally.theta
 
             ally_info = np.array([
-                float(not uav.dead),
+                float(not ally.dead),
                 float(delta_psi),
                 float(delta_theta),
                 float(dist),
@@ -610,23 +620,16 @@ class MvMBattle(object):
 
             ally_info.append(ally_info)
 
-        # 所有敌人:
+        #------------------------
+        # 3. 敌机信息:
         # [存活、可见性、是否能锁定、是否锁定我、相对方位、相对俯仰角、相对距离、速度、hot/cold]*数量
-
-        float(cos(delta_psi)),  # 0相对方位 cos
-        float(sin(delta_psi)),  # 1相对方位 sin
-        float(delta_theta),  # 2相对俯仰角 rad
-        float(dist_obs),  # 3距离 m
-        float(ATA),  # 4夹角 rad
-        float(speed_T),  # 5目标速度 m/s
-        float(AA_hor),  # 6水平进入角 rad
-        float(AA_vert)  # 7垂直进入角 rad
+        #------------------------
 
         enm_info = []
         enm_uavs = self.RUAVs if ego_side =='b' else self.BUAVs
-        for uav in enm_uavs:
+        for enm in enm_uavs:
             # 相对方位角
-            L_ = uav.pos_ - ego.pos_
+            L_ = enm.pos_ - ego.pos_
             q_beta = atan2(L_[2], L_[0])
             L_h = np.sqrt(L_[0] ** 2 + L_[2] ** 2)
             L_v = L_[1]
@@ -641,171 +644,105 @@ class MvMBattle(object):
             ATA = np.arccos(np.dot(L_, ego.point_) / (dist * norm(ego.point_) + 0.00001))
             
             # 目标速度
+            target_speed = norm(enm.speed)
 
             # 水平进入角
+            # 目标相对方位角速度 (rad/s) / 0.35 与 目标相对俯仰角速度 (rad/s) / 0.35
+            vT_ = enm.vel_
 
-            # 垂直进入角
+            psi_vT = atan2(vT_[2], vT_[0])
+            theta_vT = atan2(vT_[1], sqrt(vT_[0] ** 2 + vT_[2] ** 2))
+
+            # 目标水平/垂直进入角
+            AA_hor = sub_of_radian(psi_vT, q_beta)  # 向右飞为正
+            AA_vert = sub_of_radian(theta_vT, q_epsilon)  # 向上飞为正
 
             # 数据是否可信（有队友视野就算完全可观测）
+            target_observable = 2  # 不在这里算
 
             # 是否锁定该敌机
+            if ego.radar_on and \
+                ATA < ego.max_radar_angle and dist < ego.max_radar_range:
+                target_locked = 1
+            else:
+                target_locked = 0
 
             # 该敌机是否锁定我
+            alpha_enm = np.arccos(np.dot(-L_, enm.vel_) / (norm(enm.vel_) * dist + 0.00001))  # 防止计算误差导致分子>分母
+            if alpha_enm < ego.max_radar_angle and dist < ego.max_radar_range and enm.radar_on:
+                locked_by_target = 1
+            else:
+                locked_by_target = 0
 
+            enm_info.apppend(np.array([
+                float(not enm.dead),
+                float(target_observable),
+                float(target_locked),
+                float(locked_by_target),
+                float(cos(delta_psi)),  # 相对方位 cos
+                float(sin(delta_psi)),  # 相对方位 sin
+                float(delta_theta),  # 相对俯仰角 rad
+                float(dist),  # 距离 m
+                float(ATA),  # 夹角 rad
+                float(target_speed),  # 目标速度 m/s
+                float(AA_hor),  # 水平进入角 rad
+                float(AA_vert)  # 垂直进入角 rad
+            ]))
+
+
+        #------------------------
+        # 导弹信息向量，协同制导我还没想清楚要如何做，先按不做的来
+        #------------------------
+        alive_ally_missiles = self.alive_r_missiles if ego_side=='r' else self.alive_b_missiles
+        alive_ego_missiles = [m for m in alive_ally_missiles if m.guider_id == ego.id]
+        ally_missile_info = []
+        for missile in alive_ego_missiles:
+            # 相对方位角
+            guide_line_ = missile.pos_ - ego.pos_
+            q_beta = atan2(guide_line_[2], guide_line_[0])
+            q_epsilon = atan2(guide_line_[1], np.sqrt(guide_line_[0] ** 2 + guide_line_[2] ** 2))
+            delta_psi = sub_of_radian(q_beta, ego.psi)
             
+            # 剩余命中时间
+            time2hit = missile.time2hit
 
+            ally_missile_info.append(np.array([
+                float(time2hit),        # 剩余命中时间
+                float(cos(delta_psi)),  # 相对方位 cos
+                float(sin(delta_psi)),  # 相对方位 sin
+            ]))
 
-        alive_r_missiles, alive_b_missiles = self.alive_r_missiles, self.alive_b_missiles
-        if side == 'r':
-            alive_ego_missiles = alive_r_missiles
-            alive_enm_missiles = alive_b_missiles
-        if side == 'b':
-            alive_ego_missiles = alive_b_missiles
-            alive_enm_missiles = alive_r_missiles
-
-        # 目标存活标志
-        target_alive = not adv.dead
-        # 目标可见性标志 0 完全不可见 1 可获取角度信息 2 可获取全部信息
-        target_observable = 2  # 难保不搞成one-hot的形式
-        # 目标相对高度
-        delta_alt_obs = adv.alt - ego.alt
-        # 目标相对方位角
-        L_ = adv.pos_ - ego.pos_
-        q_beta = atan2(L_[2], L_[0])
-        L_h = np.sqrt(L_[0] ** 2 + L_[2] ** 2)
-        L_v = L_[1]
-        q_epsilon = atan2(L_v, L_h)
-        delta_psi = sub_of_radian(q_beta, ego.psi)
-        # 目标相对俯仰角
-        delta_theta = sub_of_radian(q_epsilon, ego.theta)
-        # 目标相对距离
-        dist = norm(L_)
-        dist_obs = dist
-        # 夹角
-        v_ = ego.vel_
-        vh_ = ego.vel_ * np.array([1, 0, 1])  # 掩模 取水平速度
-        vv_ = ego.vel_[1]  # 掩模 取垂直速度
-        v = norm(v_)
-        ATA = np.arccos(np.dot(L_, ego.point_) / (dist * norm(ego.point_) + 0.001))  # 防止计算误差导致分子>分母
-        # 速度观测量
-        v_ego = v
-        # 本机高度
-        h_ego = ego.alt
-        # 本机俯仰角
-        sin_theta = sin(ego.theta)
-        cos_theta = cos(ego.theta)
-        # 本机滚转角
-        sin_phi = sin(ego.phi)
-        cos_phi = cos(ego.phi)
-
-        # 剩余导弹量
-        ammo = ego.ammo
-
-        # 雷达可跟踪标志
-        if ATA <= ego.max_radar_angle and dist <= ego.max_radar_range and target_alive:
-            target_locked = 1
-        else:
-            target_locked = 0
-
-        # 导弹中制导状态 bool 与 导弹发射间隔时间
-        missile_in_mid_term = 0
-        # 废弃，剩余命中时间
-        # missile_time_since_shoot = 120
-        # if not alive_ego_missiles:  # len(alive_ego_missiles) == 0
-        #     pass
-        # else:
-        #     time2hits = np.ones(len(alive_ego_missiles)) * 120
-        #     for i, missile in enumerate(alive_ego_missiles):
-        #         time2hits[i] = missile.time2hit
-        #         if missile.guidance_stage < 3:
-        #             missile_in_mid_term = 1
-        #             break
-        #     missile_time_since_shoot = min(time2hits)
-        missile_time_since_shoot = 120
-        if not alive_ego_missiles:  # len(alive_ego_missiles) == 0
-            pass
-        else:
-            time_since_shoots = np.ones(len(alive_ego_missiles)) * 120
-            for i, missile in enumerate(alive_ego_missiles):
-                time_since_shoots[i] = missile.t
-                if missile.guidance_stage < 3:
-                    missile_in_mid_term = 1
-            missile_time_since_shoot = min(time_since_shoots)
-
-        # 首先找到所有存活的友方导弹是否由本机发射
-        # 然后判断该导弹的 .guidance_stage是否<3
-
-        # 目标雷达跟踪标志 bool
-        alpha_enm = np.arccos(np.dot(-L_, adv.vel_) / (norm(adv.vel_) * dist + 0.01))  # 防止计算误差导致分子>分母
-        if alpha_enm < ego.max_radar_angle and dist < ego.max_radar_range:
-            locked_by_target = 1
-        else:
-            locked_by_target = 0
-
-        # 告警信息 pi和-pi是突变点，置尾机动的时候不易训练，暂时不想用sin和cos，试试改为追一个东西
-        if not alive_enm_missiles:
-            warning = 0
-            threat_delta_psi = pi  # pi 0
-            threat_delta_theta = 0
-            threat_distance = 30e3
-        else:  # 敌导弹一发射就告警
-            warnings = np.zeros(len(alive_enm_missiles))
-            distances = np.ones(len(alive_enm_missiles)) * 30e3
-            threat_delta_psis = np.zeros(len(alive_enm_missiles))
-            threat_delta_thetas = np.zeros(len(alive_enm_missiles))
-            for i, missile in enumerate(alive_enm_missiles):
-                distances[i] = missile.distance
-                if missile.distance < missile.detect_range and missile.in_angle:
-                    warnings[i] = 1
-                    threat_delta_psis[i] = sub_of_radian(pi + missile.q_beta, ego.psi)
-                    threat_delta_thetas[i] = -missile.q_epsilon
-                elif locked_by_target:  # 导弹未进入告警距离但我机仍被敌机锁定
-                    # 进入告警距离前用敌机方位作为导弹告警方位
-                    threat_delta_psis[i] = delta_psi
-                    threat_delta_thetas[i] = delta_theta + ego.theta
-
-            # 告警标志 bool
-            warning = bool(max(warnings))
-            min_idx = int(np.argmin(distances))
-            threat_delta_psi = threat_delta_psis[min_idx]
-            threat_delta_theta = threat_delta_thetas[min_idx]
-            threat_distance = distances[min_idx]
-
-        p = ego.p
-        q = ego.q
-        r = ego.r
-
-
-        theta_v = ego.theta_v
-        psi_v = ego.psi_v
-
-        alpha_air = ego.alpha_air
-        beta_air = ego.beta_air
-
-        speed_T = adv.speed
-
-        # 目标相对方位角速度 (rad/s) / 0.35 与 目标相对俯仰角速度 (rad/s) / 0.35
-        vT_ = adv.vel_
-        # vr_ = vT_ - v_
-        # vr_radial = np.dot(vr_, L_) / dist  # 径向速度
-        # vr_tangent_ = np.cross(L_, vr_) / dist # 目标周向速度矢量
-        # omega_ = vr_tangent_/dist # 目标相对角速度矢量
-        # dego_ = np.array([0,-1,0])
-        # L_left_ = np.cross(L_, dego_)/dist
-        # L_left_ = L_left_/norm(L_left_)
-        # omega_vert_ = np.dot(omega_, dego_) * 1
-        # omega_hor_ = omega_ - omega_vert_
-        # delta_psi_dot = np.dot(omega_vert_, dego_) # 目标相对方位角速度
-        # delta_theta_dot = -np.dot(omega_hor_, L_left_) # 目标相对俯仰角速度
-
-        psi_vT = atan2(vT_[2], vT_[0])
-        theta_vT = atan2(vT_[1], sqrt(vT_[0] ** 2 + vT_[2] ** 2))
-
-        # 目标水平/垂直进入角
-        AA_hor = sub_of_radian(psi_vT, q_beta)  # 向右飞为正
-        AA_vert = sub_of_radian(theta_vT, q_epsilon)  # 向上飞为正
-
-        d, d_hor, left_or_right = calc_intern_dist2cylinder(self.R_cage, ego.pos_, ego.psi_v, ego.theta_v)
+        #------------------------
+        # 告警信息向量, 不在get_state里面做填充，有多少放多少
+        #------------------------
+        alive_enm_missiles = self.alive_b_missiles if ego_side=='r' else self.alive_r_missiles
+        RWR_info = []
+        for enm_missile in alive_enm_missiles:
+            # 导弹雷达开启后告警启动，否则不启动
+            if enm_missile.radar_on:
+                threat_line_ = enm_missile.pos_ - ego.pos_
+                threat_distance = norm(threat_line_)
+                missile_q_beta = atan2(-threat_line_[2], -threat_line_[0])
+                missile_q_epsilon = atan2(-threat_line_[1], np.sqrt(threat_line_[0] ** 2 + threat_line_[2] ** 2))
+                threat_delta_psi = sub_of_radian(pi + missile_q_beta, ego.psi)
+                threat_delta_theta = -missile_q_epsilon
+                warning = threat_distance < missile.detect_range  # 假设导弹的探测距离正好就是飞机的告警距离
+                RWR_info.append(np.array([
+                    float(warning),
+                    float(cos(threat_delta_psi)),
+                    float(sin(threat_delta_psi)),
+                    float(threat_delta_theta),
+                    float(threat_distance),
+                ]))
+                # 不是1V1，谁在制导导弹先不管，只考虑导弹的雷达信息
+                # if missile.distance < missile.detect_range and missile.in_angle:
+                #     warnings[i] = 1
+                #     threat_delta_psis[i] = sub_of_radian(pi + missile.q_beta, ego.psi)
+                #     threat_delta_thetas[i] = -missile.q_epsilon
+                # elif locked_by_target:  # 导弹未进入告警距离但我机仍被敌机锁定
+                #     # 进入告警距离前用敌机方位作为导弹告警方位
+                #     threat_delta_psis[i] = delta_psi
+                #     threat_delta_thetas[i] = delta_theta + ego.theta
 
         
 
@@ -1354,7 +1291,7 @@ def launch_missile_if_possible(env, side='r'):
         # 判断是否可以发射导弹
         if uav.can_launch_missile(target, env.t):
             # 发射导弹
-            new_missile = uav.launch_missile(target, env.t, missile_class)
+            new_missile = env.launch_missile(source_id=uav.id, target_id=target.id)
             uav.ammo -= 1
             new_missile.side = 'r' if side == 'r' else 'b'
             if side == 'r':
@@ -1392,7 +1329,7 @@ def launch_missile_immediately(env, side='r', tabu=0):
     if uav.ammo>0 and not uav.dead:
         if not tabu or\
                 target_locked and ego_state["weapon"]>=0.1 and ATA<=60 *pi/180:
-            new_missile = uav.launch_missile(target, env.t, missile_class)
+            new_missile = env.launch_missile(source_id=uav.id, target_id=target.id)
             uav.ammo -= 1
 
             # 记录导弹发射瞬间的 ATA、distance 和 AA_hor
@@ -1459,7 +1396,7 @@ def launch_missile_with_basic_rules(env, side='r'):
 
 
     if np.random.rand() < should_shoot: # np.random.rand() 生成的是在区间 [0, 1) 上的独立均匀分布
-        new_missile = uav.launch_missile(target, env.t, missile_class)
+        new_missile = env.launch_missile(source_id=uav.id, target_id=target.id)
         uav.ammo -= 1
         new_missile.side = 'r' if side == 'r' else 'b'
         if side == 'r':
