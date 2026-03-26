@@ -12,7 +12,9 @@
     // "python-envs.defaultEnvManager": "ms-python.python:conda",
     // "python-envs.defaultPackageManager": "ms-python.python:conda",
     // 别瞎报了
+    "python.analysis.typeCheckingMode": "off",
     "python.analysis.diagnosticSeverityOverrides": {
-        "reportGeneralTypeIssues": "none"
+        "reportGeneralTypeIssues": "none",
+        "reportAttributeAccessIssue": "none"
     }
 }
