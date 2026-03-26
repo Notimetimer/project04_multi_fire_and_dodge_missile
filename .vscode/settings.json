@@ -1,24 +1,18 @@
 {
-    "python.defaultInterpreterPath": "C:\\Users\\LYH\\miniforge3\\envs\\38c\\python.exe",
-    "python.condaPath": "C:\\Users\\LYH\\miniforge3\\Scripts\\conda.exe",
-    "python.languageServer": "Pylance",
-    "python.analysis.extraPaths": [
-        "d:\\3_Machine_Learning_in_Python\\project04_multi_fire_and_dodge_missile"
-    ],
-    "python.analysis.typeCheckingMode": "basic",
-    "python.analysis.diagnosticMode": "workspace",
-    
-    "window.openFoldersInNewWindow": "on",
-    "workbench.editor.enablePreview": false,
-    "notebook.lineNumbers": "on",
-    "github.copilot.enable": {
-        "*": true,
-        "plaintext": false,
-        "markdown": false,
-        "scminput": false,
-        "python": false
-    },
-    "jupyter.askForKernelRestart": false,
-    "editor.minimap.enabled": false,
-    "terminal.integrated.shellIntegration.enabled": false
+    "Lingma.methodQuickOperation": false,
+    "Lingma.aI Chat.memories": true,
+    "Lingma.cloudModelAutoTriggerDisplayRule": false,
+    // ....  其他配置
+    "http.proxy": "http://127.0.0.1:7897",
+    "http.proxyStrictSSL": false,
+    "http.proxySupport": "override",
+    "http.noProxy": [],
+    "cursor.general.disableHttp2": true,
+    "git.ignoreLimitWarning": true,
+    // "python-envs.defaultEnvManager": "ms-python.python:conda",
+    // "python-envs.defaultPackageManager": "ms-python.python:conda",
+    // 别瞎报了
+    "python.analysis.diagnosticSeverityOverrides": {
+        "reportGeneralTypeIssues": "none"
+    }
 }
