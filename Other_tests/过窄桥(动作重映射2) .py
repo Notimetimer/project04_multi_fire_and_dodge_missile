@@ -9,7 +9,6 @@ import random
 import matplotlib
 import matplotlib.pyplot as plt
 import gym
-from gym import spaces
 from numpy.linalg import norm
 from torch.distributions import Normal
 import random

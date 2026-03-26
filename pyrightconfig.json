@@ -1,0 +1,10 @@
+{
+  "venvPath": "C:\\Users\\LYH\\miniforge3\\envs",
+  "venv": "38c",
+  "extraPaths": [
+    "."
+  ],
+  "reportMissingImports": true,
+  "typeCheckingMode": "basic",
+  "diagnosticMode": "workspace"
+}

@@ -11,7 +11,6 @@ env3是env2的再训练环境，env2的奖励更适合打固定对手作为预�
 import numpy as np
 from random import random
 import random
-from gym import spaces
 import copy
 import jsbsim
 import sys

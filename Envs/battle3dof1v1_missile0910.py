@@ -2,7 +2,6 @@
 
 from random import random
 import random
-from gym import spaces
 import copy
 import jsbsim
 import sys

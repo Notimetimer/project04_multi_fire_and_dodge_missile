@@ -1,0 +1,24 @@
+{
+    "python.defaultInterpreterPath": "C:\\Users\\LYH\\miniforge3\\envs\\38c\\python.exe",
+    "python.condaPath": "C:\\Users\\LYH\\miniforge3\\Scripts\\conda.exe",
+    "python.languageServer": "Pylance",
+    "python.analysis.extraPaths": [
+        "d:\\3_Machine_Learning_in_Python\\project04_multi_fire_and_dodge_missile"
+    ],
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.diagnosticMode": "workspace",
+    
+    "window.openFoldersInNewWindow": "on",
+    "workbench.editor.enablePreview": false,
+    "notebook.lineNumbers": "on",
+    "github.copilot.enable": {
+        "*": true,
+        "plaintext": false,
+        "markdown": false,
+        "scminput": false,
+        "python": false
+    },
+    "jupyter.askForKernelRestart": false,
+    "editor.minimap.enabled": false,
+    "terminal.integrated.shellIntegration.enabled": false
+}

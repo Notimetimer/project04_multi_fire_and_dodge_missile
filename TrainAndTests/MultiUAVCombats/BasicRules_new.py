@@ -17,7 +17,7 @@ import re
 use_tacview = 1  # 是否可视化
 action_cycle_multiplier = 30
 
-def basic_rules(state_check, rules_num, last_action=0, p_random=0):
+def basic_rules(state_check, rules_num, last_action=0, p_random=0, env=None, ego_uav=None):
     '''
     rules_num = 0: 保持和目标相同高度只打进攻(action_number = 0,1,3)，0平飞追踪 1爬升追踪 3下降追踪，攻击区内发射导弹，上一枚导弹发射后如果还在中制导，不发射新导弹
     rules_num = 1: 保持和目标相同高度进攻(0,1,3), 发射完导弹立马crank(5,6), 受到威胁立刻回转至5000m高度以下(11水平回转, 12俯冲回转), 威胁结束后回归进攻
@@ -41,6 +41,61 @@ def basic_rules(state_check, rules_num, last_action=0, p_random=0):
     ATA = state_check["target_information"][4]
     AA_hor = state_check["target_information"][6]
     sin_theta = state_check["ego_main"][2]
+
+    selected_target = None
+    if env is not None and ego_uav is not None:
+        if ego_uav.side == 'r':
+            enemies = getattr(env, 'BUAVs', [getattr(env, 'BUAV', None)])
+            threat_missiles = getattr(env, 'Bmissiles', getattr(env, 'alive_b_missiles', []))
+            ally_missiles = getattr(env, 'Rmissiles', getattr(env, 'alive_r_missiles', []))
+        else:
+            enemies = getattr(env, 'RUAVs', [getattr(env, 'RUAV', None)])
+            threat_missiles = getattr(env, 'Rmissiles', getattr(env, 'alive_r_missiles', []))
+            ally_missiles = getattr(env, 'Bmissiles', getattr(env, 'alive_b_missiles', []))
+            
+        enemies = [e for e in enemies if e is not None and not getattr(e, 'dead', False)]
+        threat_missiles = [m for m in threat_missiles if m is not None and not getattr(m, 'dead', False)]
+        ally_missiles = [m for m in ally_missiles if m is not None and not getattr(m, 'dead', False)]
+        
+        # 随机选取一个存活的敌机作为目标
+        if enemies:
+            import random
+            target = random.choice(enemies)
+            selected_target = target
+            L_ = target.pos_ - ego_uav.pos_
+            q_beta = atan2(L_[2], L_[0])
+            L_h = np.sqrt(L_[0] ** 2 + L_[2] ** 2)
+            L_v = L_[1]
+            q_epsilon = atan2(L_v, L_h)
+            
+            delta_psi = sub_of_radian(q_beta, ego_uav.psi)
+            delta_theta = sub_of_radian(q_epsilon, ego_uav.theta)
+            distance = norm(L_)
+            delta_alt = distance * sin(delta_theta)
+            ATA = np.arccos(np.clip(np.dot(L_, ego_uav.point_) / (distance * norm(ego_uav.point_) + 1e-5), -1.0, 1.0))
+            
+            vT_ = target.vel_
+            psi_vT = atan2(vT_[2], vT_[0])
+            theta_vT = atan2(vT_[1], sqrt(vT_[0] ** 2 + vT_[2] ** 2))
+            AA_hor = sub_of_radian(psi_vT, q_beta)
+
+        # 寻找最近的来袭导弹告警
+        RWR = False
+        min_threat_dist = float('inf')
+        for m in threat_missiles:
+            if getattr(m, 'radar_on', True):
+                threat_line_ = m.pos_ - ego_uav.pos_
+                threat_dist = norm(threat_line_)
+                detect_range = getattr(m, 'detect_range', 30e3)
+                if threat_dist < detect_range:
+                    if threat_dist < min_threat_dist:
+                        min_threat_dist = threat_dist
+                        RWR = True
+                        m_q_beta = atan2(-threat_line_[2], -threat_line_[0])
+                        delta_psi_threat = sub_of_radian(pi + m_q_beta, ego_uav.psi)
+
+        # 检查是否在为己方导弹制导
+        on_guiding = any((getattr(m, 'guider_id', None) == ego_uav.id) for m in ally_missiles)
 
     # 1. 计算初始的开火意图
     fire_missile = False
@@ -133,7 +188,7 @@ def basic_rules(state_check, rules_num, last_action=0, p_random=0):
         if action_number in [1,2]:
             action_number = 0
 
-    return action_number, fire_missile_affirmative
+    return action_number, fire_missile_affirmative, selected_target
 
 
 if __name__=='__main__':
@@ -152,8 +207,6 @@ if __name__=='__main__':
     env.dt_move = 0.05
 
     env.shielded = 1 # 0 # 有防撞地就可以不要这个
-
-    r_action_spaces, b_action_spaces = env.r_action_spaces, env.b_action_spaces
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -214,6 +267,9 @@ if __name__=='__main__':
             current_action = None
             b_reward = None
 
+            r_action_labels = []
+            b_action_labels = []
+
             done = False
 
             env.dt_maneuver = dt_maneuver
@@ -234,48 +290,61 @@ if __name__=='__main__':
                 # 获取观测信息
                 r_obs, r_check_obs = env.obs_1v1('r', pomdp=1)
                 b_obs, b_check_obs = env.obs_1v1('b', pomdp=1)
-                # 在这里将观测信息压入记忆
-                # env.RUAV.obs_memory = r_check_obs.copy()
-                # env.BUAV.obs_memory = b_check_obs.copy()
+                
+                red_uavs = getattr(env, 'RUAVs', [getattr(env, 'RUAV', None)])
+                blue_uavs = getattr(env, 'BUAVs', [getattr(env, 'BUAV', None)])
+                
+                # 若初始阶段为空，预填充长度
+                if not r_action_labels: r_action_labels = [0] * len(red_uavs)
+                if not b_action_labels: b_action_labels = [0] * len(blue_uavs)
 
                 # --- 智能体决策 ---
                 # 判断是否到达了决策点（每 10 步）
                 if steps_of_this_eps % action_cycle_multiplier == 0:
-                    # # **关键点 1: 完成并存储【上一个】动作周期的经验**
-                    # # 如果这不是回合的第0步，说明一个完整的动作周期已经过去了
-                    # if steps_of_this_eps > 0:
-                    #     transition_dict['states'].append(last_decision_state)
-
-                    # **关键点 2: 开始【新的】一个动作周期**
-                    # 1. 记录新周期的起始状态
                     last_decision_state = b_obs
-                    # 2. Agent 产生一个动作
 
-                    # 红方根据规则活动
-                    r_state_check = env.unscale_state(env.obs2obs_check(r_obs))  # r_check_obs)
-                    r_action_label, r_fire = basic_rules(r_state_check, 5) # i_episode
-                    last_r_action_label = r_action_label
-                    if r_fire:
-                        launch_missile_immediately(env, 'r')
+                    _r_action_labels = []
+                    for ego_uav in red_uavs:
+                        if ego_uav is None or getattr(ego_uav, 'dead', False):
+                            _r_action_labels.append(0)
+                            continue
+                        r_state_check = env.unscale_state(env.obs2obs_check(r_obs))
+                        lbl, fire, target = basic_rules(r_state_check, 5, env=env, ego_uav=ego_uav)
+                        _r_action_labels.append(lbl)
+                        if fire and target is not None and getattr(ego_uav, 'ammo', 0) > 0:
+                            env.launch_missile(ego_uav.id, target.id)
+                    r_action_labels = _r_action_labels
 
-                    # 蓝方根据规则活动
-                    b_state_check = env.unscale_state(env.obs2obs_check(b_obs))  # b_check_obs)
-                    b_action_label, b_fire = basic_rules(b_state_check, 2)
-                    last_b_action_label = b_action_label
-                    if b_fire:
-                        launch_missile_immediately(env, 'b')
+                    _b_action_labels = []
+                    for ego_uav in blue_uavs:
+                        if ego_uav is None or getattr(ego_uav, 'dead', False):
+                            _b_action_labels.append(0)
+                            continue
+                        b_state_check = env.unscale_state(env.obs2obs_check(b_obs))
+                        lbl, fire, target = basic_rules(b_state_check, 2, env=env, ego_uav=ego_uav)
+                        _b_action_labels.append(lbl)
+                        if fire and target is not None and getattr(ego_uav, 'ammo', 0) > 0:
+                            env.launch_missile(ego_uav.id, target.id)
+                    b_action_labels = _b_action_labels
 
                     decide_steps_after_update += 1
                     
-                    b_action_list.append(np.array([env.t + t_bias, b_action_label]))
-                    current_action = b_action_label
+                    b_action_list.append(np.array([env.t + t_bias, b_action_labels[0] if b_action_labels else 0]))
+                    current_action = b_action_labels[0] if b_action_labels else 0
 
-                r_action = env.maneuver14LR(env.RUAV, r_action_label)
-                b_action = env.maneuver14LR(env.BUAV, b_action_label)
+                r_actions = [env.maneuver14LR(u, lbl) if u and not getattr(u, 'dead', False) else np.array([getattr(u, 'alt', 0), 0, 300]) for u, lbl in zip(red_uavs, r_action_labels)]
+                b_actions = [env.maneuver14LR(u, lbl) if u and not getattr(u, 'dead', False) else np.array([getattr(u, 'alt', 0), 0, 300]) for u, lbl in zip(blue_uavs, b_action_labels)]
 
-                env.step(r_action, b_action) # Environment updates every dt_maneuver
-                done, b_reward_event, b_reward_constraint, b_reward_shaping = env.combat_terminate_and_reward('b', b_action_label, b_fire)
-                b_reward = b_reward_event + b_reward_constraint + b_reward_shaping
+                if hasattr(env, 'MvMBattle') or 'MvMBattle' in [b.__name__ for b in env.__class__.__mro__]:
+                    env.step(r_actions + b_actions)
+                else:
+                    env.step(r_actions[0], b_actions[0])
+
+                # 绕过或写空奖励函数
+                if hasattr(env, 'combat_terminate_and_reward'):
+                    done_test, _, _, _ = env.combat_terminate_and_reward('b', b_action_labels[0] if b_action_labels else 0, 0)
+                    done = done or done_test
+                b_reward = 0
 
                 # Accumulate rewards between agent decisions
                 episode_return += b_reward * env.dt_maneuver

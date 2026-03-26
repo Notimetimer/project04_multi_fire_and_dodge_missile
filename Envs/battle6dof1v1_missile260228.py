@@ -5,7 +5,6 @@
 import numpy as np
 from random import random
 import random
-from gym import spaces
 import copy
 import jsbsim
 import sys
@@ -102,8 +101,6 @@ class MvMBattle(object):
         self.running = None
         self.action_space = []
         # self.reset()  # 重置位置和状态
-        self.r_action_spaces = [spaces.Box(low=-1, high=+1, shape=(3,), dtype=np.float32)]
-        self.b_action_spaces = [spaces.Box(low=-1, high=+1, shape=(3,), dtype=np.float32)]
         self.win = None
         self.lose = None
         self.draw = None
@@ -114,12 +111,6 @@ class MvMBattle(object):
         self.min_alt_danger = 2e3
         self.min_alt = 0.5e3  # 1e3
         self.R_cage = getattr(self.args, 'R_cage', R_cage) if hasattr(self.args, 'R_cage') else R_cage
-
-        # # 智能体的观察空间
-        # self.r_obs_spaces = [spaces.Box(low=-np.inf, high=+np.inf, shape=obs.shape, dtype=np.float32) for obs in
-        #                      r_obs_n]
-        # self.b_obs_spaces = [spaces.Box(low=-np.inf, high=+np.inf, shape=obs.shape, dtype=np.float32) for obs in
-        #                      b_obs_n]
 
         self.RED_BIRTH_STATE = {'position': np.array([-R_birth * cos(0), 8000.0, -R_birth * sin(0)]),
                                         'psi': 0,
