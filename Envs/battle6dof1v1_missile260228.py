@@ -560,13 +560,13 @@ class MvMBattle(object):
         ])
 
         ego_control = np.array([
-            float(p),  # 0 p rad/s act1_last
-            float(q),  # 1 q rad/s act2_last
-            float(r),  # 2 r rad/s act3_last
-            float(theta_v),  # 3
-            float(psi_v),  # 4
-            float(alpha_air),  # 5 rad
-            float(beta_air)  # 6 rad
+            float(ego.p),  # 0 p rad/s act1_last
+            float(ego.q),  # 1 q rad/s act2_last
+            float(ego.r),  # 2 r rad/s act3_last
+            float(ego.theta_v),  # 3
+            float(ego.psi_v),  # 4
+            float(ego.alpha_air),  # 5 rad
+            float(ego.beta_air)  # 6 rad
         ])
 
         #------------------------
