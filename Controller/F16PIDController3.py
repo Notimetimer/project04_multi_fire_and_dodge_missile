@@ -21,7 +21,6 @@ import numpy as np
 # from simple_pid import PID
 from numpy.linalg import norm
 
-# fixme 带转弯时高度控制超调量比没有积分项时大了太多
 
 class PositionPID(object):
     """位置式PID算法实现"""
@@ -67,36 +66,38 @@ class PositionPID(object):
         self._integral = 0
 
 
-def active_rotation(vector, heading, theta, gamma):
-    # vector是行向量，根据psi，theta，gamma的顺序旋转坐标系，最后输出行向量
+def active_rotation(vector,heading,theta,gamma):
+    # 飞机的轴在外界看来是怎样的， 前上右在北天东看来朝向哪个方向
+    # vector是行向量，旋转顺序仍然是 psi, theta, gamma，但是计算顺序相反
+    # 主动旋转，-在1下
     # 注意：北天东坐标
     psi = - heading
-    R1 = np.array([
+    Rpsi=np.array([
         [cos(psi), 0, sin(psi)],
         [0, 1, 0],
         [-sin(psi), 0, cos(psi)]
-    ])
-    R2 = np.array([
+        ])
+    Rtheta=np.array([
         [cos(theta), -sin(theta), 0],
         [sin(theta), cos(theta), 0],
         [0, 0, 1]
-    ])
-    R3 = np.array([
+        ])
+    Rgamma=np.array([
         [1, 0, 0],
         [0, cos(gamma), -sin(gamma)],
         [0, sin(gamma), cos(gamma)]
-    ])
-    return vector @ R1.T @ R2.T @ R3.T
+        ])
+    return vector@Rgamma.T@Rtheta.T@Rpsi.T
 
 
-def sub_of_radian(input1, input2):
+def sub_of_radian(input1, input2=0):
     # 计算两个弧度的差值，范围为[-pi, pi]
     diff = input1 - input2
     diff = (diff + pi) % (2 * pi) - pi
     return diff
 
 
-def sub_of_degree(input1, input2):
+def sub_of_degree(input1, input2=0):
     # 计算两个角度的差值，范围为[-180, 180]
     diff = input1 - input2
     diff = (diff + 180) % 360 - 180
@@ -116,7 +117,6 @@ class F16PIDController:
 
         # 调参
         self.yaw_pid = None
-        self.k_roll_filter = 0.1
         self.e_pid = PositionPID(max=1, min=-1, p=16 / pi, i=0 / pi, d=0 / pi)  # 16, 0.3, 8
         self.r_pid = None
         self.t_pid = PositionPID(max=1, min=-1, p=1, i=0.3, d=0.2)
@@ -124,29 +124,22 @@ class F16PIDController:
         # self.t_pid.output_limits = (-1, 1)
         self.pids = [self.yaw_pid, self.e_pid, self.r_pid, self.t_pid]
 
-        self.height_pid = PositionPID(max=1, min=-1, p=1, i=0.01, d=2)
-        self.delta_x_angle = 0
-
+        self.type = None
     def flight_output(self, state_input, dt=0.02):
         target_height_devided = state_input[0]
-        climb_rad = state_input[11]
         current_height_devided = state_input[13]
         v = state_input[4]
-        gamma_rad = state_input[11]
+        gamma_rad = state_input[11]       
 
         error_h = np.clip(target_height_devided - current_height_devided, -1, 1)
 
         if error_h >= 0:
             kh = pi / 3
-        if error_h < 0:
-            kh = pi / 2 - 1e-2
+        else:
+            kh = pi / 2 # + pi/8
 
-        # target_theta = error_h * kh
-        if abs(climb_rad * 180 / pi) > 2:  #
-            self.height_pid.clear_integral()
-        if abs(error_h)*5000 > 400:  # 高度差太大不累计积分项
-            self.height_pid.clear_integral()
-        target_theta = self.height_pid.calculate(error_h, dt=dt) * kh
+        target_theta = error_h * kh
+        # print('target_theta',target_theta*180/pi)
 
         temp = state_input
         temp[0] = target_theta
@@ -189,6 +182,9 @@ class F16PIDController:
         climb_rad = state_input[11]
         delta_course_rad = state_input[12]
 
+        # abs_target_heading = state_input[14]
+        # abs_psi = state_input[15]
+
         # 油门控制
         # t_pid.setpoint = v_req
         # throttle = 0.5 + 0.5 * t_pid(v, dt)
@@ -200,8 +196,8 @@ class F16PIDController:
         # rudder=0 # abaaba
         rudder = -beta_air / (5 * pi / 180)
 
-        # 升降舵控制
-        L_ = 1 * np.array(
+        
+        L0_ = 1 * np.array(
             [np.cos(theta_req) * np.cos(delta_heading_req), np.sin(theta_req),
              np.cos(theta_req) * np.sin(delta_heading_req)])
         v_ = 1 * np.array(
@@ -209,73 +205,46 @@ class F16PIDController:
              np.cos(climb_rad) * np.sin(delta_course_rad)])
         x_b_ = 1 * np.array(
             [np.cos(theta) * np.cos(0), np.sin(theta), np.cos(theta) * np.sin(0)])
-
-        # 将期望航向投影到体轴xy平面上，后根据与体轴x夹角设定升降舵量的大小
         y_b_ = active_rotation(np.array([0, 1, 0]), 0, theta, phi)
         z_b_ = active_rotation(np.array([0, 0, 1]), 0, theta, phi)
-        L_xy_b_ = L_ - np.dot(L_, z_b_) * z_b_ / norm(z_b_)
-        x_b_2L_xy_b_ = np.cross(x_b_, L_xy_b_) / norm(L_xy_b_)
-        x_b_2L_xy_b_sin = np.dot(x_b_2L_xy_b_, z_b_)
-        x_b_2L_xy_b_cos = np.dot(x_b_, L_xy_b_) / norm(L_xy_b_)
-        delta_z_angle = np.arctan2(x_b_2L_xy_b_sin, x_b_2L_xy_b_cos)
 
+        L1_ = 0.9*x_b_ + L0_
+        L_ = L1_/norm(L1_+1e-5)
+
+        # 升降舵控制
+        tmp_ = np.cross(L_, x_b_)
+        ez = np.clip(2 * np.dot(tmp_, z_b_), -1, 1)
         # 重写的位置式pid
-        elevetor = -e_pid.calculate(delta_z_angle, dt=dt)
+        elevetor = e_pid.calculate(pi * ez, dt=dt)
         elevetor = np.clip(elevetor, -1, 1)
 
-        # 副翼战术机动控制
-        # combat flight
-        L_yz_b_ = L_ - np.dot(L_, x_b_) * x_b_ / norm(x_b_)
-        y_b_2L_yz_b_ = np.cross(y_b_, L_yz_b_) / norm(L_yz_b_)
-        y_b_2L_yz_b_sin = np.dot(y_b_2L_yz_b_, x_b_)
-        y_b_2L_yz_b_cos = np.dot(y_b_, L_yz_b_) / norm(L_yz_b_)
-        delta_x_angle = np.arctan2(y_b_2L_yz_b_sin, y_b_2L_yz_b_cos)
+        # # 特例：大坡度时不允许推杆
+        # if abs(phi) * 180 / pi > 50: # and v / 300 > 1:
+        #     elevetor = np.clip(elevetor, -1, 0)
 
-        # delta_x_angle 滤波
-        delta_x_angle = (1-self.k_roll_filter)*delta_x_angle + self.k_roll_filter*self.delta_x_angle
-        self.delta_x_angle = delta_x_angle
-
-        # 特例：压机头能够得着的，就不翻转机身
-        if abs(delta_x_angle) > 5 / 6 * pi and -pi / 6 < delta_z_angle < 0 and abs(theta) < 80 * pi / 180:
-            delta_x_angle = sub_of_radian(delta_x_angle + pi, 0)
-            # print('push')
-        # else:
-        # print('pull')
-
-        # 通用
-        roll_error = delta_x_angle
-        aileron = roll_error / pi * 3 - p / pi * 1
-        # aileron = roll_error/pi*3 - p/pi * 2
-
-        # 特例：高速俯冲时减弱副翼舵量
-        if theta * 180 / pi < -70 and v / 340 > 1:
-            print('delta_x_angle', delta_x_angle * 180 / pi)
-            aileron = (roll_error / pi * 6 - p / pi * 8) / 4
-            if 0.9 < abs(delta_x_angle / (pi / 2)) < 1.1:
-                elevetor = 0
-
-        # steady filght
-        # 副翼平稳飞行控制：delta_z_angle**2+delta_x_angle**2足够小时副翼由phi比例控制
+        # # 副翼机动控制
+        # 战术部分
+        tmp_ = np.cross(L_, y_b_)
+        # 平稳部分
         steady_switch_angle = 15  # 20 15 30
+        k_steady_yaw = 3 / steady_switch_angle
+        phi_req = np.clip(delta_heading_req * 180 / pi * k_steady_yaw, -1, 1) * (pi / 3)
+        phi_error = phi - phi_req
 
-        self.check_switch1 = acos(np.dot(L_, v_) / norm(L_) / norm(v_)) * 180 / pi
-        self.check_switch2 = abs(theta_req)*180/pi
-
-        if acos(np.dot(L_, v_) / norm(L_) / norm(v_)) * 180 / pi < steady_switch_angle and \
-                abs(theta_req) < 60 * pi / 180:
-            k_steady_yaw = 3 / steady_switch_angle
-            phi_req = np.clip(delta_heading_req * 180 / pi * k_steady_yaw, -1, 1) * (pi / 3)
-            roll_error = phi_req - phi
-            # aileron = (roll_error/pi*6 -p/pi*4)/3
-            aileron = (roll_error / pi * 6 - p / pi * 3) / 2
-
+        if acos(np.dot(L0_, v_) / (norm(L0_)*norm(v_)+1e-8)) * 180 / pi < steady_switch_angle:
+            w_steady = 0.7
             self.type = 0  # steady
         else:
+            w_steady = 0.1
             self.type = 1  # fast
+        
+        ex = - np.clip((1-w_steady) * 2 * np.dot(tmp_, x_b_) + w_steady * phi_error/pi, -1, 1)
+        
+        roll_error = pi* np.clip(ex, -1, 1)
 
-        # print(self.check_switch1)
-        # print(self.check_switch2)
-        # input("Press any key to continue...")
+        # 通用
+        # roll_error = delta_x_angle
+        aileron = roll_error / pi * 3 - p / pi * 1 # 1
         
         # if alpha_air*180/pi<-5:
         #     print('?')
@@ -296,7 +265,7 @@ if __name__ == '__main__':
         print('please prepare tacview')
         # sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from Visualize.tacview_visualize import Tacview
-
+        # from Math_calculates.CartesianOnEarth import NUE2LLH, LLH2NUE
         tacview = Tacview()
 
     # 记录轨迹和状态数据
@@ -331,15 +300,15 @@ if __name__ == '__main__':
     # 连续输出并tacview中可视化
     start_time = time.time()
     # target_theta = 1 # 测试姿态控制
-    target_height = 7000  # m # 测试飞行控制器 7000
-    target_heading = 180  # 度 to rad 120
-    target_speed = 300  # m/s
+    target_height = 4e3 # 1e3  # m # 测试飞行控制器
+    target_heading = 0 # 270  # 度 to rad
+    target_speed = 340 * 1.13  # m/s
     t_last = 60 * 5
 
     # 设置初始状态（单位：英尺、节、角度）
-    sim["ic/h-sl-ft"] = 8000 * 3.2808  # 高度：m -> ft
-    sim["ic/vt-kts"] = 300 * 1.9438  # 空速： m/s-> 节
-    sim["ic/psi-true-deg"] = 0  # 航向角: °
+    sim["ic/h-sl-ft"] = 4e3 * 3.2808  # 高度：m -> ft
+    sim["ic/vt-kts"] = 340 * 1.13 * 1.9438  # 空速： m/s-> 节
+    sim["ic/psi-true-deg"] = 90  # 航向角: °
     sim["ic/phi-deg"] = 0
     sim["ic/theta-deg"] = 0
     sim["ic/alpha-deg"] = 0
@@ -371,22 +340,24 @@ if __name__ == '__main__':
         sim["propulsion/tank[0]/contents-lbs"] = 5000.0  # 设置0号油箱油量
         sim["propulsion/tank[1]/contents-lbs"] = 5000.0  # 设置1号油箱油量（如果有）
 
-        # # ### 逗猫
-        # if current_t < 15:
-        #     target_height = 5000  # m
-        #     target_heading = 90  # 度 to rad
-        #     target_speed = 300
-        # elif current_t < 1 * 60:
-        #     target_height = 10000  # m
-        #     target_heading = -120  # 度 to rad
-        # elif current_t < 1 * 60 + 27:
-        #     target_height = 7000  # m
-        #     target_heading = 0  # 度 to rad
-        # elif current_t < 2 * 60 + 10:
-        #     target_height = 8000  # m
-        #     target_heading = sub_of_degree(sim["attitude/psi-deg"], 60)  # 度 to rad
-        # else:
-        #     target_heading = sub_of_degree(sim["attitude/psi-deg"], -10)
+        # target_heading = np.random.rand()*10
+
+        # 逗猫
+        if current_t < 15:
+            target_height = 5000  # m
+            target_heading = 90  # 度 to rad
+            target_speed = 300
+        elif current_t < 1 * 60:
+            target_height = 10000  # m
+            target_heading = -120  # 度 to rad
+        elif current_t < 1 * 60 + 27:
+            target_height = 7000  # m
+            target_heading = 0  # 度 to rad
+        elif current_t < 3 * 60 + 10:
+            target_height = 8000  # m
+            target_heading = sub_of_degree(sim["attitude/psi-deg"], 60)  # 度 to rad
+        else:
+            target_heading = sub_of_degree(sim["attitude/psi-deg"], -10)
 
         sim.run()
         current_time = step * dt
@@ -436,8 +407,10 @@ if __name__ == '__main__':
         obs_jsbsim[9] = q
         obs_jsbsim[10] = r
         obs_jsbsim[11] = gamma_angle * pi / 180  # 爬升角
-        obs_jsbsim[12] = sub_of_degree(target_heading, course_angle) * pi / 180  # 航迹角
+        obs_jsbsim[12] = sub_of_degree(target_heading, course_angle) * pi / 180  # 相对航迹角
         obs_jsbsim[13] = sim["position/h-sl-ft"] * 0.3048 / 5000  # 高度/5000（英尺转米）
+        # obs_jsbsim[14] = target_heading * pi / 180  # test
+        # obs_jsbsim[15] = psi * pi / 180  # test
 
         # 输出姿态控制指令
         # norm_act = f16PIDController.att_output(obs_jsbsim, dt=dt) # 测试姿态控制器
@@ -489,9 +462,17 @@ if __name__ == '__main__':
             send_t = f"{current_time:.2f}"
             name_R = '001'
             loc_r = [float(lon), float(lat), float(alt)]
-            # data_to_send = f"#{send_t:.2f}\n{name_R},T={loc_r[0]:.6f}|{loc_r[1]:.6f}|{loc_r[2]:.6f},Name=F16,Color=Red\n"
+            # 画飞机
             data_to_send = "#%.2f\n%s,T=%.6f|%.6f|%.6f|%.6f|%.6f|%.6f,Name=F16,Color=Red\n" % (
                 float(send_t), name_R, loc_r[0], loc_r[1], loc_r[2], phi, theta, psi)
+
+            # # 画绣球
+            # data_to_send += (
+            #                 # f"#{send_t:.2f}\n"
+            #                 f"{'002'},T={(lon_T):.6f}|{(lat_T):.6f}|{delta_H:.6f},"
+            #                 f"Name=Target,Color=Orange\n"
+            #             )
+
             tacview.send_data_to_client(data_to_send)
             # time.sleep(0.001)
 

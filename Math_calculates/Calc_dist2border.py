@@ -19,13 +19,38 @@ from numpy.linalg import norm
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from Math_calculates.sub_of_angles import *
+from Math_calculates.PolygonCalculations import *
 
-def sub_of_radian(input1, input2):
-    # 弧度减法
-    # 计算两个弧度的差值，范围为[-pi, pi]
-    diff = input1 - input2
-    diff = (diff + np.pi) % (2 * np.pi) - np.pi
-    return diff
+# def sub_of_radian(input1, input2=0):
+#     # 弧度减法
+#     # 计算两个弧度的差值，范围为[-pi, pi]
+#     diff = input1 - input2
+#     diff = (diff + np.pi) % (2 * np.pi) - np.pi
+#     return diff
+
+def calc_intern_dist2circle(R, pos_, psi):
+    pos_on_floor_ = np.array([pos_[0], 0, pos_[2]])
+    rho = norm(pos_on_floor_)
+    eta = atan2(pos_[2], pos_[0])
+    
+    # 计算水平距离
+    if rho<R:
+        dh_list = rho*cos(pi+eta-psi) + sqrt(R**2-rho**2*sin(pi+eta-psi)**2)
+        dh = dh_list
+    else:
+        dh = 0
+
+    # 边界在飞机的左边还是右边
+    left_or_right = np.sign(sub_of_radian(eta, psi)) # -1 左边，0 中间，1 右边
+    
+    return dh, left_or_right
+
+def calc_intern_dist2polygon(vertices, pos_, psi):
+    pos2d_ = np.array([pos_[0], pos_[2]])
+    velocity_h_ = np.array([cos(psi), sin(psi)])
+    d_vec, side = calc_dist2polygon_border(vertices, test_pt=pos2d_, velocity=velocity_h_)
+    return norm(d_vec), side
+    
 
 def calc_intern_dist2cylinder(R, pos_, psi, theta):
     """
@@ -43,17 +68,7 @@ def calc_intern_dist2cylinder(R, pos_, psi, theta):
     dh: float, 飞机到边界的水平距离
     pos_: ndarray, 飞机位置坐标 [北、天、东]
     """
-    # 计算飞机位置
-    pos_on_floor_ = np.array([pos_[0], 0, pos_[2]])
-    rho = norm(pos_on_floor_)
-    eta = atan2(pos_[2], pos_[0])
-    
-    # 计算水平距离
-    if rho<R:
-        dh_list = rho*cos(pi+eta-psi) + sqrt(R**2-rho**2*sin(pi+eta-psi)**2)
-        dh = dh_list
-    else:
-        dh = 0
+    dh, left_or_right = calc_intern_dist2circle(R, pos_, psi)
     
     # 计算斜距离
     d = dh/(cos(theta)+1e-5)
@@ -70,7 +85,7 @@ if __name__ == '__main__':
     
     # 参数设置
     R = 50
-    rho = 30
+    rho = 80
     eta = 150 * pi/180
     psi = 180 * pi/180
     theta = 89 * pi/180
@@ -78,6 +93,7 @@ if __name__ == '__main__':
     pos_ = np.array([rho*cos(eta), 0, rho*sin(eta)])
 
     # 计算距离
+    d_hor, left_or_right = calc_intern_dist2circle(R,pos_,psi)
     d, dh, left_or_right = calc_intern_dist2cylinder(R, pos_, psi, theta)
     
     # 可视化

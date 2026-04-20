@@ -90,14 +90,14 @@ def active_rotation(vector,heading,theta,gamma):
     return vector@Rgamma.T@Rtheta.T@Rpsi.T
 
 
-def sub_of_radian(input1, input2):
+def sub_of_radian(input1, input2=0):
     # 计算两个弧度的差值，范围为[-pi, pi]
     diff = input1 - input2
     diff = (diff + pi) % (2 * pi) - pi
     return diff
 
 
-def sub_of_degree(input1, input2):
+def sub_of_degree(input1, input2=0):
     # 计算两个角度的差值，范围为[-180, 180]
     diff = input1 - input2
     diff = (diff + 180) % 360 - 180

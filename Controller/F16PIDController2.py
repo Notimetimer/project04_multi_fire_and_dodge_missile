@@ -90,14 +90,14 @@ def active_rotation(vector,heading,theta,gamma):
     return vector@Rgamma.T@Rtheta.T@Rpsi.T
 
 
-def sub_of_radian(input1, input2):
+def sub_of_radian(input1, input2=0):
     # 计算两个弧度的差值，范围为[-pi, pi]
     diff = input1 - input2
     diff = (diff + pi) % (2 * pi) - pi
     return diff
 
 
-def sub_of_degree(input1, input2):
+def sub_of_degree(input1, input2=0):
     # 计算两个角度的差值，范围为[-180, 180]
     diff = input1 - input2
     diff = (diff + 180) % 360 - 180
@@ -210,10 +210,10 @@ class F16PIDController:
         # 体轴系的两个基当做向量转到“转过一个航向角的惯性系”
         y_b_ = active_rotation(np.array([0, 1, 0]), 0, theta, phi)
         z_b_ = active_rotation(np.array([0, 0, 1]), 0, theta, phi)
-        L_xy_b_ = L_ - np.dot(L_, z_b_) * z_b_ / norm(z_b_)
-        x_b_2L_xy_b_ = np.cross(x_b_, L_xy_b_) / norm(L_xy_b_)
+        L_xy_b_ = L_ - np.dot(L_, z_b_) * z_b_ / (norm(z_b_)+1e-8)
+        x_b_2L_xy_b_ = np.cross(x_b_, L_xy_b_) / (norm(L_xy_b_)+1e-8)
         x_b_2L_xy_b_sin = np.dot(x_b_2L_xy_b_, z_b_)
-        x_b_2L_xy_b_cos = np.dot(x_b_, L_xy_b_) / norm(L_xy_b_)
+        x_b_2L_xy_b_cos = np.dot(x_b_, L_xy_b_) / (norm(L_xy_b_)+1e-8)
         delta_z_angle = np.arctan2(x_b_2L_xy_b_sin, x_b_2L_xy_b_cos)
 
         # 重写的位置式pid
@@ -226,10 +226,10 @@ class F16PIDController:
 
         # 副翼战术机动控制
         # combat flight
-        L_yz_b_ = L_ - np.dot(L_, x_b_) * x_b_ / norm(x_b_)
-        y_b_2L_yz_b_ = np.cross(y_b_, L_yz_b_) / norm(L_yz_b_)
+        L_yz_b_ = L_ - np.dot(L_, x_b_) * x_b_ / (norm(x_b_)+1e-8)
+        y_b_2L_yz_b_ = np.cross(y_b_, L_yz_b_) / (norm(L_yz_b_)+1e-8)
         y_b_2L_yz_b_sin = np.dot(y_b_2L_yz_b_, x_b_)
-        y_b_2L_yz_b_cos = np.dot(y_b_, L_yz_b_) / norm(L_yz_b_)
+        y_b_2L_yz_b_cos = np.dot(y_b_, L_yz_b_) / (norm(L_yz_b_)+1e-8)
         delta_x_angle = np.arctan2(y_b_2L_yz_b_sin, y_b_2L_yz_b_cos)
 
         # 特例：压机头能够得着的，就不翻转机身
@@ -256,10 +256,10 @@ class F16PIDController:
         # 副翼平稳飞行控制：delta_z_angle**2+delta_x_angle**2足够小时副翼由phi比例控制
         steady_switch_angle = 15  # 20 15 30
 
-        self.check_switch1 = acos(np.dot(L_, v_) / norm(L_) / norm(v_)) * 180 / pi
+        self.check_switch1 = acos(np.dot(L_, v_) / (norm(L_) * norm(v_) + 1e-8)) * 180 / pi
         self.check_switch2 = abs(theta_req)*180/pi
 
-        if acos(np.dot(L_, v_) / norm(L_) / norm(v_)) * 180 / pi < steady_switch_angle and \
+        if acos(np.dot(L_, v_) / (norm(L_)*norm(v_)+1e-8)) * 180 / pi < steady_switch_angle and \
                 abs(theta_req) < 60 * pi / 180:
             k_steady_yaw = 3 / steady_switch_angle
             phi_req = np.clip(delta_heading_req * 180 / pi * k_steady_yaw, -1, 1) * (pi / 3)
@@ -294,7 +294,7 @@ if __name__ == '__main__':
         print('please prepare tacview')
         # sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from Visualize.tacview_visualize import Tacview
-
+        # from Math_calculates.CartesianOnEarth import NUE2LLH, LLH2NUE
         tacview = Tacview()
 
     # 记录轨迹和状态数据
@@ -371,7 +371,7 @@ if __name__ == '__main__':
 
         # target_heading = np.random.rand()*10
 
-        # # ### 逗猫
+        # 逗猫
         # if current_t < 15:
         #     target_height = 5000  # m
         #     target_heading = 90  # 度 to rad
@@ -491,9 +491,17 @@ if __name__ == '__main__':
             send_t = f"{current_time:.2f}"
             name_R = '001'
             loc_r = [float(lon), float(lat), float(alt)]
-            # data_to_send = f"#{send_t:.2f}\n{name_R},T={loc_r[0]:.6f}|{loc_r[1]:.6f}|{loc_r[2]:.6f},Name=F16,Color=Red\n"
+            # 画飞机
             data_to_send = "#%.2f\n%s,T=%.6f|%.6f|%.6f|%.6f|%.6f|%.6f,Name=F16,Color=Red\n" % (
                 float(send_t), name_R, loc_r[0], loc_r[1], loc_r[2], phi, theta, psi)
+
+            # # 画绣球
+            # data_to_send += (
+            #                 # f"#{send_t:.2f}\n"
+            #                 f"{'002'},T={(lon_T):.6f}|{(lat_T):.6f}|{delta_H:.6f},"
+            #                 f"Name=Target,Color=Orange\n"
+            #             )
+
             tacview.send_data_to_client(data_to_send)
             # time.sleep(0.001)
 
