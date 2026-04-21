@@ -402,21 +402,12 @@ class UAVModel(object):
         # 创建新导弹
         # new_missile = missile_class(self.pos_, self.vel_, current_time)
         new_missile = missile_class(self.pos_, self.vel_, target.pos_, target.vel_, current_time)  # test
-        if self.blue:  # target.red:
-            new_missile.side = 'b'
-            new_missile.id = 301 + self.missile_count
-        if self.red:  # target.blue:
-            new_missile.side = 'r'
-            new_missile.id = 101 + self.missile_count
-        # 根据距离调整导弹参数
-        distance = np.linalg.norm(target.pos_ - self.pos_)
-        new_missile.max_g = 40  # 最大过载
-        new_missile.sight_angle_max = pi / 2  # 导引头视角
+        # id号改为由env统一分配，uav不分配
         new_missile.launcher_id = self.id  # 发射机id
         new_missile.target_id = target.id  # 目标机id
         # print('导弹已发射')
         # print('发射时间', current_time)
-        self.missile_count += 1
+        self.missile_count += 1 # 每架飞机自己的发射数累计可以保留
         self.missile_launch_time.append(current_time)
         # print(self.side, '已发射', self.missile_count)
         self.last_launch_time = current_time

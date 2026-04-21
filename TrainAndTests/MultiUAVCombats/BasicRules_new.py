@@ -9,7 +9,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.append(project_root)
 
 
-from Envs.battle6dof1v1_missile260228 import launch_missile_if_possible
+from Envs.BattleHomogeneous260421 import launch_missile_if_possible
 from Envs.Tasks.ChooseStrategyEnv2_2 import * # 三元组奖励
 from Math_calculates.sub_of_angles import *
 import re
@@ -335,7 +335,7 @@ if __name__=='__main__':
                 r_actions = [env.maneuver14LR(u, lbl) if u and not getattr(u, 'dead', False) else np.array([getattr(u, 'alt', 0), 0, 300]) for u, lbl in zip(red_uavs, r_action_labels)]
                 b_actions = [env.maneuver14LR(u, lbl) if u and not getattr(u, 'dead', False) else np.array([getattr(u, 'alt', 0), 0, 300]) for u, lbl in zip(blue_uavs, b_action_labels)]
 
-                if hasattr(env, 'MvMBattle') or 'MvMBattle' in [b.__name__ for b in env.__class__.__mro__]:
+                if hasattr(env, 'Battle') or 'Battle' in [b.__name__ for b in env.__class__.__mro__]:
                     env.step(r_actions + b_actions)
                 else:
                     env.step(r_actions[0], b_actions[0])

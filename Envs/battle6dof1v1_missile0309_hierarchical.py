@@ -885,65 +885,6 @@ class Battle(object):
 
         return s
 
-    def scale_state2(self, state_input):
-        # 使用 deepcopy 避免修改传入对象
-        s = copy.deepcopy(state_input)
-        s["target_information"][3] /= 10e3
-        s["target_information"][5] /= 340
-        s["ego_main"][0] /= 340
-        s["ego_main"][1] /= 5e3
-        
-        # ammo scaling: 0->0, 1->1, 6->1.5
-        ammo = s["ego_main"][6]
-        if ammo <= 0:
-            s["ego_main"][6] = 0
-        else:
-            s["ego_main"][6] = 0.9 + 0.1 * ammo
-
-        s["ego_control"][0] /= (2 * pi)  # (2 * pi) 5000
-        s["ego_control"][1] /= (2 * pi)  # (2 * pi) pi
-        s["ego_control"][2] /= (2 * pi)  # (2 * pi) 340
-        s["weapon"] /= 120
-        s["threat"][3] /= 10e3
-        s["border"][0] = min(1, s["border"][0] / 50e3)
-        s["border"][1] = s["border"][1] # if s["border"][0] < 1 else 0  # 仅在测试时屏蔽if后半句
-        return s
-
-    def unscale_state2(self, obs_input):
-        """把 scale_state2 的缩放还原。仅判断 key 是否存在（不再检查长度）。"""
-        s = copy.deepcopy(obs_input)
-
-        if "target_information" in s and s["target_information"] is not None:
-            s["target_information"][3] = s["target_information"][3] * 10e3
-            s["target_information"][5] = s["target_information"][5] * 340
-
-        if "ego_main" in s and s["ego_main"] is not None:
-            s["ego_main"][0] = s["ego_main"][0] * 340
-            s["ego_main"][1] = s["ego_main"][1] * 5e3
-            
-            # ammo unscaling
-            val = s["ego_main"][6]
-            if val <= 0.01:
-                s["ego_main"][6] = 0
-            else:
-                s["ego_main"][6] = (val - 0.9) * 10
-
-        if "ego_control" in s and s["ego_control"] is not None:
-            s["ego_control"][0] = s["ego_control"][0] * (2 * pi)
-            s["ego_control"][1] = s["ego_control"][1] * (2 * pi)
-            s["ego_control"][2] = s["ego_control"][2] * (2 * pi)
-
-        if "weapon" in s and s["weapon"] is not None:
-            s["weapon"] = s["weapon"] * 120
-
-        if "threat" in s and s["threat"] is not None:
-            s["threat"][3] = s["threat"][3] * 10e3
-
-        if "border" in s and s["border"] is not None:
-            s["border"][0] = s["border"][0] * 50e3
-
-        return s
-        
     def base_obs(self, side, pomdp=0, reward_fn=0):  # 默认为完全可观测，设置pomdp后为部分可观测
         # 处理部分可观测、默认值问题、并尺度缩放
         # 输出保持字典的形式

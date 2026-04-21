@@ -60,10 +60,8 @@ def sigmoid(x):
     return 1 / (1 + exp(-x))
 
 
-class MvMBattle(object):
+class Battle(object):
     def __init__(self, args, tacview_show=0):
-        # super(Battle, self).__init__() 
-        # self.p2p_control = False
         self.horizontal_center = horizontal_center
         # 加载训练好的模型
         import torch
@@ -89,30 +87,17 @@ class MvMBattle(object):
         self.alive_b_missiles = None
         self.alive_r_missiles = None
         self.alive_missiles = None
-        self.BUAV = None
-        self.RUAV = None
         self.dt_maneuver = dt_maneuver
         self.dt_move = dt_move
         self.UAV_ids = None
-        self.UAV_hit = None
-        self.Bmissiles = None
-        self.Rmissiles = None
-        self.missiles = None
+        self.UAV_shot = None
         self.args = args
-        self.RUAVs = None
-        self.BUAVs = None
-        self.UAVs = None
         self.RUAVsTable = None
         self.BUAVsTable = None
         self.UAVsTable = None
-        # self.RmissilesTable = None
-        # self.BmissilesTable = None
-        # self.missilesTable = None
         self.t = None
         self.game_time_limit = self.args.max_episode_len  # None
         self.running = None
-        self.action_space = []
-        # self.reset()  # 重置位置和状态
         self.win = None
         self.lose = None
         self.draw = None
@@ -141,12 +126,40 @@ class MvMBattle(object):
             self.tacview.handshake()
             self.visualize_cage()
             
-    def set_ego_side(self, side='b'):
-        self.ego_side = side
-        
+    
+    # 动态属性，把函数伪装成属性，self.RUAVs会调用函数返回dict的value列表
+    # 警告：如果同名的属性被注册，property会失效
+    @property
+    def RUAVs(self):
+        return list(self.RUAVsTable.values())
+
+    @property
+    def BUAVs(self):
+        return list(self.BUAVsTable.values())
+
+    @property
+    def UAVs(self):
+        # Python 3.9+ 支持字典合并: list({**self.RUAVsTable, **self.BUAVsTable}.values())
+        # self.RUAVs + self.BUAVs
+        return list(self.UAVsTable.values())
+
+    @property
+    def Rmissiles(self):
+        return list(self.RMissileTable.values())
+
+    @property
+    def Bmissiles(self):
+        return list(self.BMissileTable.values())
+
+    @property
+    def missiles(self):
+        return self.Rmissiles + self.Bmissiles
+
+
     def reset(self, red_birth_state=None, blue_birth_state=None, red_init_ammo=6, blue_init_ammo=6, seed=None, options=None, ego_side='b'):  # 重置位置和状态
         self.horizontal_center = horizontal_center
-        self.set_ego_side(ego_side)
+
+        self.ego_side = ego_side
         # debug
         self.r_can_guide = 0
         self.b_can_guide = 0
@@ -163,27 +176,17 @@ class MvMBattle(object):
 
         self.BLUE_BIRTH_STATE = blue_birth_state
         self.RED_BIRTH_STATE = red_birth_state
-
-        self.Rmissiles = []
-        self.Bmissiles = []
-        self.missiles = []
-        self.alive_r_missiles = []
-        self.alive_b_missiles = []
-        self.alive_missiles = []
         self.dt_maneuver = dt_maneuver  # simulation interval，1 second
         self.t = 0
-        # self.game_time_limit = self.args.max_episode_len
         # 初始化无人机
-        self.RUAVs = []
-        self.BUAVs = []
         self.Rnum = 2 # test
         self.Bnum = 2
         self.RUAVsTable = {}
         self.BUAVsTable = {}
         self.UAVsTable = {}
-        # self.RmissilesTable = {}
-        # self.BmissilesTable = {}
-        # self.missilesTable = {}
+        self.alive_r_missiles = []
+        self.alive_b_missiles = []
+        self.alive_missiles = []
         self.win = 0
         self.lose = 0
         self.draw = 0
@@ -236,25 +239,84 @@ class MvMBattle(object):
                       theta0=UAV.theta, o00=o00)
             UAV.got_hit = False
             UAV.radar_on = 1
+            UAV.radar_center = np.array([0, 0]) # 雷达中心相对方位的归一化值，先水平后垂直
             UAV.escape_once = 0
             
             if is_red:
-                self.RUAVs.append(UAV)
-                self.RUAVsTable[UAV.id] = {'entity': UAV, 'side': UAV.side, 'dead': UAV.dead}
+                self.RUAVsTable[UAV.id] = UAV
             else:
-                self.BUAVs.append(UAV)
-                self.BUAVsTable[UAV.id] = {'entity': UAV, 'side': UAV.side, 'dead': UAV.dead}
+                self.BUAVsTable[UAV.id] = UAV
                 
             UAV.lock_on = 0
         self.running = True
-        self.UAVs = self.RUAVs + self.BUAVs
         self.UAVsTable = {**self.RUAVsTable, **self.BUAVsTable}
         self.UAV_ids = [UAV.id for UAV in self.UAVs]
-        self.UAV_hit = [False for _ in range(len(self.UAVs))]
+        self.UAV_shot = [False for _ in range(len(self.UAVs))]
         self.r_missile_count = 0  # 红方累计发射导弹数
         self.b_missile_count = 0  # 蓝方累计发射导弹数
         self.RUAV_ids = [UAV.id for UAV in self.RUAVs]
         self.BUAV_ids = [UAV.id for UAV in self.BUAVs]
+        self.RMissileTable = {}
+        self.BMissileTable = {}
+        self.MissileTable = {}
+        
+    def update_missile_state(self):
+        alive_r_missiles = [m for m in self.Rmissiles if not m.dead]
+        alive_b_missiles = [m for m in self.Bmissiles if not m.dead]
+        self.alive_r_missiles = alive_r_missiles
+        self.alive_b_missiles = alive_b_missiles
+        self.alive_missiles = alive_r_missiles + alive_b_missiles
+
+    def update_uav_state(self):
+        alive_r_uavs = [u for u in self.RUAVs if not u.dead]
+        alive_b_uavs = [u for u in self.BUAVs if not u.dead]
+        self.alive_r_uavs = alive_r_uavs
+        self.alive_b_uavs = alive_b_uavs
+        self.alive_uavs = alive_r_uavs + alive_b_uavs
+        
+    # 根据id查找实体
+    def find_uav_with_id(self, id):
+        uav = self.UAVsTable[id]
+        return uav
+    
+    def find_missile_with_id(self, id):
+        missile = self.MissileTable[id]
+        return missile
+
+    def index2id(self, ego_id, target_index, relation='enm'):
+        """
+        将神经网络视角的 index 转换为环境中的真实实体 id
+        """
+        ego = self.find_uav_with_id(ego_id)
+        
+        if relation == 'enm':
+            # 查敌机：直接取对侧的 id 列表
+            enm_ids = self.BUAV_ids if ego.side == 'r' else self.RUAV_ids
+            if target_index < len(enm_ids):
+                return enm_ids[target_index]
+        elif relation == 'ally':
+            # 查队友：取同侧的 id 列表，并剔除自己
+            ally_ids = self.RUAV_ids if ego.side == 'r' else self.BUAV_ids
+            ally_ids_without_ego = [uid for uid in ally_ids if uid != ego_id]
+            if target_index < len(ally_ids_without_ego):
+                return ally_ids_without_ego[target_index]
+        return None
+
+    def id2index(self, ego_id, target_id, relation='enm'):
+        """
+        将环境中的真实实体 id 转换为神经网络视角的 index
+        """
+        ego = self.find_uav_with_id(ego_id)
+        if relation == 'enm':
+            enm_ids = self.BUAV_ids if ego.side == 'r' else self.RUAV_ids
+            if target_id in enm_ids:
+                return enm_ids.index(target_id)
+        elif relation == 'ally':
+            ally_ids = self.RUAV_ids if ego.side == 'r' else self.BUAV_ids
+            ally_ids_without_ego = [uid for uid in ally_ids if uid != ego_id]
+            if target_id in ally_ids_without_ego:
+                return ally_ids_without_ego.index(target_id)
+        return None
 
 
     def close(self):
@@ -266,17 +328,15 @@ class MvMBattle(object):
                 self.tacview.socket.close()
             except:
                 pass
-        # 清理 UAV 和导弹引用
-        self.UAVs = []
-        self.missiles = []
+        
 
-    def launch_missile(self, source_id, target_id):
+    def launch_1_missile(self, source_id, target_id):
         """
         source_id: 发射导弹的无人机 id
         target_id: 被击中的无人机 id
         """
-        uav = self.UAVsTable[source_id]['entity']
-        target = self.UAVsTable[target_id]['entity'] # 指向目标机的实例
+        uav = self.find_uav_with_id(source_id)
+        target = self.find_uav_with_id(target_id)
         side = uav.side
 
         # 发射导弹
@@ -289,11 +349,19 @@ class MvMBattle(object):
                 self.Rmissiles.append(new_missile)
                 self.r_missile_count += 1
                 new_missile.id = 101 + self.r_missile_count
+                self.RMissileTable[new_missile.id] = new_missile
             else:
                 self.Bmissiles.append(new_missile)
                 self.b_missile_count += 1
                 new_missile.id = 301 + self.b_missile_count
+                self.BMissileTable[new_missile.id] = new_missile
+            
             self.missiles = self.Rmissiles + self.Bmissiles
+            self.MissileTable = {**self.RMissileTable, **self.BMissileTable}
+
+            return new_missile
+        return None
+            
 
     # todo 输入动作打包为大小不确定的量
     def step(self, actions):
@@ -479,7 +547,7 @@ class MvMBattle(object):
             self.update_missile_state() # 先把存活的导弹找出来
             # self.missiles = self.Rmissiles + self.Bmissiles
             for missile in self.alive_missiles[:]:  # 使用切片创建副本以允许删除
-                target = self.get_target_by_id(missile.target_id)
+                target = self.find_uav_with_id(missile.target_id)
                 # todo 干扰或更换目标逻辑 
                 # track_target = f(target, missile, self.UAVs, self.chaffs)
 
@@ -534,7 +602,7 @@ class MvMBattle(object):
                         target.dead = True
                         target.got_hit = True
                         target.radar_on = 0
-                        self.UAV_hit[self.UAV_ids.index(target.id)] = True
+                        self.UAV_shot[self.UAV_ids.index(target.id)] = True
 
                 if missile.dead == True and not hit:
                     target.escape_once = 1
@@ -545,7 +613,7 @@ class MvMBattle(object):
             # 飞机接收毁伤判别信息
             for i, UAV in enumerate(self.UAVs):
                 # 飞机被导弹命中判断
-                if self.UAV_hit[i]:
+                if self.UAV_shot[i]:
                     UAV.dead = True
                     UAV.got_hit = True
                     UAV.radar_on = 0
@@ -570,20 +638,6 @@ class MvMBattle(object):
 
         return 0, 0, 0, 0, 0  # 废弃不再使用了
 
-    def update_missile_state(self):
-        alive_r_missiles = [m for m in self.Rmissiles if not m.dead]
-        alive_b_missiles = [m for m in self.Bmissiles if not m.dead]
-
-        self.alive_r_missiles = alive_r_missiles
-        self.alive_b_missiles = alive_b_missiles
-        self.alive_missiles = alive_r_missiles + alive_b_missiles
-
-    def update_uav_state(self):
-        alive_r_uavs = [u for u in self.RUAVs if not u.dead]
-        alive_b_uavs = [u for u in self.BUAVs if not u.dead]
-        self.alive_r_uavs = alive_r_uavs
-        self.alive_b_uavs = alive_b_uavs
-        self.alive_uavs = alive_r_uavs + alive_b_uavs
 
     # todo 观测信息要考虑到多对多的情况，不再只是两架飞机
     def get_state(self, id):
@@ -607,25 +661,24 @@ class MvMBattle(object):
         # 原先将所有量打包成一个 numpy array，这里改为 dict 结构
         self.key_order = [
             # 我机信息
-            "ego_alive",
-            "ego_main",
-            "ego_control",
-            "ego_ammo",
-            "border",
+            "ego_alive",  # 长度为1
+            "ego_main",  # 固定长度
+            "ego_control",  # 固定长度
+            "ego_ammo",  # 剩余弹量
+            # 雷达信息
+            "Radar_info",  # 雷达开关状态，指向相对方位和俯仰（惯性系下）
+            "border", # 边界信息
             # 队友信息
-            "ally_info",  # [存活、相对方位、相对俯仰角、相对距离、速度、航向角、俯仰角]*数量
+            "ally_infos",  # [存活、雷达开关状态、相对方位、相对俯仰角、相对距离、速度、航向角、俯仰角]*数量
             # 敌机信息
-            "eny_info",  # [存活、可见性、是否能锁定、是否锁定我、相对方位、相对俯仰角、相对距离、速度、hot/cold]*数量
+            "enm_infos",  # [存活、雷达开关状态、可见性、是否能锁定、是否锁定我、相对方位、相对俯仰角、相对距离、速度、hot/cold]*数量
             # 导弹信息（不区分发射机，预留接力制导空间）
-            "weapon_info",  # [剩余命中时间、相对方位、是否可引导]*数量
+            "weapon_infos",  # [飞行时间、相对方位、是否可引导]*数量
             # 告警信息
-            "RWR_info",  # [距离, 相对方位、相对俯仰]*数量
+            "RWR_infos",  # [距离, 相对方位、相对俯仰]*数量
         ]
 
-        state_list = []
-
-
-        ego = self.UAVsTable[id]['entity']
+        ego = self.find_uav_with_id(id)
         ego_side = ego.side
 
         # 先自己、然后队友，最后敌机，队友和敌机内部按照id排序
@@ -633,7 +686,7 @@ class MvMBattle(object):
         ego_alive = not ego.dead  # 自己活着没
 
         # 边界信息
-        d, d_hor, left_or_right = calc_intern_dist2cylinder(self.R_cage, ego.pos_, ego.psi_v, ego.theta_v)
+        d_hor, left_or_right = calc_intern_dist2circle(self.R_cage, ego.pos_, ego.psi_v, ego.theta_v)
 
         #------------------------
         # 1. 己方信息向量（固定结构）
@@ -655,14 +708,20 @@ class MvMBattle(object):
 
         # 剩余导弹量
         ammo = ego.ammo
+        
+        # 死了关雷达
+        if ego.dead: ego.radar_on=0
+        
+        # 雷达信息
+        radar_info = np.array([ego.radar_on, 0, 0]) # 波束中心功能先空置
 
         ego_main = np.array([
             float(v_ego),  # 0本机速度 m/s
             float(h_ego),  # 1本机高度 m
-            float(sin_theta),  # 2
-            float(cos_theta),  # 3
-            float(sin_phi),  # 4
-            float(cos_phi),  # 5
+            float(cos_theta),  # 2
+            float(sin_theta),  # 3
+            float(cos_phi),  # 4
+            float(sin_phi),  # 5
         ])
 
         ego_control = np.array([
@@ -672,7 +731,8 @@ class MvMBattle(object):
             float(ego.theta_v),  # 3
             float(ego.psi_v),  # 4
             float(ego.alpha_air),  # 5 rad
-            float(ego.beta_air)  # 6 rad
+            float(ego.beta_air),  # 6 rad
+            float(ego.Ny),      # 7 overload
         ])
 
         #------------------------
@@ -682,7 +742,7 @@ class MvMBattle(object):
         ego_side_uavs = self.RUAVs if ego_side =='r' else self.BUAVs
         ego_side_uav_ids = self.RUAV_ids if ego_side =='r' else self.BUAV_ids
 
-        ally_info = []
+        ally_infos = []
         # 所有队友:
         # [存活、相对方位、相对俯仰角、相对距离、速度、航向角、俯仰角]*数量
         ally_uavs = [uav for uav in ego_side_uavs if uav is not ego]
@@ -701,28 +761,36 @@ class MvMBattle(object):
             # 相对航向角（队友航向角-我机航向角）
             delta_psi_ally = sub_of_radian(ally.psi, ego.psi)
             # 队友速度
-            v_ally = norm(ally.vel_)
+            v_ally = ally.speed
             # 队友俯仰角
             theta_ally = ally.theta
+            
+            if ally.dead: ally.radar_on = 0
 
-            ally_info = np.array([
-                float(not ally.dead),
-                float(delta_psi),
-                float(delta_theta),
-                float(dist),
-                float(v_ally),
-                float(delta_psi_ally),
-                float(theta_ally),
+            ally_infos = np.array([
+                float(not ally.dead), # 0
+                float(ally.radar_on), # 1
+                float(cos(delta_psi)),  # 2
+                float(sin(delta_psi)),  # 3
+                float(delta_theta),   # 4
+                float(dist),          # 5
+                float(v_ally),        # 6
+                float(delta_psi_ally),# 7
+                float(theta_ally),    # 8
+                # # 惯性系下的位置关系，队友相对位置信息不需要暂不记忆
+                # float(dist), # 9
+                # float(q_beta), # 10
+                # float(q_epsilon), # 11
             ])
 
-            ally_info.append(ally_info)
+            ally_infos.append(ally_infos)
 
         #------------------------
         # 3. 敌机信息:
         # [存活、可见性、是否能锁定、是否锁定我、相对方位、相对俯仰角、相对距离、速度、hot/cold]*数量
         #------------------------
 
-        enm_info = []
+        enm_infos = []
         enm_uavs = self.RUAVs if ego_side =='b' else self.BUAVs
         for enm in enm_uavs:
             # 相对方位角
@@ -741,7 +809,7 @@ class MvMBattle(object):
             ATA = np.arccos(np.dot(L_, ego.point_) / (dist * norm(ego.point_) + 0.00001))
             
             # 目标速度
-            target_speed = norm(enm.speed)
+            enm_speed = norm(enm.speed)
 
             # 水平进入角
             # 目标相对方位角速度 (rad/s) / 0.35 与 目标相对俯仰角速度 (rad/s) / 0.35
@@ -755,35 +823,40 @@ class MvMBattle(object):
             AA_vert = sub_of_radian(theta_vT, q_epsilon)  # 向上飞为正
 
             # 数据是否可信（有队友视野就算完全可观测）
-            target_observable = 2  # 不在这里算
+            enm_observable = 2  # 不在这里算
 
             # 是否锁定该敌机
             if ego.radar_on and \
                 ATA < ego.max_radar_angle and dist < ego.max_radar_range:
-                target_locked = 1
+                enm_locked = 1
             else:
-                target_locked = 0
+                enm_locked = 0
 
             # 该敌机是否锁定我
             alpha_enm = np.arccos(np.dot(-L_, enm.vel_) / (norm(enm.vel_) * dist + 0.00001))  # 防止计算误差导致分子>分母
             if alpha_enm < ego.max_radar_angle and dist < ego.max_radar_range and enm.radar_on:
-                locked_by_target = 1
+                locked_by_enm = 1
             else:
-                locked_by_target = 0
+                locked_by_enm = 0
 
-            enm_info.apppend(np.array([
-                float(not enm.dead),
-                float(target_observable),
-                float(target_locked),
-                float(locked_by_target),
-                float(cos(delta_psi)),  # 相对方位 cos
-                float(sin(delta_psi)),  # 相对方位 sin
-                float(delta_theta),  # 相对俯仰角 rad
-                float(dist),  # 距离 m
-                float(ATA),  # 夹角 rad
-                float(target_speed),  # 目标速度 m/s
-                float(AA_hor),  # 水平进入角 rad
-                float(AA_vert)  # 垂直进入角 rad
+            if enm.dead: enm.radar_on=0
+            enm_infos.apppend(np.array([
+                float(not enm.dead), # 0
+                float(enm.radar_on), # 1
+                float(enm_observable), # 2
+                float(enm_locked), # 3
+                float(locked_by_enm), # 4
+                float(cos(delta_psi)), # 5
+                float(sin(delta_psi)), # 6
+                float(delta_theta), # 7
+                float(dist), # 8
+                float(ATA), # 9
+                float(enm_speed), # 10
+                float(AA_hor), # 11
+                float(AA_vert), # 12
+                # 惯性系下的位置关系，进入记忆，而非神经网络get_obs时候需要裁剪掉后面
+                float(q_beta), # 13
+                float(q_epsilon), # 14
             ]))
 
 
@@ -800,360 +873,195 @@ class MvMBattle(object):
             q_epsilon = atan2(guide_line_[1], np.sqrt(guide_line_[0] ** 2 + guide_line_[2] ** 2))
             delta_psi = sub_of_radian(q_beta, ego.psi)
             
-            # 剩余命中时间
-            time2hit = missile.time2hit
-
             ally_missile_info.append(np.array([
-                float(time2hit),        # 剩余命中时间
+                float(missile.t),        # 飞行时间
                 float(cos(delta_psi)),  # 相对方位 cos
                 float(sin(delta_psi)),  # 相对方位 sin
+                # # get_obs时候需要裁剪掉后面
+                # float(q_beta), # 3
+                # float(q_epsilon), # 4
             ]))
 
         #------------------------
-        # 告警信息向量, 不在get_state里面做填充，有多少放多少
+        # 告警信息向量, 不在环境里面做填充，有多少放多少
         #------------------------
         alive_enm_missiles = self.alive_b_missiles if ego_side=='r' else self.alive_r_missiles
-        RWR_info = []
+        RWR_infos = []
         for enm_missile in alive_enm_missiles:
             # 导弹雷达开启后告警启动，否则不启动
             if enm_missile.radar_on:
                 threat_line_ = enm_missile.pos_ - ego.pos_
                 threat_distance = norm(threat_line_)
-                missile_q_beta = atan2(-threat_line_[2], -threat_line_[0])
-                missile_q_epsilon = atan2(-threat_line_[1], np.sqrt(threat_line_[0] ** 2 + threat_line_[2] ** 2))
-                threat_delta_psi = sub_of_radian(pi + missile_q_beta, ego.psi)
-                threat_delta_theta = -missile_q_epsilon
+                threat_q_beta = atan2(threat_line_[2], threat_line_[0])
+                threat_q_epsilon = atan2(threat_line_[1], np.sqrt(threat_line_[0] ** 2 + threat_line_[2] ** 2))
+                threat_delta_psi = sub_of_radian(threat_q_beta, ego.psi)
+                threat_delta_theta = threat_q_epsilon
                 warning = threat_distance < missile.detect_range  # 假设导弹的探测距离正好就是飞机的告警距离
-                RWR_info.append(np.array([
-                    float(warning),
-                    float(cos(threat_delta_psi)),
-                    float(sin(threat_delta_psi)),
-                    float(threat_delta_theta),
-                    float(threat_distance),
+                RWR_infos.append(np.array([
+                    float(warning), # 0
+                    float(cos(threat_delta_psi)), # 1
+                    float(sin(threat_delta_psi)), # 2
+                    float(threat_delta_theta), # 3
+                    float(threat_distance), # 4
+                    # # get_obs时候需要裁剪掉后面
+                    # float(threat_q_beta), # 5
+                    # float(threat_q_epsilon), # 6
                 ]))
-                # 不是1V1，谁在制导导弹先不管，只考虑导弹的雷达信息
-                # if missile.distance < missile.detect_range and missile.in_angle:
-                #     warnings[i] = 1
-                #     threat_delta_psis[i] = sub_of_radian(pi + missile.q_beta, ego.psi)
-                #     threat_delta_thetas[i] = -missile.q_epsilon
-                # elif locked_by_target:  # 导弹未进入告警距离但我机仍被敌机锁定
-                #     # 进入告警距离前用敌机方位作为导弹告警方位
-                #     threat_delta_psis[i] = delta_psi
-                #     threat_delta_thetas[i] = delta_theta + ego.theta
-
-        
-
-        one_side_states = {
-            # 单独键（标量或布尔）
-            "target_alive": bool(target_alive),
-            "target_observable": int(target_observable),  # 0 完全不可见 1 角度信息可见 2 完全可见
-            "target_locked": bool(target_locked),  # 已锁定敌机
-            "missile_in_mid_term": bool(missile_in_mid_term),
-            "locked_by_target": bool(locked_by_target),  # 敌锁定
-            "warning": bool(warning),
-
-            # 打包的向量 / 子组
-            "target_information": np.array([
-                # float(delta_alt_obs),  # 0相对高度 m
-                # float(delta_psi),  # 1相对方位 rad
-                float(cos(delta_psi)),  # 0相对方位 cos
-                float(sin(delta_psi)),  # 1相对方位 sin
-                float(delta_theta),  # 2相对俯仰角 rad
-                float(dist_obs),  # 3距离 m
-                float(ATA),  # 4夹角 rad
-                float(speed_T),  # 5目标速度 m/s
-                float(AA_hor),  # 6水平进入角 rad
-                float(AA_vert)  # 7垂直进入角 rad
-            ]),
-
-            "ego_main": np.array([
-                float(v_own),  # 0本机速度 m/s
-                float(h_own),  # 1本机高度 m
-                float(cos_theta),  # 2
-                float(sin_theta),  # 3
-                float(cos_phi),  # 4
-                float(sin_phi),  # 5
-                int(ammo)  # 6剩余导弹数量
-            ]),
-
-            "ego_control": np.array([
-                float(p),  # 0 p rad/s act1_last
-                float(q),  # 1 q rad/s act2_last
-                float(r),  # 2 r rad/s act3_last
-                float(theta_v),  # 3
-                float(delta_psi_v),  # 4
-                float(alpha_air),  # 5 rad
-                float(beta_air),  # 6 rad
-                float(ego.Ny)     # 7
-            ]),
-
-            "weapon": float(missile_time_since_shoot),
-
-            "threat": np.array([
-                float(cos(threat_delta_psi)),  # 0
-                float(sin(threat_delta_psi)),  # 1
-                float(threat_delta_theta),  # 2
-                float(threat_distance),  # 3
-            ]),
-
-            # "threat": np.array([
-            #     float(cos(threat_delta_psi) * cos(threat_delta_theta)),  # 0
-            #     float(sin(threat_delta_theta)),  # 1
-            #     float(sin(threat_delta_psi) * cos(threat_delta_theta))  # 2
-            #     float(threat_distance),
-            # }),
-
+       
+        one_state = {
+            "ego_alive": ego_alive,
+            "ego_main": ego_main,
+            "ego_control": ego_control,
+            "ego_ammo": ammo,
+            "Radar_info": radar_info,
             "border": np.array([
                 float(d_hor),  # 0
                 int(left_or_right),  # 1
-            ])
-
+            ]),
+            "ally_infos": ally_infos,
+            "enm_infos": enm_infos,
+            "weapon_infos": ally_missile_info,
+            "RWR_infos": RWR_infos,
         }
 
-        ego.current_state = one_side_states
-        return one_side_states
+        ego.current_state = one_state
+        return one_state
     
     # 尺度缩放
     def scale_state(self, state_input):
         # 使用 deepcopy 避免修改传入对象
         s = copy.deepcopy(state_input)
-        s["target_information"][3] /= 10e3
-        s["target_information"][5] /= 340
         s["ego_main"][0] /= 340
         s["ego_main"][1] /= 5e3
         s["ego_control"][0] /= (2 * pi)  # (2 * pi) 5000
         s["ego_control"][1] /= (2 * pi)  # (2 * pi) pi
         s["ego_control"][2] /= (2 * pi)  # (2 * pi) 340
         s["ego_control"][7] /= 5 # 取一个不上不下的过载量
-        s["weapon"] /= 120
-        s["threat"][3] /= 10e3
-        s["border"][0] = min(1, s["border"][0] / 50e3)
-        s["border"][1] = 0 if s["border"][0] == 1 else s["border"][1]
+        s["border"][:][0] = min(1, s["border"][0] / 50e3)
+        s["ally_infos"][:][5] /= 10e3
+        s["ally_infos"][:][6] /= 340
+        s["enm_infos"][:][8] /= 10e3
+        s["enm_infos"][:][10] /= 340
+        s["weapon_infos"][:][0] /= 120
+        s["RWR_infos"][:][4] /= 10e3
         return s
     
     def unscale_state(self, obs_input):
         """把 scale_state 的缩放还原。仅判断 key 是否存在（不再检查长度）。"""
         s = copy.deepcopy(obs_input)
-
-        if "target_information" in s and s["target_information"] is not None:
-            s["target_information"][3] = s["target_information"][3] * 10e3
-            s["target_information"][5] = s["target_information"][5] * 340
-
         if "ego_main" in s and s["ego_main"] is not None:
             s["ego_main"][0] = s["ego_main"][0] * 340
             s["ego_main"][1] = s["ego_main"][1] * 5e3
-
         if "ego_control" in s and s["ego_control"] is not None:
             s["ego_control"][0] = s["ego_control"][0] * (2 * pi)
             s["ego_control"][1] = s["ego_control"][1] * (2 * pi)
             s["ego_control"][2] = s["ego_control"][2] * (2 * pi)
-
-        if "weapon" in s and s["weapon"] is not None:
-            s["weapon"] = s["weapon"] * 120
-
-        if "threat" in s and s["threat"] is not None:
-            s["threat"][3] = s["threat"][3] * 10e3
-
+            s["ego_control"][7] *= 5
         if "border" in s and s["border"] is not None:
             s["border"][0] = s["border"][0] * 50e3
-
+        if "ally_infos" in s and s["ally_infos"]:
+            s["ally_infos"][:][5] *= 10e3
+            s["ally_infos"][:][6] *= 340
+        if "enm_infos" in s and s["enm_infos"]:
+            s["enm_infos"][:][8] *= 10e3
+            s["enm_infos"][:][10] *= 340
+        if "weapon_infos" in s and s["weapon_infos"]:
+            s["weapon_infos"][:][0] *= 120
+        if "RWR_infos" in s and s["RWR_infos"]:
+            s["RWR_infos"][:][4] *= 10e3
         return s
-
-    def scale_state2(self, state_input):
-        # 使用 deepcopy 避免修改传入对象
-        s = copy.deepcopy(state_input)
-        s["target_information"][3] /= 10e3
-        s["target_information"][5] /= 340
-        s["ego_main"][0] /= 340
-        s["ego_main"][1] /= 5e3
-        
-        # ammo scaling: 0->0, 1->1, 6->1.5
-        ammo = s["ego_main"][6]
-        if ammo <= 0:
-            s["ego_main"][6] = 0
-        else:
-            s["ego_main"][6] = 0.9 + 0.1 * ammo
-
-        s["ego_control"][0] /= (2 * pi)  # (2 * pi) 5000
-        s["ego_control"][1] /= (2 * pi)  # (2 * pi) pi
-        s["ego_control"][2] /= (2 * pi)  # (2 * pi) 340
-        s["weapon"] /= 120
-        s["threat"][3] /= 10e3
-        s["border"][0] = min(1, s["border"][0] / 50e3)
-        s["border"][1] = s["border"][1] # if s["border"][0] < 1 else 0  # 仅在测试时屏蔽if后半句
-        return s
-
-    def unscale_state2(self, obs_input):
-        """把 scale_state2 的缩放还原。仅判断 key 是否存在（不再检查长度）。"""
-        s = copy.deepcopy(obs_input)
-
-        if "target_information" in s and s["target_information"] is not None:
-            s["target_information"][3] = s["target_information"][3] * 10e3
-            s["target_information"][5] = s["target_information"][5] * 340
-
-        if "ego_main" in s and s["ego_main"] is not None:
-            s["ego_main"][0] = s["ego_main"][0] * 340
-            s["ego_main"][1] = s["ego_main"][1] * 5e3
-            
-            # ammo unscaling
-            val = s["ego_main"][6]
-            if val <= 0.01:
-                s["ego_main"][6] = 0
-            else:
-                s["ego_main"][6] = (val - 0.9) * 10
-
-        if "ego_control" in s and s["ego_control"] is not None:
-            s["ego_control"][0] = s["ego_control"][0] * (2 * pi)
-            s["ego_control"][1] = s["ego_control"][1] * (2 * pi)
-            s["ego_control"][2] = s["ego_control"][2] * (2 * pi)
-
-        if "weapon" in s and s["weapon"] is not None:
-            s["weapon"] = s["weapon"] * 120
-
-        if "threat" in s and s["threat"] is not None:
-            s["threat"][3] = s["threat"][3] * 10e3
-
-        if "border" in s and s["border"] is not None:
-            s["border"][0] = s["border"][0] * 50e3
-
-        return s
-        
-    def base_obs(self, side, pomdp=0, reward_fn=0):  # 默认为完全可观测，设置pomdp后为部分可观测
+    
+    def base_obs(self, id, pomdp=0, reward_fn=0):
         # 处理部分可观测、默认值问题、并尺度缩放
-        # 输出保持字典的形式
-        if side == 'r':
-            uav = self.RUAV
-        if side == 'b':
-            uav = self.BUAV
-
-        # 如果是用来计算奖励的或是被critic用的，强制全局信息
-        if reward_fn == 1:
-            pomdp = 0
-        
-        # [修改] 获取当前真实状态
-        state = self.get_state(side) # np.stack(self.get_state(side)) stack用于多架无人机
-
-        # [新增] 增加时间戳，用于状态管理
+        ego = self.find_uav_with_id(id)
+        state = self.get_state(id)
+        # 增加时间戳，用于状态管理
         state['t'] = self.t
 
         # [新增] 智能的状态快照更新逻辑：防止同一时间步多次调用导致 last_state 被覆盖
-        if uav.current_state is None:
+        if ego.current_state is None:
             # 初始化
-            uav.last_state = copy.deepcopy(state)
+            ego.last_state = copy.deepcopy(state)
         else:
             # 通过比对时间戳判断是否为新的仿真步
             # 只有当时间推进了，才把旧的 current_state 归档为 last_state
-            if abs(self.t - uav.current_state['t']) > 0.1:
-                uav.last_state = copy.deepcopy(uav.current_state)
-
-        uav.current_state = copy.deepcopy(state)
-
-        # 默认值设定
-        self.state_init = self.get_state(side)
-        self.state_init["target_alive"] = 1  # 默认目标存活
-        self.state_init["target_observable"] = 2  # 默认完全可见
-        self.state_init["target_locked"] = 0
-        self.state_init["missile_in_mid_term"] = 0
-        self.state_init["locked_by_target"] = 0
-        self.state_init["warning"] = 0
-        self.state_init["target_information"] = np.array([1, 0, 0, 100e3, 0, 0, 0, 0])
-        self.state_init["ego_main"] = np.array([300, 5000, 0, 1, 0, 1, 0])
-        self.state_init["ego_control"] = np.array(
-            [0, 0, 0, 0, 0, 0, 0, 0])
-        self.state_init["weapon"] = 120
-        self.state_init["threat"] = np.array([1, 0, 0, self.RWR_distance])
-        self.state_init["border"] = np.array([50e3, 0])
-
-        if pomdp:  # 只有在部分观测情况下需要添加屏蔽
-            # 1. 获取记忆 (Rolling Memory)
-            if uav.state_memory is None:
-                memory = copy.deepcopy(self.state_init)
-            else:
-                memory = uav.state_memory
-
-            ATA = state["target_information"][4]
-            dist = state["target_information"][3]
-
-            # 【新增：提取之前的绝对姿态】
-            if "inertial_target_psi" in memory:
-                mem_inertial_psi = memory["inertial_target_psi"]
-                mem_inertial_theta = memory["inertial_target_theta"]
-            else:
-                mem_inertial_psi = sub_of_radian(uav.psi + atan2(memory["target_information"][1], memory["target_information"][0]), 0)
-                mem_inertial_theta = uav.theta + memory["target_information"][2]
-
-            # 计算在全盲情况下应该显示的基于惯性系更新后的相对角度
-            blind_delta_psi = sub_of_radian(mem_inertial_psi - uav.psi, 0)
-            blind_delta_theta = mem_inertial_theta - uav.theta
-
-            # 根据条件决定是 "全覆盖" 还是 "部分覆盖"
-            
-            # 情况A: 超出探测距离 -> 完全不可见
-            if dist > 130e3:
-                state["target_observable"] = 0
-                # 整体覆盖：除更新航向补偿外其他信息都用旧的
-                state["target_information"] = memory["target_information"].copy()
-                state["target_information"][0] = cos(blind_delta_psi)
-                state["target_information"][1] = sin(blind_delta_psi)
-                state["target_information"][2] = blind_delta_theta
-            
-            # 情况B: 距离较近
-            elif dist > 10e3:
-                # B1: 角度大 且 未被锁定 -> 完全不可见
-                if ATA > self.RUAV.max_radar_angle_rad and state["locked_by_target"] == 0:
-                    state["target_observable"] = 0
-                    # 整体覆盖
-                    state["target_information"] = memory["target_information"].copy()
-                    state["target_information"][0] = cos(blind_delta_psi)
-                    state["target_information"][1] = sin(blind_delta_psi)
-                    state["target_information"][2] = blind_delta_theta
-                
-                # B2: 角度大 但 被锁定 (RWR告警) -> 部分可见
-                elif ATA > self.RUAV.max_radar_angle_rad and state["locked_by_target"] == 1:
-                    state["target_observable"] = 1
-                    # 【核心逻辑】只覆盖运动学信息 (dist, speed, AA)，保留当前真实的 RWR 信息 (角度, ATA)
-                    # 因为 memory['dist'] 已经是上一步复制下来的旧值，所以这里再次复制依然是旧值
-                    for idx in (3, 5, 6, 7):
-                        state["target_information"][idx] = memory["target_information"][idx]
-                
-                # B3: 角度合适 -> 完全可见
-                else:
-                    state["target_observable"] = 2
-                    # 不做任何覆盖，state 保持 get_state() 获取的最新真实值
-            
-            # 情况C: 极近距离 -> 完全可见
-            else:
-                state["target_observable"] = 2
-
-        # 3. 更新记忆 (Rolling Update)
-        # 无论刚才发生了什么，把处理后的 state 存入 memory
-        # 如果刚才发生了部分覆盖，这里存入的就是 "旧dist + 新ATA" 的混合体
-        # 下一步循环时，读取这个混合体，dist 依然是旧的
-        # [修改] 仅在 pomdp 开启时更新记忆，防止奖励函数调用(pomdp=0)时泄露真实状态
+            if abs(self.t - ego.current_state['t']) > 0.5 * self.dt_maneuver:
+                ego.last_state = copy.deepcopy(ego.current_state)
+        ego.current_state = copy.deepcopy(state)
+        # 开局瞬间会给完全信息观测，GRU也改为残差形式，不再需要默认值了
         
-        if reward_fn == 0: # 防止在奖励函数里面调用的时候泄露信息
-            uav.state_memory = copy.deepcopy(state)
-            
-            # 计算绝对方位角并存入记忆，确保断锁等不可见情况下能保持惯性系正确性
-            current_delta_psi = atan2(state["target_information"][1], state["target_information"][0])
-            current_delta_theta = state["target_information"][2]
-            uav.state_memory["inertial_target_psi"] = sub_of_radian(uav.psi + current_delta_psi, 0)
-            uav.state_memory["inertial_target_theta"] = uav.theta + current_delta_theta
+        if pomdp and (not reward_fn): 
+            # 对每个敌机分别处理可见性问题
+            for i, enm_info in enumerate(state["enm_infos"]): 
+                # 1. 获取记忆 (Rolling Memory)
+                if ego.state_memory is None:
+                    memory = copy.deepcopy(state)
+                else:
+                    memory = copy.deepcopy(ego.state_memory)
+                # 2、观测限制，记忆重放逻辑
+                ATA = enm_info[9]
+                dist = enm_info[8]
+                
+                mem_inertial_beta = enm_info[13]
+                mem_inertial_epsilon = enm_info[14]
+                
+                blind_delta_psi = sub_of_radian(mem_inertial_beta, ego.psi)
+                blind_delta_theta = sub_of_radian(mem_inertial_epsilon, ego.theta)
+                
+                # 情况A: 超出探测距离 -> 完全不可见
+                if dist > ego.max_radar_range:
+                    # 加载记忆
+                    state["enm_infos"][i] = copy.deepcopy(memory["enm_infos"][i])
+                    state["enm_infos"][i][2] = 0 # 可见性评级
+                    state["enm_infos"][i][5] = cos(blind_delta_psi)
+                    state["enm_infos"][i][6] = sin(blind_delta_psi)
+                    state["enm_infos"][i][7] = blind_delta_theta
+                # 情况B: 中距离
+                elif dist > 10e3:
+                    locked_by_enm = state["enm_infos"][i][4]
+                    # B1: 角度大 且 未被锁定 -> 完全不可见
+                    if ATA > self.RUAV.max_radar_angle_rad and (not locked_by_enm):
+                        # 加载记忆
+                        state["enm_infos"][i] = copy.deepcopy(memory["enm_infos"][i])
+                        state["enm_infos"][i][2] = 0 # 完全不可见
+                        state["enm_infos"][i][5] = cos(blind_delta_psi)
+                        state["enm_infos"][i][6] = sin(blind_delta_psi)
+                        state["enm_infos"][i][7] = blind_delta_theta
+                    # B2: 角度大 但 被锁定 (RWR告警) -> 方位信息可见
+                    elif ATA > self.RUAV.max_radar_angle_rad and locked_by_enm:
+                        state["enm_infos"][i][2] = 1 # 部分可见
+                        for idx in (8, 10):
+                            state["enm_infos"][i][idx] = memory["enm_infos"][i][idx]
+                            # 假设敌机正对着我
+                            state["enm_infos"][i][11] = pi
+                            state["enm_infos"][i][12] = 0
+                    # B3: 角度合适 -> 完全可见
+                    else:
+                        state["enm_infos"][i][2] = 2 # 完全可见
+                # 情况C：近距
+                else:
+                    state["enm_infos"][i][2] = 2 # 完全可见  
+        else:
+            # 不是pomdp，那记忆也没有意义了
+            pass
+        
+        if reward_fn:
+            pass # 不更新记忆
+        else:
+            # 更新记忆
+            ego.state_memory = copy.deepcopy(state)
+            # 告警信息不可能冻结，队友信息也不需要冻结，所以只有敌机信息需要冻结
 
+        # 裁剪掉需要裁剪的部分
+        state["enm_infos"][:] = state["enm_infos"][:-2] # 裁剪掉惯性系信息
+        # 剩余部分用作观测函数输出
+        
         # 在把 state 传入 scale_state 之前移除时间戳 't'
         if 't' in state:
             del state['t']
 
         observation = self.scale_state(state)
-        self.obs_init = self.scale_state(self.state_init)
         return observation
-
-    # 通过id获取目标信息
-    def get_target_by_id(self, target_id):
-        for uav in self.UAVs:
-            if uav.id == target_id:
-                return uav
-        return None
 
     def crash(self, UAV):
         if UAV.alt < self.min_alt:
@@ -1168,14 +1076,14 @@ class MvMBattle(object):
             return False
 
     def out_range(self, UAV):
-        horizontal_center = np.array([0, 0])
         position = UAV.pos_
         pos_h = np.array([position[0], position[2]])
-        R_uav = norm(pos_h - horizontal_center)
+        R_uav = norm(pos_h - self.horizontal_center)
         out = True
         if R_uav <= self.R_cage:
             out = False
         return out
+
 
     def render(self, t_bias=0):
         if self.tacview_show:
@@ -1201,20 +1109,36 @@ class MvMBattle(object):
                         f"{UAV.phi * 180 / pi:.6f}|{UAV.theta * 180 / pi:.6f}|{UAV.psi * 180 / pi:.6f},"
                         f"Name=F16,Pilot={pilot},Color={color}\n"
                     )
-                    # 带雷达范围显示
-                    # data_to_send+=(
-                    #     f"{UAV.id+1000},T={loc_LLH[0]:.6f}|{loc_LLH[1]:.6f}|{loc_LLH[2]:.6f}|"
-                    #     f"0|{UAV.theta * 180 / pi:.6f}|{UAV.psi * 180 / pi:.6f},"
-                    #     f"Type=Beam, Color={color},Visible=0.3,Radius=0.0,RadarMode=1,RadarRange=100000, RadarHorizontalBeamwidth=120, RadarVerticalBeamwidth=90\n"
-                    # )
+                    # 雷达和锁定 Beam 显示
+                    if getattr(UAV, 'radar_on', 0)==0:
+                        data_to_send += f"#{send_t:.2f}\n-{UAV.id+1000}\n"
+                    else:
+                        if getattr(UAV, 'lock_on', 0) == 0:
+                            # 正常探测雷达
+                            data_to_send += (
+                                f"{UAV.id+1000},T={loc_LLH[0]:.6f}|{loc_LLH[1]:.6f}|{loc_LLH[2]:.6f}|"
+                                f"0|{UAV.theta * 180 / pi:.6f}|{UAV.psi * 180 / pi:.6f},"
+                                f"Type=Beam, Color={color},Visible=0.3,Radius=0.0,RadarMode=1,RadarRange=100000, RadarHorizontalBeamwidth=120, RadarVerticalBeamwidth=20\n"
+                            )
+                        else:
+                            # 锁定目标的画法还不确定，先画成正常探测雷达
+                            data_to_send += (
+                                f"{UAV.id+1000},T={loc_LLH[0]:.6f}|{loc_LLH[1]:.6f}|{loc_LLH[2]:.6f}|"
+                                f"0|{UAV.theta * 180 / pi:.6f}|{UAV.psi * 180 / pi:.6f},"
+                                f"Type=Beam, Color={color},Visible=0.3,Radius=0.0,RadarMode=1,RadarRange=100000, RadarHorizontalBeamwidth=120, RadarVerticalBeamwidth=20\n"
+                            )
+
                 else:
                     data_to_send += f"#{send_t:.2f}\n-{UAV.id}\n"
-                    # data_to_send += f"#-{UAV.id+1000}\n"
+                    # # data_to_send += f"#-{UAV.id+1000}\n"
+                    # data_to_send += f"#{send_t:.2f}\n-{UAV.id + 1000}\n"
 
             # 传输导弹信息
             for missile in self.missiles:
                 if hasattr(missile, 'dead') and missile.dead:
                     data_to_send += f"#{send_t:.2f}\n-{missile.id}\n"
+                    # 同步移除已经死掉导弹的雷达波束
+                    data_to_send += f"#{send_t:.2f}\n-{missile.id+1000}\n"
                 else:
                     # 记录导弹的位置
                     loc_m = NUE2LLH(missile.pos_[0], missile.pos_[1], missile.pos_[2], lon_o=o00[0], lat_o=o00[1],
@@ -1230,6 +1154,17 @@ class MvMBattle(object):
                                     f"{0.0:.6f}|{missile.theta * 180 / pi:.6f}|{missile.psi * 180 / pi:.6f},"
                                     f"Name=AIM-120C,Color={color}\n"
                                     )
+                    # 导弹雷达波束显示
+                    if getattr(missile, 'radar_on', 0):
+                        # 导弹锁定哪个目标的判别还没有，先不画锁定
+                        data_to_send += (
+                            f"{missile.id+1000},T={loc_m[0]:.6f}|{loc_m[1]:.6f}|{loc_m[2]:.6f}|"
+                            f"0|{missile.theta * 180 / pi:.6f}|{missile.psi * 180 / pi:.6f},"
+                            f"Type=Beam, Color={color},Visible=0.3,Radius=0.0,RadarMode=1,RadarRange={missile.detect_range:.1f}, RadarHorizontalBeamwidth=120, RadarVerticalBeamwidth=120\n"
+                        )
+                    else:
+                        # 导弹存活但雷达关闭，移除可能残留的雷达波束可视
+                        data_to_send += f"#{send_t:.2f}\n-{missile.id+1000}\n"
 
             self.tacview.send_data_to_client(data_to_send)
 
@@ -1239,9 +1174,10 @@ class MvMBattle(object):
             data_to_send = ''
             for UAV in self.UAVs:
                 data_to_send += f"#{send_t:.2f}\n-{UAV.id}\n"
-                # data_to_send += f"#{send_t:.2f}\n-{UAV.id+1000}\n"
+                data_to_send += f"#{send_t:.2f}\n-{UAV.id+1000}\n"
             for missile in self.missiles:
                 data_to_send += f"#{send_t:.2f}\n-{missile.id}\n"
+                data_to_send += f"#{send_t:.2f}\n-{missile.id+1000}\n"
             self.tacview.send_data_to_client(data_to_send)
         else:
             pass
@@ -1281,253 +1217,38 @@ class MvMBattle(object):
         self.tacview.send_data_to_client(data_to_send)
         print('cage set')
 
-    # 规则机动模型
-    def track_behavior(self, ego_height, delta_psi, speed_cmd=1.5*340):
-        """
-        追踪行为：返回 (heading_cmd, speed_cmd)
-        """
-        height_cmd = 7e3 - ego_height
-        heading_cmd = delta_psi
-        return np.array([height_cmd, heading_cmd, speed_cmd])
-
-    def escape_behavior(self, ego_height, enm_delta_psi, warning, threat_delta_psi, speed_cmd=1.5 * 340):
-        """
-        逃逸行为：返回 (heading_cmd, speed_cmd)
-        没有导弹威胁的时候躲飞机，有导弹威胁的时候躲导弹
-        """
-        height_cmd = 7e3 - ego_height
-        if warning:
-            heading_cmd = np.clip(sub_of_radian(threat_delta_psi, pi), -pi / 2, pi / 2)
-        else:
-            heading_cmd = np.clip(sub_of_radian(enm_delta_psi, pi), -pi / 2, pi / 2)
-
-        return np.array([height_cmd, heading_cmd, speed_cmd])
-
-    def left_crank_behavior(self, ego_height, delta_psi, speed_cmd = 1.1 * 340):
-        """
-        crank 行为：返回 (heading_cmd, speed_cmd)
-        """
-        height_cmd = 7e3 - ego_height
-        heading_cmd = np.clip(delta_psi - pi / 4, -pi / 2, pi / 2)
-        # temp = 0.4 * (delta_psi - pi / 4) / (pi / 4) * 2
-        # heading_cmd = np.clip(temp, -0.4, 0.4)
-
-        return np.array([height_cmd, heading_cmd, speed_cmd])
-
-    def right_crank_behavior(self, ego_height, delta_psi, speed_cmd = 1.1 * 340):
-        """
-        crank 行为：返回 (heading_cmd, speed_cmd)
-        """
-        height_cmd = 7e3 - ego_height
-        heading_cmd = np.clip(delta_psi + pi / 4, -pi / 2, pi / 2)
-        # temp = 0.4 * (delta_psi + pi / 4) / (pi / 4) * 2
-        # heading_cmd = np.clip(temp, -0.4, 0.4)
-
-        return np.array([height_cmd, heading_cmd, speed_cmd])
-
-    def wander_behavior(self, speed_cmd = 300):
-        """
-        wander 随机漫步行为：返回 (alt_cmd, heading_cmd, speed_cmd)
-        """
-        alt_cmd = 3000 * np.random.uniform(-1, 1)
-        heading_cmd = np.random.normal(0, 25 * pi / 180)
-
-        return np.array([alt_cmd, heading_cmd, speed_cmd])
-
-    def back_in_cage(self, cmd, ego_pos_, ego_psi):
-        height_cmd, heading_cmd, speed_cmd = cmd
-        ego_height = ego_pos_[1]
-        R_to_o00 = sqrt(ego_pos_[0] ** 2 + ego_pos_[2] ** 2)
-        if ego_height > 13e3:
-            height_cmd = -5000
-        elif ego_height < 3e3:
-            height_cmd = 5000
-        if self.R_cage - R_to_o00 < 8e3:
-            beta_of_o00 = atan2(-ego_pos_[2], -ego_pos_[0])
-            heading_cmd = sub_of_radian(beta_of_o00, ego_psi)
-        return np.array([height_cmd, heading_cmd, speed_cmd])
-
-    def decision_rule(self, ego_pos_, ego_psi, enm_delta_psi, distance, warning, threat_delta_psi, ally_missiles,
-                      wander=0):
-        ego_height = ego_pos_[1]
-        # 输出为所需的绝对高度、相对方位和绝对速度
-        # 是否有导弹可用
-        has_missile_in_the_air = 0
-        for missile in ally_missiles:
-            if not missile.dead:
-                has_missile_in_the_air = 1
-                break
-        # 是否被敌机导弹锁定
-        if warning:
-            should_escape = 1
-        else:
-            should_escape = 0
-        action_n = np.array([0.0, 0.0, 400])
-
-        # 行为决策：按原逻辑分支调用独立函数
-        if distance > 40e3:
-            cmd = self.track_behavior(ego_height, enm_delta_psi)
-        elif not should_escape and has_missile_in_the_air:
-            if enm_delta_psi >= 0:
-                cmd = self.left_crank_behavior(ego_height, enm_delta_psi)
-            else:
-                cmd = self.right_crank_behavior(ego_height, enm_delta_psi)
-        elif should_escape:
-            # rel_psi_m 在 should_escape 时应已被设置
-            cmd = self.escape_behavior(ego_height, enm_delta_psi, warning, threat_delta_psi)
-        else:
-            cmd = self.track_behavior(ego_height, enm_delta_psi)
-
-        # 追踪任务的目标在散步
-        if wander:
-            cmd = self.wander_behavior()
-
-        # 最高优先级：不许出圈
-        cmd = self.back_in_cage(cmd, ego_pos_, ego_psi)
-
-        return cmd
-
 
 # todo 开火逻辑需要重写，从而适配多对多
-
-def launch_missile_if_possible(env, side='r'):
-    """
-    根据条件判断是否发射导弹
-    """
-    if side == 'r':
-        uav = env.RUAV
-        ally_missiles = env.Rmissiles
-        target = env.BUAV
-    else:  # side == 'b'
-        uav = env.BUAV
-        ally_missiles = env.Bmissiles
-        target = env.RUAV
-
-    waite = False
-    for missile in ally_missiles:
-        if not missile.dead:
-            waite = True
-            break
-
-    if not waite:
-        # 判断是否可以发射导弹
-        if uav.can_launch_missile(target, env.t):
-            # 发射导弹
-            new_missile = env.launch_missile(source_id=uav.id, target_id=target.id)
-            uav.ammo -= 1
-            new_missile.side = 'r' if side == 'r' else 'b'
-            if side == 'r':
-                env.Rmissiles.append(new_missile)
-            else:
-                env.Bmissiles.append(new_missile)
-            env.missiles = env.Rmissiles + env.Bmissiles
-            # print(f"{'红方' if side == 'r' else '蓝方'}发射导弹")
-        return 1
-    else:
-        return 0
-
-
-def launch_missile_immediately(env, side='r', tabu=0):
+# 这个函数一次只处理一枚导弹的发射
+def launch_missile_immediately(env, source_id, target_id, tabu=0):
     """
     立即发射导弹
     """
     new_missile_id = None
-    if side == 'r':
-        uav = env.RUAV
-        ally_missiles = env.Rmissiles
-        target = env.BUAV
-    else:  # side == 'b'
-        uav = env.BUAV
-        ally_missiles = env.Bmissiles
-        target = env.RUAV
-
-    ego_state = env.get_state(uav.side)
-    ATA = ego_state["target_information"][4]
-    distance = ego_state["target_information"][3]
-    AA_hor = ego_state["target_information"][6]
-    target_locked = ego_state["target_locked"]
-
-    # 发射导弹
-    if uav.ammo>0 and not uav.dead:
-        if not tabu or\
-                target_locked and ego_state["weapon"]>=0.1 and ATA<=60 *pi/180:
-            new_missile = env.launch_missile(source_id=uav.id, target_id=target.id)
-            uav.ammo -= 1
-
-            # 记录导弹发射瞬间的 ATA、distance 和 AA_hor
-            uav.launch_states_order = ['ATA', 'distance', 'AA_hor', 'target_locked', 't_go']
-            uav.launch_states.append(np.array([ATA, distance, AA_hor, target_locked, ego_state["weapon"]]))
-
-            new_missile.side = 'r' if side == 'r' else 'b'
-            new_missile_id = new_missile.id
-            if side == 'r':
-                env.Rmissiles.append(new_missile)
-            else:
-                env.Bmissiles.append(new_missile)
-            env.missiles = env.Rmissiles + env.Bmissiles
-            # print(f"{'红方' if side == 'r' else '蓝方'}发射导弹")
+    ego = env.find_uav_with_id(source_id)
+    ego_state = env.get_state(source_id)
+    # 根据id查找在状态空间中的索引
+    target_index = env.id2index(source_id, target_id, relation='enm')
+    # tabu 自变量
+    enm_locked = ego_state["enm_infos"][target_index][3]
+    ATA = ego_state["enm_infos"][target_index][9]
+    distance = ego_state["enm_infos"][target_index][8]
+    AA_hor = ego_state["enm_infos"][target_index][11]
     
+    # 发射导弹
+    if ego.ammo>0 and not ego.dead: # 开火冷却时间的逻辑必须另外做了，不能直接读取 ally_missile_info，队友开火不代表自己不能打
+        if (not tabu) or (enm_locked):
+            # 调用唯一注册入口，严禁直接修改env.Rmissiles或env.Bmissiles
+            new_missile_id = env.launch_1_missile(source_id, target_id)
     return new_missile_id
 
 
-def launch_missile_with_basic_rules(env, side='r'):
-    """
-    立即发射导弹
-    """
-    if side == 'r':
-        uav = env.RUAV
-        ally_missiles = env.Rmissiles
-        target = env.BUAV
-    else:  # side == 'b'
-        uav = env.BUAV
-        ally_missiles = env.Bmissiles
-        target = env.RUAV
-
-    ego_state = env.get_state(uav.side)
-    target_locked = ego_state["target_locked"]
-    alt = ego_state["ego_main"][1]
-    dist = ego_state["target_information"][3]
-    ATA = ego_state["target_information"][4]
-    AA_hor = ego_state["target_information"][6]
-    interval = ego_state["weapon"]
-
-    # 发射导弹
-    can_shoot = 0
-    should_shoot = 0
-    if uav.ammo>0 and not uav.dead and target_locked and interval>=3:
-        can_shoot = 1
-    
-    if can_shoot:
-        should_shoot = 0
-        if dist<=5e3:
-            should_shoot = (1-ATA/(60*pi/180))**2
-
-        elif dist<=20e3 and abs(AA_hor)>=pi/2:
-            should_shoot = (1-ATA/(60*pi/180))**2
-
-        elif dist<=80e3 and interval>=20:
-            should_shoot = (1-ATA/(60*pi/180))**2
-    
-    if dist > 10e3 and AA_hor<pi/6:
-        should_shoot = 0
-    if interval <= 30 and dist > 40e3:
-        should_shoot = 0
-    
-    if dist > 45e3:
-        should_shoot = 0
-
-
-    if np.random.rand() < should_shoot: # np.random.rand() 生成的是在区间 [0, 1) 上的独立均匀分布
-        new_missile = env.launch_missile(source_id=uav.id, target_id=target.id)
-        uav.ammo -= 1
-        new_missile.side = 'r' if side == 'r' else 'b'
-        if side == 'r':
-            env.Rmissiles.append(new_missile)
-        else:
-            env.Bmissiles.append(new_missile)
-        env.missiles = env.Rmissiles + env.Bmissiles
-        # print(f"{'红方' if side == 'r' else '蓝方'}发射导弹")
-
-        return 1
-    else:
-        return 0
+if __name__=='__main__':
+    # 假设网络做出的决断是攻击他观测到的第 i 个敌人（i 由网络给出，比如 0 或 1）
+    target_index = action_from_network
+    # 判断我方阵营，从而知道对面的实体列表
+    enm_uavs = env.BUAVs if source_uav.side == 'r' else env.RUAVs
+    # 进行映射：获得其真实的 target_id
+    real_target_id = enm_uavs[target_index].id 
+    # 再传入函数
+    new_missile_id = launch_missile_immediately(env, source_id=source_uav.id, target_id=real_target_id)
