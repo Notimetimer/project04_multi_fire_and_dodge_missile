@@ -26,7 +26,7 @@ def get_current_file_dir():
 current_dir = get_current_file_dir()
 sys.path.append(os.path.dirname(os.path.dirname(current_dir)))
 
-from Envs.BattleHomogeneous260421 import *
+from Envs.BattleHomo260421 import *
 
 
 # 通过继承构建观测空间、奖励函数和终止条件
@@ -93,10 +93,20 @@ class ChooseStrategyEnv(Battle):
         self.RUAV.state_memory = copy.deepcopy(self.get_state('r'))
         self.BUAV.state_memory = copy.deepcopy(self.get_state('b'))
     
-    def obs
-
-    def obs_1v1(self, side, pomdp=0, reward_fn=0):
-        pre_full_obs = self.base_obs(side, pomdp, reward_fn)
+    """
+    需要区分目标死活、填充未发射的导弹信息和死掉的敌机/队友信息，
+    1、简单起见，告警信息机械筛选距离最近的，武器信息也用机械筛选时间最近的
+    2、只有敌机和队友用变长度序列交给两组注意力机制处理
+    3、输出不再是一维数组，仍然是字典包list
+    4、get_obs 的输出仍然是字典，但不使用base_obs中的一长串keys，而是适配神经网络结构。
+    keys:  fixed, ally[list], enm[list], ally_mask(定长度序列), enm_mask(定长度序列)
+    1) 观测变量可以给出空列表[]，填充Padding交给算法端的包装器去做
+    2) 掩码必须显式给出，交给注意力机制去忽略
+    3) 算法包装器需要null_token,不在环境端做
+    4) 两个mask也必须存入经验池。
+    """
+    def get_obs(self, id, pomdp=0, reward_fn=0):
+        pre_full_obs = self.base_obs(id, pomdp, reward_fn)
         full_obs = {k: (pre_full_obs[k].copy() if hasattr(pre_full_obs[k], "copy") else pre_full_obs[k]) \
                     for k in self.key_order_1v1}
         
@@ -104,74 +114,8 @@ class ChooseStrategyEnv(Battle):
         flat_obs = flatten_obs(full_obs, self.key_order_1v1)
         return flat_obs, full_obs
     
-    def obs2obs_check(self, obs):
-        """
-        输入: (Dim,) 或 (Batch, Dim)
-        输出: 
-            - 单样本: 返回 1 个 dict
-            - Batch: 返回 [dict, dict, ...] (List of Dicts)
-        这样可以直接丢进 for 循环里处理
-        """
-        # 转 numpy
-        if isinstance(obs, torch.Tensor):
-            obs = obs.cpu().detach().numpy()
-            
-        # 定义维度映射
-        key_dims = {
-            "target_alive": 1, "target_observable": 1, "target_locked": 1,
-            "missile_in_mid_term": 1, "locked_by_target": 1, "warning": 1,
-            "target_information": 8, "ego_main": 7, "weapon": 1,
-            "threat": 4, "border": 2,
-        }
-        
-        # 判断是否为 Batch
-        is_batch = (obs.ndim > 1)
-        batch_size = obs.shape[0] if is_batch else 1
-        
-        # 预先切分好所有数据
-        # sliced_data 结构: {key: array_values}
-        sliced_data = {}
-        ptr = 0
-        for key in self.key_order_1v1:
-            dim = key_dims.get(key, 0)
-            if dim == 0: continue
-            
-            if is_batch:
-                val = obs[:, ptr : ptr + dim] # (B, dim)
-            else:
-                val = obs[ptr : ptr + dim]    # (dim,)
-            
-            sliced_data[key] = val
-            ptr += dim
 
-        # --- 核心修改：构建输出 ---
-        
-        if not is_batch:
-            # === 单样本模式 (返回 Dict) ===
-            single_dict = {}
-            for key, val in sliced_data.items():
-                if key_dims[key] == 1:
-                    single_dict[key] = val[0] # 标量化
-                else:
-                    single_dict[key] = val    # 保持一维数组
-            return single_dict
-            
-        else:
-            # === Batch 模式 (返回 List[Dict]) ===
-            list_of_dicts = []
-            for i in range(batch_size):
-                sample_dict = {}
-                for key, val in sliced_data.items():
-                    # val 是 (B, dim)
-                    sample_val = val[i] # 取第 i 行 -> (dim,)
-                    
-                    if key_dims[key] == 1:
-                        sample_dict[key] = sample_val[0] # 标量化
-                    else:
-                        sample_dict[key] = sample_val    # 保持一维数组
-                list_of_dicts.append(sample_dict)
-            return list_of_dicts
-        
+
     def obs2obs_check(self, obs):
         """
         将扁平化的 obs (numpy array) 还原为 check_obs (dict)。
@@ -367,7 +311,11 @@ class ChooseStrategyEnv(Battle):
             speed_cmd = 340
         return np.array([delta_height_cmd, delta_psi_cmd, speed_cmd])
 
-    # 重写近距杀方法（加了print）
+
+
+
+
+    # 近距杀方法，多对多也能用（加了print）
     def close_range_kill(self,):
         for ruav in self.RUAVs:
             if ruav.dead:

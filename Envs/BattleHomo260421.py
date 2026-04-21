@@ -120,12 +120,13 @@ class Battle(object):
                                          'psi': pi,
                                          'p2p': False
                                          }
+        # 默认观测填充模板
+        self.state_init_mod = self._generate_state_init_mod()
         self.tacview_show = tacview_show
         if tacview_show:
             self.tacview = Tacview()
             self.tacview.handshake()
-            self.visualize_cage()
-            
+            self.visualize_cage()           
     
     # 动态属性，把函数伪装成属性，self.RUAVs会调用函数返回dict的value列表
     # 警告：如果同名的属性被注册，property会失效
@@ -638,6 +639,49 @@ class Battle(object):
 
         return 0, 0, 0, 0, 0  # 废弃不再使用了
 
+    def _generate_state_init_mod(self):
+        # 部分观测填充值模板
+        state_init_mod = {}
+        # 只有敌机、队友、已发射的导弹、来袭导弹需要这套模板
+        state_init_mod["ally_info"] = np.array([
+            1, # alive
+            1, # radar_on
+            -1, # cos(dealta_psi)
+            0, # sin(delta_psi)
+            0, # delta_tehta
+            100e3, # dist
+            300, # speed
+            0, # delta_psi_ally
+            0, # theta_ally
+        ])
+        state_init_mod["enm_info"] = np.array([
+            1, # alive
+            1, # radar_on
+            2, # observable
+            0, # locked
+            0, # be locked
+            1, # cos(dealta_psi)
+            0, # sin(delta_psi)
+            0, # delta_tehta
+            100e3, # dist
+            0, # ATA
+            300, # speed
+            pi, # AA_hor
+            0, # AA_vert
+        ])
+        state_init_mod["weapon_info"] = np.array([
+            120, # time
+            1, # sin
+            0 # sin 
+        ])
+        state_init_mod["RWR_info"] = np.array([
+            0, # warning
+            1, # cos
+            0, # sin
+            0, # delta_theta
+            100e3, # delta_theta
+        ])
+        return state_init_mod
 
     # todo 观测信息要考虑到多对多的情况，不再只是两架飞机
     def get_state(self, id):
@@ -866,6 +910,7 @@ class Battle(object):
         alive_ally_missiles = self.alive_r_missiles if ego_side=='r' else self.alive_b_missiles
         alive_ego_missiles = [m for m in alive_ally_missiles if m.guider_id == ego.id]
         ally_missile_info = []
+        # 看不到队友发射的导弹，只看到自己的，协同制导时改变处理方式
         for missile in alive_ego_missiles:
             # 相对方位角
             guide_line_ = missile.pos_ - ego.pos_
@@ -895,13 +940,13 @@ class Battle(object):
                 threat_q_beta = atan2(threat_line_[2], threat_line_[0])
                 threat_q_epsilon = atan2(threat_line_[1], np.sqrt(threat_line_[0] ** 2 + threat_line_[2] ** 2))
                 threat_delta_psi = sub_of_radian(threat_q_beta, ego.psi)
-                threat_delta_theta = threat_q_epsilon
+                threat_theta = threat_q_epsilon
                 warning = threat_distance < missile.detect_range  # 假设导弹的探测距离正好就是飞机的告警距离
                 RWR_infos.append(np.array([
                     float(warning), # 0
                     float(cos(threat_delta_psi)), # 1
                     float(sin(threat_delta_psi)), # 2
-                    float(threat_delta_theta), # 3
+                    float(threat_theta), # 3
                     float(threat_distance), # 4
                     # # get_obs时候需要裁剪掉后面
                     # float(threat_q_beta), # 5
@@ -917,6 +962,10 @@ class Battle(object):
             "border": np.array([
                 float(d_hor),  # 0
                 int(left_or_right),  # 1
+                float(norm([
+                    ego.pos_[0]-self.horizontal_center[0], 
+                    ego.pos_[2]-self.horizontal_center[1]
+                ])),  # 2 距离圈中心距离
             ]),
             "ally_infos": ally_infos,
             "enm_infos": enm_infos,
@@ -938,6 +987,7 @@ class Battle(object):
         s["ego_control"][2] /= (2 * pi)  # (2 * pi) 340
         s["ego_control"][7] /= 5 # 取一个不上不下的过载量
         s["border"][:][0] = min(1, s["border"][0] / 50e3)
+        s["border"][:][2] /= self.R_cage
         s["ally_infos"][:][5] /= 10e3
         s["ally_infos"][:][6] /= 340
         s["enm_infos"][:][8] /= 10e3
@@ -958,7 +1008,8 @@ class Battle(object):
             s["ego_control"][2] = s["ego_control"][2] * (2 * pi)
             s["ego_control"][7] *= 5
         if "border" in s and s["border"] is not None:
-            s["border"][0] = s["border"][0] * 50e3
+            s["border"][:][0] = s["border"][0] * 50e3
+            s["border"][:][2] *= self.R_cage
         if "ally_infos" in s and s["ally_infos"]:
             s["ally_infos"][:][5] *= 10e3
             s["ally_infos"][:][6] *= 340
