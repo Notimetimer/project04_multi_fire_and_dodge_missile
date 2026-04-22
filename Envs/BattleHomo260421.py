@@ -679,7 +679,7 @@ class Battle(object):
             1, # cos
             0, # sin
             0, # delta_theta
-            100e3, # delta_theta
+            100e3, # dist
         ])
         return state_init_mod
 
@@ -988,12 +988,13 @@ class Battle(object):
         s["ego_control"][7] /= 5 # 取一个不上不下的过载量
         s["border"][:][0] = min(1, s["border"][0] / 50e3)
         s["border"][:][2] /= self.R_cage
-        s["ally_infos"][:][5] /= 10e3
+        s["ally_infos"][:][5] /= 50e3
         s["ally_infos"][:][6] /= 340
-        s["enm_infos"][:][8] /= 10e3
+        s["enm_infos"][:][8] /= 50e3
         s["enm_infos"][:][10] /= 340
+        s["enm_infos"][:] = s["enm_infos"][:][:13] # 裁剪惯性系信息
         s["weapon_infos"][:][0] /= 120
-        s["RWR_infos"][:][4] /= 10e3
+        s["RWR_infos"][:][4] /= 50e3
         return s
     
     def unscale_state(self, obs_input):
@@ -1011,15 +1012,16 @@ class Battle(object):
             s["border"][:][0] = s["border"][0] * 50e3
             s["border"][:][2] *= self.R_cage
         if "ally_infos" in s and s["ally_infos"]:
-            s["ally_infos"][:][5] *= 10e3
+            s["ally_infos"][:][5] *= 50e3
             s["ally_infos"][:][6] *= 340
         if "enm_infos" in s and s["enm_infos"]:
-            s["enm_infos"][:][8] *= 10e3
+            s["enm_infos"][:][8] *= 50e3
             s["enm_infos"][:][10] *= 340
+            s["enm_infos"][:] = s["enm_infos"][:][:13] # 裁剪惯性系信息
         if "weapon_infos" in s and s["weapon_infos"]:
             s["weapon_infos"][:][0] *= 120
         if "RWR_infos" in s and s["RWR_infos"]:
-            s["RWR_infos"][:][4] *= 10e3
+            s["RWR_infos"][:][4] *= 50e3
         return s
     
     def base_obs(self, id, pomdp=0, reward_fn=0):
@@ -1104,7 +1106,7 @@ class Battle(object):
             # 告警信息不可能冻结，队友信息也不需要冻结，所以只有敌机信息需要冻结
 
         # 裁剪掉需要裁剪的部分
-        state["enm_infos"][:] = state["enm_infos"][:-2] # 裁剪掉惯性系信息
+        state["enm_infos"][:] = state["enm_infos"][:13] # 裁剪掉惯性系信息
         # 剩余部分用作观测函数输出
         
         # 在把 state 传入 scale_state 之前移除时间戳 't'
