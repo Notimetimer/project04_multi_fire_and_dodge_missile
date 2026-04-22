@@ -1135,6 +1135,16 @@ class Battle(object):
         out = True
         if R_uav <= self.R_cage:
             out = False
+        
+        # 敌机全都死了之后可以出界
+        # （警告，这样可能需要同步更改border观测项和奖励）
+        ego_side = UAV.side
+        enm_side = 'b' if ego_side == 'r' else 'r'
+        # 判断敌机阵营是否全灭
+        enm_uavs = self.RUAVs if enm_side =='r' else self.BUAVs
+        if all(u.dead for u in enm_uavs):
+             return False # 不出界
+
         return out
 
 

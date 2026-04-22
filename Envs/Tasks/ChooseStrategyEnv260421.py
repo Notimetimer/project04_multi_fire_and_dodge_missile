@@ -109,7 +109,6 @@ class ChooseStrategyEnv(Battle):
         full_obs = self.base_obs(id, pomdp, reward_fn)
         full_state = self.unscale_state(full_obs)
 
-        self.key_order
         ego = self.find_uav_with_id(id)
         side = ego.side
         
@@ -163,31 +162,58 @@ class ChooseStrategyEnv(Battle):
                     min_dist = dist
                     full_obs["RWR_infos"] = self.scale_state(RWR_info)
 
+        ally_array = np.stack(full_obs["ally_infos"]) 
+        enm_array  = np.stack(full_obs["enm_infos"])
+        
         # 拼接fixed
-        fixed_order = self.key_order.copy()
-        fixed_order = fixed_order.remove("ally_infos")
-        fixed_order = fixed_order.remove("enm_infos")
+        # 1. 简单做法
+        # fixed_order = self.key_order.copy()
+        # fixed_order.remove("ally_infos") # 直接调用，不管它的返回值
+        # fixed_order.remove("enm_infos")
+        # 2. 列表推导式
+        fixed_order = [k for k in self.key_order if k not in ["ally_infos", "enm_infos"]]
         information_output['fixed'] = flatten_obs(full_obs, fixed_order)
-        information_output['ally'] = full_obs["ally"]
-        information_output['enm'] = full_obs["enm"]
+        information_output['ally'] = ally_array
+        information_output['enm'] = enm_array
         mask_output['ally'] = mask_ally
         mask_output['enm'] = mask_enm
         
         return information_output, mask_output, full_obs
     
     # 不做策略蒸馏，删除反扁平化处理
-    
-    # 新动作空间（区分左右）
-    def maneuver14LR(self, UAV, action):        
+
+    # 只针对一个敌机的动作空间（不考虑队友也不考虑综合情况）
+    "动作空间留多一个槽位，用来接住null_token输出的index"
+    def maneuver_for_1_enm(self, UAV, index, action):
+        ego_side = UAV.side
+        if ego_side =='r':
+            enm_side = 'b'
+            ego_num = self.Rnum
+            enm_num = self.Bnum
+        else:
+            enm_side = 'r'
+            ego_num = self.Bnum
+            enm_num = self.Rnum
         # 输入动作与动力运动学状态
-        uav_obs = self.base_obs(UAV.side, pomdp=self.pomdp)  ### test 部分观测的话用1
-        delta_theta = uav_obs["target_information"][2]
+        max_index = enm_num + 1 # 预留多一个槽位给null_token
+        if index >= max_index:
+            enm_info = self.state_init_mod["enm_info"]
+        else:
+            uav_obs = self.base_obs(UAV.id, pomdp=self.pomdp)
+            uav_states = self.unscale_state(uav_obs)
+            enm_info = uav_states["enm_infos"][index]
+
+        未完待续
+        
+        cos_delta_psi = enm_info[5]
+        sin_delta_psi = enm_info[6]
+
+        delta_theta = enm_info
         distance = uav_obs["target_information"][3] * 10e3
         d_hor, leftright = uav_obs["border"]
         speed = uav_obs["ego_main"][0]
         alt = uav_obs["ego_main"][1]
-        cos_delta_psi = uav_obs["target_information"][0]
-        sin_delta_psi = uav_obs["target_information"][1]
+        
         delta_psi = atan2(sin_delta_psi, cos_delta_psi)
         delta_psi_threat = atan2(uav_obs["threat"][1], uav_obs["threat"][0])
 
@@ -294,8 +320,9 @@ class ChooseStrategyEnv(Battle):
         return np.array([delta_height_cmd, delta_psi_cmd, speed_cmd])
 
 
-
-
+    # 综合动作空间（考虑队友和综合情况）
+    def maneuver_complex(self, UAV, action):
+        pass
 
     # 近距杀方法，多对多也能用（加了print）
     def close_range_kill(self,):
