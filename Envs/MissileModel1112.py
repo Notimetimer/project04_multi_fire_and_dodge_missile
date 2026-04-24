@@ -137,7 +137,7 @@ class missile_class:
         self.stage2_start = self.stage1_start + self.stage1_time  # s
         self.stage2_end = self.stage1_start + self.stage1_time + self.stage2_time  # s
         # 杀伤半径
-        self.kill_range = 20
+        self.kill_range = 100 # 防止大仿真步长下错过目标
         # 最大过载
         self.max_g0 = 40
         self.max_g = self.max_g0
@@ -370,9 +370,9 @@ class missile_class:
         #     k_y = 4
         # # k_y = 4
 
-        # 2/(1/5-1/30) = 12, 从30s到5s逐渐由3增大到5
-        k = (5-3)/(1/5-1/30)
-        k_z = np.clip(3+k*(1/self.t_go-1/30), 3, 5)
+        # 2/(1/5-1/30) = 12, 从30s到5s逐渐由3增大到6
+        k = (6-3)/(1/5-1/30)
+        k_z = np.clip(3+k*(1/self.t_go-1/30), 3, 6)
         k_y = k_z
         
         # # 最优制导率？越靠近过载量越小，很容易错过目标

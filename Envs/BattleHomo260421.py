@@ -182,8 +182,8 @@ class Battle(object):
         self.dt_maneuver = dt_maneuver  # simulation interval，1 second
         self.t = 0
         # 初始化无人机
-        self.Rnum = 4 # test
-        self.Bnum = 4
+        self.Rnum = 2 # test
+        self.Bnum = 2
         self.RUAVsTable = {}
         self.BUAVsTable = {}
         self.UAVsTable = {}
@@ -216,7 +216,9 @@ class Battle(object):
             birth_state = red_birth_state if is_red else blue_birth_state
             
             # 出生点 (注意：使用 copy 防止修改外部传入的字典数据)
-            UAV.pos_ = birth_state['position'].copy()+index_in_side*10e3 # 出生点间距1km
+            # 构造一个0, 1, -1, 2，-2 的函数
+            temp = (-1)**index_in_side * int((index_in_side+1)/2)
+            UAV.pos_ = birth_state['position'].copy() + np.array([1, 0, 0]) * temp*10e3 # 出生点间距1km，南北排开
             # 不能出生在外面
             init_R = norm([UAV.pos_[0], UAV.pos_[2]])
             safe_R_cage = self.R_cage - 5e3
@@ -497,7 +499,7 @@ class Battle(object):
                 obs_jsbsim[1] = target_delta_heading  # 期望相对航向角
                 obs_jsbsim[2] = target_speed / 340  # 期望速度
                 obs_jsbsim[3] = UAV.theta  # 当前俯仰角
-                obs_jsbsim[4] = UAV.speed  # 当前速度
+                obs_jsbsim[4] = UAV.speed / 340  # 当前速度
                 obs_jsbsim[5] = UAV.phi  # 当前滚转角
                 obs_jsbsim[6] = UAV.alpha_air  # 当前迎角
                 obs_jsbsim[7] = UAV.beta_air  # 当前侧滑角
@@ -505,7 +507,7 @@ class Battle(object):
                 obs_jsbsim[9] = UAV.q
                 obs_jsbsim[10] = UAV.r
                 obs_jsbsim[11] = UAV.theta_v  # 爬升角
-                obs_jsbsim[12] = sub_of_degree(dynamic_delta_psi, UAV.psi_v)  # 相对航迹角
+                obs_jsbsim[12] = sub_of_radian(dynamic_delta_psi, UAV.psi_v)  # 相对航迹角
                 obs_jsbsim[13] = UAV.alt / 5000
                 obs_jsbsim[14] = UAV.Ny
                 norm_act = self.PIDController.flight_output(obs_jsbsim, dt=self.dt_move)

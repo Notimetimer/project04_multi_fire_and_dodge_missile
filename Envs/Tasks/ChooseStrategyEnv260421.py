@@ -153,23 +153,35 @@ class ChooseStrategyEnv(Battle):
         else:
             # 提取最近的发射
             min_launch_time = 120
+            closest_weapon_info = None
             for i, weapon_info in enumerate(full_state["weapon_infos"]):
                 launch_time = weapon_info[0]
                 if launch_time < min_launch_time:
                     min_launch_time = launch_time
-                    full_obs["weapon_infos"] = self.scale_state({"weapon_infos": np.array([weapon_info])})["weapon_infos"][0]
+                    closest_weapon_info = weapon_info
+            
+            if closest_weapon_info is not None:
+                full_obs["weapon_infos"] = self.scale_state({"weapon_infos": np.array([closest_weapon_info])})["weapon_infos"][0]
+            else:
+                full_obs["weapon_infos"] = self.scaled_init_mod["weapon_info"]
 
         # 处理威胁
         if len(full_obs["RWR_infos"]) == 0:
             full_obs["RWR_infos"] = self.scaled_init_mod["RWR_info"]
         else:
-            # 提取最近的发射
+            # 提取最近的威胁
             min_dist = 100e3
+            closest_RWR_info = None
             for i, RWR_info in enumerate(full_state["RWR_infos"]):
                 dist = RWR_info[4]
                 if dist < min_dist:
                     min_dist = dist
-                    full_obs["RWR_infos"] = self.scale_state({"RWR_infos": np.array([RWR_info])})["RWR_infos"][0]
+                    closest_RWR_info = RWR_info
+            
+            if closest_RWR_info is not None:
+                full_obs["RWR_infos"] = self.scale_state({"RWR_infos": np.array([closest_RWR_info])})["RWR_infos"][0]
+            else:
+                full_obs["RWR_infos"] = self.scaled_init_mod["RWR_info"]
 
         ally_array = full_obs["ally_infos"]
         enm_array  = full_obs["enm_infos"]

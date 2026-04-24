@@ -369,7 +369,7 @@ if __name__=='__main__':
                         
                         # 2. Agent 产生一个动作
                         if 1: # 如果类型是规则智能体而非神经网络
-                            fly_action, fire_action, radar_action = basic_rules(rule_inputs_[id], mask_inputs_[id], rules_num=0)
+                            fly_action, fire_action, radar_action = basic_rules(rule_inputs_[id], mask_inputs_[id], rules_num=4)
                         else:
                             # 如果类型是神经网络
                             pass
