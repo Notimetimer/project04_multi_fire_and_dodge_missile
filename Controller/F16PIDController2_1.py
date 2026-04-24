@@ -141,7 +141,7 @@ class F16PIDController:
         target_theta = error_h * kh
         # print('target_theta',target_theta*180/pi)
 
-        temp = state_input
+        temp = state_input.copy()
         temp[0] = target_theta
         norm_act = self.att_output(temp, dt=dt)
         return norm_act

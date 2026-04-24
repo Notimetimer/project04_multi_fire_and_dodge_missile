@@ -41,7 +41,8 @@ def calc_intern_dist2circle(R, pos_, psi):
         dh = 0
 
     # 边界在飞机的左边还是右边
-    left_or_right = np.sign(sub_of_radian(eta, psi)) # -1 左边，0 中间，1 右边
+    # left_or_right = np.sign(sub_of_radian(eta, psi)) # -1 左边，0 中间，1 右边
+    left_or_right = sub_of_radian(psi, pi+eta)/pi*2 # -1 左边，0 中间，1 右边
     
     return dh, left_or_right
 

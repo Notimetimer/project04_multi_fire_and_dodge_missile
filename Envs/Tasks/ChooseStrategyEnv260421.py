@@ -41,7 +41,7 @@ action_optionsLR = {
                     4: "-60track",
                     5: "L60crank",
                     6: "R60crank",
-                    7: "snake",
+                    7: "Conquer",
                     8: "splitS",
                     9: "3",
                     10: "9",
@@ -53,20 +53,20 @@ action_optionsLR = {
 class ChooseStrategyEnv(Battle):
     def __init__(self, args, tacview_show=0):
         super().__init__(args, tacview_show)
-        self.key_order_1v1 = [
-            "target_alive", # 1
-            "target_observable", # 1
-            "target_locked", # 1
-            "missile_in_mid_term",  # 1
-            "locked_by_target",  # 1
-            "warning",  # 1
-            "target_information",  # 8
-            "ego_main",  # 7
-            "weapon", # 1
-            "threat",  # 4
-            "border",  # 2
-        ]
-        self.obs_dim = 1*6+8+7+1+4+2
+        # self.key_order_1v1 = [
+        #     "target_alive", # 1
+        #     "target_observable", # 1
+        #     "target_locked", # 1
+        #     "missile_in_mid_term",  # 1
+        #     "locked_by_target",  # 1
+        #     "warning",  # 1
+        #     "target_information",  # 8
+        #     "ego_main",  # 7
+        #     "weapon", # 1
+        #     "threat",  # 4
+        #     "border",  # 2
+        # ]
+        # self.obs_dim = 1*6+8+7+1+4+2
         self.fly_act_dim = [14]
         self.fire_dim = 1
         
@@ -81,8 +81,8 @@ class ChooseStrategyEnv(Battle):
         # self.last_dhor = None
         
         # [新增] 初始化 last_dead 属性，防止死亡惩罚重复计算
-        self.RUAV.last_dead = False
-        self.BUAV.last_dead = False
+        for UAV in self.UAVsTable.values():
+            UAV.last_dead = False
 
         # [确认存在/修改] 确保每个 Episode 开始时重置 last_obs
         self.last_obs = None 
@@ -90,8 +90,8 @@ class ChooseStrategyEnv(Battle):
         self.pomdp = pomdp   
 
         # 开场数据支持，至少背对背决斗时需要知道“对手在后面”
-        self.RUAV.state_memory = copy.deepcopy(self.get_state('r'))
-        self.BUAV.state_memory = copy.deepcopy(self.get_state('b'))
+        for id, uav in self.UAVsTable.items():
+            uav.state_memory = copy.deepcopy(self.get_state(id))
     
     """
     需要区分目标死活、填充未发射的导弹信息和死掉的敌机/队友信息，
@@ -121,26 +121,35 @@ class ChooseStrategyEnv(Battle):
         information_output = {'fixed':[], 'ally':[], 'enm':[]}
         mask_output = {'ally':None, 'enm':None}
 
-        # !!!不兼容1v1，不考虑敌人和队友为空列表的情况!!!
+        # 只缓存一次 scaled_init_mod 以兼顾性能和合法性（组装为dict进行缩放）
+        if not hasattr(self, 'scaled_init_mod'):
+            self.scaled_init_mod = {}
+            for key, array_key in zip(
+                ["enm_info", "ally_info", "weapon_info", "RWR_info"],
+                ["enm_infos", "ally_infos", "weapon_infos", "RWR_infos"]
+            ):
+                temp_dict = {array_key: np.array([self.state_init_mod[key]])}
+                self.scaled_init_mod[key] = self.scale_state(temp_dict)[array_key][0]
+
         # 处理敌人，对死掉的敌人写mask
-        for i, enm in enumerate(full_state["enm"]):
+        for i, enm in enumerate(full_state["enm_infos"]):
             enm_alive = enm[0]
             # 死掉的敌人，加mask和填充
             if not enm_alive:
                 mask_enm[i] = 0
-                full_obs["enm"][i] = self.scale_state(self.state_init_mod["enm_info"])
+                full_obs["enm_infos"][i] = self.scaled_init_mod["enm_info"]
 
         # 处理队友，对死掉的队友写mask，
-        for i, ally in enumerate(full_state["ally"]):
+        for i, ally in enumerate(full_state["ally_infos"]):
             ally_alive = ally[0]
             # 死掉的队友，加mask和填充
             if not ally_alive:
                 mask_ally[i] = 0
-                full_obs["ally"][i] = self.scale_state(self.state_init_mod["ally_info"])
+                full_obs["ally_infos"][i] = self.scaled_init_mod["ally_info"]
 
         # 处理导弹（残留处理逻辑，手工注意力）
-        if not full_obs["weapon_infos"]: # 空列表
-            full_obs["weapon_infos"] = self.scale_state(self.state_init_mod["weapon_info"]) # 没有导弹用手工填充
+        if len(full_obs["weapon_infos"]) == 0: # 空数组
+            full_obs["weapon_infos"] = self.scaled_init_mod["weapon_info"]
         else:
             # 提取最近的发射
             min_launch_time = 120
@@ -148,11 +157,11 @@ class ChooseStrategyEnv(Battle):
                 launch_time = weapon_info[0]
                 if launch_time < min_launch_time:
                     min_launch_time = launch_time
-                    full_obs["weapon_infos"] = self.scale_state(weapon_info)
+                    full_obs["weapon_infos"] = self.scale_state({"weapon_infos": np.array([weapon_info])})["weapon_infos"][0]
 
         # 处理威胁
-        if not full_obs["RWR_infos"]:
-            full_obs["RWR_infos"] = self.scale_state(self.state_init_mod["RWR_info"]) # 没有导弹用手工填充
+        if len(full_obs["RWR_infos"]) == 0:
+            full_obs["RWR_infos"] = self.scaled_init_mod["RWR_info"]
         else:
             # 提取最近的发射
             min_dist = 100e3
@@ -160,10 +169,10 @@ class ChooseStrategyEnv(Battle):
                 dist = RWR_info[4]
                 if dist < min_dist:
                     min_dist = dist
-                    full_obs["RWR_infos"] = self.scale_state(RWR_info)
+                    full_obs["RWR_infos"] = self.scale_state({"RWR_infos": np.array([RWR_info])})["RWR_infos"][0]
 
-        ally_array = np.stack(full_obs["ally_infos"]) 
-        enm_array  = np.stack(full_obs["enm_infos"])
+        ally_array = full_obs["ally_infos"]
+        enm_array  = full_obs["enm_infos"]
         
         # 拼接fixed
         # 1. 简单做法
@@ -178,14 +187,37 @@ class ChooseStrategyEnv(Battle):
         mask_output['ally'] = mask_ally
         mask_output['enm'] = mask_enm
         
-        return information_output, mask_output, full_obs
+        return information_output, mask_output, self.unscale_processed_obs(full_obs)
     
     # 不做策略蒸馏，删除反扁平化处理
+    
+    # 被压缩的观测信息反缩放需要适配原先unscale的格式
+    def unscale_processed_obs(self, obs_input):
 
-    # 只针对一个敌机的动作空间（不考虑队友也不考虑综合情况）
-    "动作空间留多一个槽位，用来接住null_token输出的index"
-    def maneuver_for_1_enm(self, UAV, index, action):
-        ego_side = UAV.side
+        s = copy.deepcopy(obs_input)
+        # 封装为 2D 数组以适配 scale/unscale_state 中的 [:, idx] 语法
+        s["weapon_infos"] = np.array([s["weapon_infos"]])
+        s["RWR_infos"] = np.array([s["RWR_infos"]])
+
+        s1 = self.unscale_state(s)
+
+        s1["weapon_infos"]=s1["weapon_infos"][0]
+        s1["RWR_infos"]=s1["RWR_infos"][0]
+        return s1
+    
+    # 雷达动作(只有开关)
+    def radar_action(self, id, action):
+        ego = self.find_uav_with_id(id)
+        if action and (not ego.dead):
+            ego.radar_on = 1
+        else:
+            ego.radar_on = 0
+        return ego.radar_on
+    
+    # 开火动作,这个函数一次只处理一枚导弹的发射
+    def fire_missile(self, source_id, enm_index, tabu=0):
+        ego = self.find_uav_with_id(source_id)
+        ego_side = ego.side
         if ego_side =='r':
             enm_side = 'b'
             ego_num = self.Rnum
@@ -194,30 +226,92 @@ class ChooseStrategyEnv(Battle):
             enm_side = 'r'
             ego_num = self.Bnum
             enm_num = self.Rnum
-        # 输入动作与动力运动学状态
-        max_index = enm_num + 1 # 预留多一个槽位给null_token
-        if index >= max_index:
-            enm_info = self.state_init_mod["enm_info"]
-        else:
-            uav_obs = self.base_obs(UAV.id, pomdp=self.pomdp)
-            uav_states = self.unscale_state(uav_obs)
-            enm_info = uav_states["enm_infos"][index]
-
-        未完待续
         
+        # 输入动作与动力运动学状态
+        max_enm_index = enm_num + 1 # 预留多一个槽位给null_token
+        if enm_index >= max_enm_index:
+            can_fire = 0 # 禁止向需token开火
+            return None
+        else:
+            can_fire = 1
+
+        new_missile_id = None
+        ego = self.find_uav_with_id(source_id)
+        enm_id = self.index2id(source_id, enm_index, relation='enm')
+        enm = self.find_uav_with_id(enm_id)
+        ego_state = self.get_state(source_id)
+        
+        # tabu 自变量
+        enm_locked = ego_state["enm_infos"][enm_index][3]
+        ATA = ego_state["enm_infos"][enm_index][9]
+        distance = ego_state["enm_infos"][enm_index][8]
+        AA_hor = ego_state["enm_infos"][enm_index][11]
+
+        # 绝对禁止开火条件
+        # 1. 我死了
+        case1 = ego.dead
+        # 2. 没有弹药
+        case2 = (ego.ammo == 0)
+
+        # 绝对禁止开火情况
+        if case1 or case2 :
+            return None
+
+        # 部分禁止开火条件
+        # tabu1. 未锁定目标
+        tabu_case1 = not enm_locked
+        # tabu2. 目标已死
+        tabu_case2 = enm.dead
+        # tabu3. 冷却时间（不建议放在环境端）
+
+        if tabu and (tabu_case1 or tabu_case2):
+            can_fire = 0
+        
+        # 发射导弹
+        if can_fire:
+            # 调用唯一注册入口，严禁直接修改self.Rmissiles或self.Bmissiles
+            new_missile_id = self.launch_1_missile(source_id, enm_id)
+        return new_missile_id
+
+    # 只针对一个敌机的动作空间（不考虑队友也不考虑综合情况）
+    "动作空间留多一个槽位，用来接住null_token输出的index"
+    def maneuver_for_1_enm(self, id, enm_index, action, full_obs_at_the_moment):
+        ego = self.find_uav_with_id(id)
+        ego_side = ego.side
+        if ego_side =='r':
+            enm_side = 'b'
+            ego_num = self.Rnum
+            enm_num = self.Bnum
+        else:
+            enm_side = 'r'
+            ego_num = self.Bnum
+            enm_num = self.Rnum
+        
+        # 动作空间也需要知道智能体“看到什么”
+        # 导弹的信息和威胁的信息被压缩
+        vice_uav_states = self.unscale_processed_obs(full_obs_at_the_moment)
+
+        # 输入动作与动力运动学状态
+        max_enm_index = enm_num + 1 # 预留多一个槽位给null_token
+        if enm_index >= max_enm_index:
+            vice_uav_states["enm_infos"] = self.state_init_mod["enm_info"]
+        else:
+            # 执行动作前压缩信息
+            vice_uav_states["enm_infos"] = vice_uav_states["enm_infos"][enm_index]
+        enm_info = vice_uav_states["enm_infos"]
+
+        # 队友的方位没有考虑在动作空间里，暂不做压缩
+        
+        # 敌机信息
         cos_delta_psi = enm_info[5]
         sin_delta_psi = enm_info[6]
-
-        delta_theta = enm_info
-        distance = uav_obs["target_information"][3] * 10e3
-        d_hor, leftright = uav_obs["border"]
-        speed = uav_obs["ego_main"][0]
-        alt = uav_obs["ego_main"][1]
-        
+        delta_theta = enm_info[7]
+        distance = enm_info[8]
+        speed = vice_uav_states["ego_main"][0]
+        alt = vice_uav_states["ego_main"][1]
+        d_hor, leftright, d2center = vice_uav_states["border"]
         delta_psi = atan2(sin_delta_psi, cos_delta_psi)
-        delta_psi_threat = atan2(uav_obs["threat"][1], uav_obs["threat"][0])
-
-        move_action = np.zeros(3)
+        delta_psi_threat = atan2(vice_uav_states["RWR_infos"][2], vice_uav_states["RWR_infos"][1])
 
         # 水平跟踪
         if action == 0:
@@ -263,14 +357,14 @@ class ChooseStrategyEnv(Battle):
 
         # 占领中心机动
         if action == 7:
-            line2center = np.array([self.horizontal_center[0]-UAV.pos_[0], self.horizontal_center[1]-UAV.pos_[2]])
+            line2center = np.array([self.horizontal_center[0]-ego.pos_[0], self.horizontal_center[1]-ego.pos_[2]])
             psi2center = np.arctan2(line2center[1], line2center[0])
             dist2center = norm(line2center)
-            delta_psi_cmd = sub_of_radian(psi2center, UAV.psi) * dist2center/self.R_cage
+            delta_psi_cmd = sub_of_radian(psi2center, ego.psi) * dist2center/self.R_cage
             # 保持在安全高度
-            if UAV.alt < self.min_alt_safe:
+            if ego.alt < self.min_alt_safe:
                 delta_height_cmd = 300
-            elif UAV.alt > self.max_alt_safe:
+            elif ego.alt > self.max_alt_safe:
                 delta_height_cmd = -300
             else:
                 delta_height_cmd = 0
@@ -278,42 +372,42 @@ class ChooseStrategyEnv(Battle):
 
         # 破s
         if action == 8:
-            delta_psi_temp = delta_psi_threat if uav_obs["warning"] else delta_psi
+            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
             delta_psi_cmd = sub_of_radian(delta_psi_temp, pi)
-            delta_height_cmd = max(-2000, self.min_alt_safe-UAV.alt)
+            delta_height_cmd = max(-2000, self.min_alt_safe-ego.alt)
             speed_cmd = 300
 
         # 水平3线机动
         if action == 9:
-            delta_psi_temp = delta_psi_threat if uav_obs["warning"] else delta_psi
+            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
             delta_psi_cmd = sub_of_radian(delta_psi_temp - pi/2, 0)
             delta_height_cmd = 0
             speed_cmd = 340
 
         # 水平9线机动
         if action == 10:
-            delta_psi_temp = delta_psi_threat if uav_obs["warning"] else delta_psi
+            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
             delta_psi_cmd = sub_of_radian(delta_psi_temp + pi/2, 0)
             delta_height_cmd = 0
             speed_cmd = 340
 
         # 水平快置尾
         if action == 11:
-            delta_psi_temp = delta_psi_threat if uav_obs["warning"] else delta_psi
+            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
             delta_psi_cmd = np.clip(sub_of_radian(delta_psi_temp, pi), -pi/2, pi/2)
             delta_height_cmd = -500 if abs(delta_psi_temp)<pi/2 else 0
             speed_cmd = 340
 
         # 水平快置尾后-30°俯冲
         if action == 12:
-            delta_psi_temp = delta_psi_threat if uav_obs["warning"] else delta_psi
+            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
             delta_psi_cmd = np.clip(sub_of_radian(delta_psi_temp, pi), -pi/2, pi/2)
             delta_height_cmd = -5000/3
             speed_cmd = 340
 
         # 水平快置尾后-60°俯冲
         if action == 13:
-            delta_psi_temp = delta_psi_threat if uav_obs["warning"] else delta_psi
+            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
             delta_psi_cmd = np.clip(sub_of_radian(delta_psi_temp, pi), -pi/2, pi/2)
             delta_height_cmd = -5000/3*2
             speed_cmd = 340
@@ -321,7 +415,7 @@ class ChooseStrategyEnv(Battle):
 
 
     # 综合动作空间（考虑队友和综合情况）
-    def maneuver_complex(self, UAV, action):
+    def maneuver_complex(self, id, action):
         pass
 
     # 近距杀方法，多对多也能用（加了print）

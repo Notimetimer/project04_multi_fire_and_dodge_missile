@@ -27,7 +27,10 @@ from datetime import datetime
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
 
-from _context import *
+try:
+    from _context import *
+except ImportError:
+    from ._context import *
 from Envs.UAVmodel6d0309 import UAVModel  # UAVmodel6d
 from Visualize.tacview_visualize2 import *
 from Visualize.tensorboard_visualize import *
