@@ -322,6 +322,10 @@ if __name__=='__main__':
             
             episode_start_time = time.time()
 
+            fly_action_all = {}
+            fire_action_all = {}
+            radar_action_all = {}
+
             # 环境运行一轮的情况
             steps_of_this_eps = -1 # 没办法了
             for count in range(round(args.max_episode_len / dt_maneuver)):
@@ -374,6 +378,10 @@ if __name__=='__main__':
                             # 如果类型是神经网络
                             pass
                         
+                        fly_action_all[id] = fly_action.copy()
+                        fire_action_all[id] = fire_action.copy()
+                        radar_action_all[id] = radar_action
+
                         # 暂不考虑同时攻击多个目标
                         if fire_action['do']:
                             target_index = fire_action['at']
@@ -391,11 +399,11 @@ if __name__=='__main__':
                         # abs(env.t % 5) < 1e-2 and \
                         if side_word == 'red' and \
                             (
-                            47 < env.t < 64 or\
-                                500 < env.t < 512
+                            # 47 < env.t < 64 or\
+                                3*60 < env.t < 3*60+12
                             ):
                             print('id', UAV.id)
-                            print('enm_infos', rule_inputs_[id]['enm_infos'])
+                            print('enm_infos', rule_inputs_[id]['enm_infos'][fly_action['at']])
                             print('weapon_infos', rule_inputs_[id]['weapon_infos'])
                             print('RWR_infos', rule_inputs_[id]['RWR_infos'])
                             print('机动动作是：', fly_action)
@@ -419,9 +427,19 @@ if __name__=='__main__':
                 # 循环调用底层控制器
                 flight_cmds = {}
                 for id in env.UAV_ids:
+                    fly_action = fly_action_all[id]
+                    fire_action = fire_action_all[id]
+                    radar_action = radar_action_all[id]
+
                     num_maneuver = fly_action['do']
                     target_index = fly_action['at']
                     flight_cmds[id] = env.maneuver_for_1_enm(id, target_index, num_maneuver, rule_inputs_[id])
+                    # debug
+                    if id == 1:
+                        print("target_index", target_index)
+                        print("num_maneuver", num_maneuver)
+                        print("rule_inputs_", rule_inputs_[id]['enm_infos'][target_index])
+                        print("flight_cmds", flight_cmds[id])
 
                 env.step(flight_cmds.values()) # Environment updates every dt_maneuver
                 done, _, _, _ = env.combat_terminate_and_reward('r', None, action_cycle_multiplier)
