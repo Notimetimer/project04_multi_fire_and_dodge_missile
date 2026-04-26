@@ -325,104 +325,154 @@ class ChooseStrategyEnv(Battle):
         delta_psi = atan2(sin_delta_psi, cos_delta_psi)
         delta_psi_threat = atan2(vice_uav_states["RWR_infos"][2], vice_uav_states["RWR_infos"][1])
 
-        # 水平跟踪
-        if action == 0:
-            delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
+        # 动作空间正交化
+        action_v, action_h = action
+        # 速度指令，锁定340
+        speed_cmd = 340
+
+        # 垂直方向指令
+        if action_v == 0:
+            delta_height_cmd = min(5000*2/3, self.max_alt_safe-ego.alt)
+        if action_v == 1:
+            delta_height_cmd = min(5000/3, self.max_alt_safe-ego.alt)
+        if action_v == 2:
             delta_height_cmd = 135
-            speed_cmd = 340
+        if action_v == 3:
+            delta_height_cmd = max(-5000/3, self.min_alt_safe-ego.alt)
+        if action_v == 4:
+            delta_height_cmd = max(-5000/3*2, self.min_alt_safe-ego.alt)
+        if action_v == 5:
+            delta_height_cmd = max(-2000, self.min_alt_safe-ego.alt)
 
-        # 30°爬升加速
-        if action == 1:
-            delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
-            delta_height_cmd = 5000/3
-            speed_cmd = 340
-
-        # 60°爬升加速
-        if action == 2:
-            delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
-            delta_height_cmd = 5000*2/3
-            speed_cmd = 340
-
-        # -30°俯冲跟踪
-        if action == 3:
-            delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
-            delta_height_cmd = -5000/3
-            speed_cmd = 340
-
-        # -60°俯冲跟踪
-        if action == 4:
-            delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
-            delta_height_cmd = -5000/3*2
-            speed_cmd = 340
-
-        # 左60°水平偏移
-        if action == 5:
-            delta_psi_cmd = sub_of_radian(delta_psi - 61 * pi/180, 0)
-            delta_height_cmd = 0
-            speed_cmd = 340
-
-        # 右60°水平偏移
-        if action == 6:
-            delta_psi_cmd = sub_of_radian(delta_psi + 61 * pi/180, 0)
-            delta_height_cmd = 0
-            speed_cmd = 340
-
-        # 占领中心机动
-        if action == 7:
+        # 水平方向指令：
+        # 回中心
+        if action_h == 0:
             line2center = np.array([self.horizontal_center[0]-ego.pos_[0], self.horizontal_center[1]-ego.pos_[2]])
             psi2center = np.arctan2(line2center[1], line2center[0])
             dist2center = norm(line2center)
             delta_psi_cmd = sub_of_radian(psi2center, ego.psi) * dist2center/self.R_cage
-            # 保持在安全高度
-            if ego.alt < self.min_alt_safe:
-                delta_height_cmd = 300
-            elif ego.alt > self.max_alt_safe:
-                delta_height_cmd = -300
-            else:
-                delta_height_cmd = 0
-            speed_cmd = 340
-
-        # 破s
-        if action == 8:
-            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
-            delta_psi_cmd = sub_of_radian(delta_psi_temp, pi)
-            delta_height_cmd = max(-2000, self.min_alt_safe-ego.alt)
-            speed_cmd = 300
-
-        # 水平3线机动
-        if action == 9:
+        # 追踪
+        if action_h == 1:
+            delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
+        # 左crank
+        if action_h == 2:
+            delta_psi_cmd = sub_of_radian(delta_psi - 61 * pi/180, 0)
+        # 右crank
+        if action_h == 3:
+            delta_psi_cmd = sub_of_radian(delta_psi + 61 * pi/180, 0)
+        # 3线
+        if action_h == 4:
             delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
             delta_psi_cmd = sub_of_radian(delta_psi_temp - pi/2, 0)
-            delta_height_cmd = 0
-            speed_cmd = 340
-
-        # 水平9线机动
-        if action == 10:
+        # 9线
+        if action_h == 5:
             delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
             delta_psi_cmd = sub_of_radian(delta_psi_temp + pi/2, 0)
-            delta_height_cmd = 0
-            speed_cmd = 340
-
-        # 水平快置尾
-        if action == 11:
+        # 置尾机动
+        if action_h == 6:
             delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
             delta_psi_cmd = np.clip(sub_of_radian(delta_psi_temp, pi), -pi/2, pi/2)
-            delta_height_cmd = -500 if abs(delta_psi_temp)<pi/2 else 0
-            speed_cmd = 340
 
-        # 水平快置尾后-30°俯冲
-        if action == 12:
-            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
-            delta_psi_cmd = np.clip(sub_of_radian(delta_psi_temp, pi), -pi/2, pi/2)
-            delta_height_cmd = -5000/3
-            speed_cmd = 340
+        # # 旧的14维动作空间，现在开始正交化分解
+        # # 水平跟踪
+        # if action == 0:
+        #     delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
+        #     delta_height_cmd = 135
+        #     speed_cmd = 340
 
-        # 水平快置尾后-60°俯冲
-        if action == 13:
-            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
-            delta_psi_cmd = np.clip(sub_of_radian(delta_psi_temp, pi), -pi/2, pi/2)
-            delta_height_cmd = -5000/3*2
-            speed_cmd = 340
+        # # 30°爬升加速
+        # if action == 1:
+        #     delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
+        #     delta_height_cmd = 5000/3
+        #     speed_cmd = 340
+
+        # # 60°爬升加速
+        # if action == 2:
+        #     delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
+        #     delta_height_cmd = 5000*2/3
+        #     speed_cmd = 340
+
+        # # -30°俯冲跟踪
+        # if action == 3:
+        #     delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
+        #     delta_height_cmd = -5000/3
+        #     speed_cmd = 340
+
+        # # -60°俯冲跟踪
+        # if action == 4:
+        #     delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
+        #     delta_height_cmd = -5000/3*2
+        #     speed_cmd = 340
+
+        # # 左60°水平偏移
+        # if action == 5:
+        #     delta_psi_cmd = sub_of_radian(delta_psi - 61 * pi/180, 0)
+        #     delta_height_cmd = 0
+        #     speed_cmd = 340
+
+        # # 右60°水平偏移
+        # if action == 6:
+        #     delta_psi_cmd = sub_of_radian(delta_psi + 61 * pi/180, 0)
+        #     delta_height_cmd = 0
+        #     speed_cmd = 340
+
+        # # 占领中心机动
+        # if action == 7:
+        #     line2center = np.array([self.horizontal_center[0]-ego.pos_[0], self.horizontal_center[1]-ego.pos_[2]])
+        #     psi2center = np.arctan2(line2center[1], line2center[0])
+        #     dist2center = norm(line2center)
+        #     delta_psi_cmd = sub_of_radian(psi2center, ego.psi) * dist2center/self.R_cage
+        #     # 保持在安全高度
+        #     if ego.alt < self.min_alt_safe:
+        #         delta_height_cmd = 300
+        #     elif ego.alt > self.max_alt_safe:
+        #         delta_height_cmd = -300
+        #     else:
+        #         delta_height_cmd = 0
+        #     speed_cmd = 340
+
+        # # 破s
+        # if action == 8:
+        #     delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
+        #     delta_psi_cmd = sub_of_radian(delta_psi_temp, pi)
+        #     delta_height_cmd = max(-2000, self.min_alt_safe-ego.alt)
+        #     speed_cmd = 300
+
+        # # 水平3线机动
+        # if action == 9:
+        #     delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
+        #     delta_psi_cmd = sub_of_radian(delta_psi_temp - pi/2, 0)
+        #     delta_height_cmd = 0
+        #     speed_cmd = 340
+
+        # # 水平9线机动
+        # if action == 10:
+        #     delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
+        #     delta_psi_cmd = sub_of_radian(delta_psi_temp + pi/2, 0)
+        #     delta_height_cmd = 0
+        #     speed_cmd = 340
+
+        # # 水平快置尾
+        # if action == 11:
+        #     delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
+        #     delta_psi_cmd = np.clip(sub_of_radian(delta_psi_temp, pi), -pi/2, pi/2)
+        #     delta_height_cmd = -500 if abs(delta_psi_temp)<pi/2 else 0
+        #     speed_cmd = 340
+
+        # # 水平快置尾后-30°俯冲
+        # if action == 12:
+        #     delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
+        #     delta_psi_cmd = np.clip(sub_of_radian(delta_psi_temp, pi), -pi/2, pi/2)
+        #     delta_height_cmd = -5000/3
+        #     speed_cmd = 340
+
+        # # 水平快置尾后-60°俯冲
+        # if action == 13:
+        #     delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
+        #     delta_psi_cmd = np.clip(sub_of_radian(delta_psi_temp, pi), -pi/2, pi/2)
+        #     delta_height_cmd = -5000/3*2
+        #     speed_cmd = 340
+
         return np.array([delta_height_cmd, delta_psi_cmd, speed_cmd])
 
 

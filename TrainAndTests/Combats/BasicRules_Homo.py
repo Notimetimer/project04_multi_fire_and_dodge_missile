@@ -19,7 +19,7 @@ action_cycle_multiplier = 10
 
 def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
     '''
-    rules_num = 0: 保持和目标相同高度只打进攻(num_maneuver = 0,1,3)，0平飞追踪 1爬升追踪 3下降追踪，攻击区内发射导弹，上一枚导弹发射后如果还在中制导，不发射新导弹
+    rules_num = 0: 保持和目标相同高度只打进攻(maneuver_cmds = 0,1,3)，0平飞追踪 1爬升追踪 3下降追踪，攻击区内发射导弹，上一枚导弹发射后如果还在中制导，不发射新导弹
     rules_num = 1: 保持和目标相同高度进攻(0,1,3), 发射完导弹立马crank(5,6), 受到威胁立刻回转至5000m高度以下(11水平回转, 12俯冲回转), 威胁结束后回归进攻
     rules_num = 2: 保持和目标相同高度打首轮进攻(0,1,3), 在距离40km以外先爬升60°(2), 一个决策回合后射击, 否则直接射击，设计后立刻crank(6)，
         收到威胁立刻splitS(8), 威胁解除后回转进攻(0,1,3)
@@ -96,13 +96,23 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
         if RWR and threat_distance < escape_distance_list[rules_num]: # 受到威胁
             # 优先俯冲回转至5000m以下
             if alt > 5000:
-                num_maneuver = 12 # 俯冲回转
+                action_v = 4 # -60度俯冲
+                action_h = 6 # 水平方向背离
             else:
-                num_maneuver = 11 # 水平回转
+                action_v = 2 # 平飞
+                action_h = 6 # 水平方向背离
+            # # 优先俯冲回转至5000m以下
+            # if alt > 5000:
+            #     maneuver_cmds = 12 # 俯冲回转
+            # else:
+            #     maneuver_cmds = 11 # 水平回转
         else:
-            num_maneuver = 7
-            
-        flight_action = {'do': num_maneuver, 'at': selected_index}
+            action_v = 2 # 平飞
+            action_h = 0 # 回中心
+            # maneuver_cmds = 7
+
+        flight_action = {'do': [action_v, action_h], 'at': selected_index}  
+        # flight_action = {'do': maneuver_cmds, 'at': selected_index}
         fire_action = {'do': False, 'at': selected_index}
         radar_action = 1
         return flight_action, fire_action, radar_action
@@ -118,7 +128,7 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
 
     # 1. 计算初始的开火意图
     fire_missile = False
-    case1 = distance < 105e3 and sin_theta >= sin(30*pi/180)
+    case1 = distance < 105e3 and (sin_theta >= sin(30*pi/180) or alt > 9000)
     case2 = distance < 80e3
     if (case1 or case2) and ATA < 60 * pi/180 and abs(delta_psi) < 30*pi/180:
         if t_fired >= 20 and not on_guiding and not (distance>12e3 and abs(AA_hor) < 30*pi/180):
@@ -126,18 +136,30 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
 
     # # 2. 根据目标相对高度选择基础进攻机动
     if abs(delta_theta) < 30 * pi/180:
-        base_offensive_action = 0  # 平飞追踪
+        action_v = 2 # 平飞
+        action_h = 1 # 追踪
     elif delta_theta >= 30 * pi/180:
-        base_offensive_action = 1  # 爬升追踪
-    else: # delta_theta < -pi/6
-        base_offensive_action = 3  # 下降追踪
+        action_v = 1 # 爬升
+        action_h = 1 # 追踪
+    else:
+        action_v = 3 # 下降
+        action_h = 1 # 追踪
+    maneuver_cmds = [action_v, action_h] # 默认执行基础进攻
+    base_offensive_action = [action_v, action_h]
 
-    num_maneuver = base_offensive_action # 默认执行基础进攻
+    # # # 2. 根据目标相对高度选择基础进攻机动
+    # if abs(delta_theta) < 30 * pi/180:
+    #     base_offensive_action = 0  # 平飞追踪
+    # elif delta_theta >= 30 * pi/180:
+    #     base_offensive_action = 1  # 爬升追踪
+    # else: # delta_theta < -pi/6
+    #     base_offensive_action = 3  # 下降追踪
+    # maneuver_cmds = base_offensive_action # 默认执行基础进攻
 
     # 3. 根据规则编号(rules_num)决定最终机动和开火决策
     if rules_num == 0:
         # 规则0: 纯进攻
-        num_maneuver = base_offensive_action
+        maneuver_cmds = base_offensive_action
         fire_missile_affirmative = fire_missile
 
     elif rules_num in [1, 3]:
@@ -145,73 +167,113 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
         if RWR and threat_distance < escape_distance_list[rules_num]: # 受到威胁
             # 优先俯冲回转至5000m以下
             if alt > 5000:
-                num_maneuver = 12 # 俯冲回转
+                action_v = 4 # -60度俯冲
+                action_h = 6 # 水平方向背离
             else:
-                num_maneuver = 11 # 水平回转
+                action_v = 2 # 平飞
+                action_h = 6 # 水平方向背离
+            # if alt > 5000:
+            #     maneuver_cmds = 12 # 俯冲回转
+            # else:
+            #     maneuver_cmds = 11 # 水平回转
             # fire_missile = False # 防御时不发射
         elif on_guiding: # 如果本回合决定发射导弹
-            num_maneuver = 6 if delta_psi < 0 else 5 # random.choice([5,6]) # 立刻crank
+            if delta_psi < 0:
+                action_v = 2 # 平飞
+                action_h = 3 # Rcrank
+            else:
+                action_v = 2 # 平飞
+                action_h = 2 # Lcrank
+            # if delta_psi < 0:
+            #     maneuver_cmds = 6 # Rcrank
+            # else:
+            #     maneuver_cmds = 5 # Lcrank
         else:
-            num_maneuver = base_offensive_action
+            maneuver_cmds = [action_v, action_h]
+            # maneuver_cmds = base_offensive_action
         fire_missile_affirmative = fire_missile
 
     elif rules_num in [2, 4]:
         # 规则2: Loft爬升射击序列
         if RWR and threat_distance < escape_distance_list[rules_num]: # 受到威胁
-            num_maneuver = 8 # 立刻 split-S
+            action_v = 5
+            action_h = 6
+            # maneuver_cmds = 8 # 立刻 split-S
             fire_missile = False # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离，或上一回合是爬升
-            num_maneuver = 6 if delta_psi < 0 else 5 # random.choice([5,6]) # 立刻crank
+            if delta_psi < 0:
+                action_v = 2 # 平飞
+                action_h = 3 # Rcrank
+                # maneuver_cmds = 6 # 右crank
+            else:
+                action_v = 2 # 平飞
+                action_h = 2 # Lcrank
+                # maneuver_cmds = 5 # 左crank
         elif fire_missile and distance > 40e3: # 满足开火条件且在远距离
             if sin_theta < sin(30*pi/180):  # last_action != 2: # 如果上一动作为非爬升
-                num_maneuver = 2 # 则本回合执行爬升
+                action_v = 0 # 爬升
+                action_h = 1 # 追踪
+                # maneuver_cmds = 2 # 则本回合执行大角度爬升
                 fire_missile = False
             else:
                 fire_missile = True
         else:
-            num_maneuver = base_offensive_action
+            maneuver_cmds = base_offensive_action
         fire_missile_affirmative = fire_missile
     
     elif rules_num in [5]:
         if RWR and threat_distance < escape_distance_list[rules_num]: # 受到威胁
-            num_maneuver = 8 # 立刻 split-S
+            action_v = 5
+            action_h = 6
+            # maneuver_cmds = 8 # 立刻 split-S
             fire_missile = False # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离，或上一回合是爬升
-            num_maneuver = 6 if delta_psi < 0 else 5 # random.choice([5,6]) # 立刻crank
+            if delta_psi < 0:
+                action_v = 2 # 平飞
+                action_h = 3 # Rcrank
+                # maneuver_cmds = 6 # 右crank
+            else:
+                action_v = 2 # 平飞
+                action_h = 2 # Lcrank
+                # maneuver_cmds = 5 # 左crank
         elif fire_missile and distance > 40e3: # 满足开火条件且在远距离
             if sin_theta < sin(30*pi/180):  # last_action != 2: # 如果上一动作为非爬升 达到高抛角度再发射导弹
-                num_maneuver = 2 # 则本回合执行爬升
+                maneuver_cmds = 2 # 则本回合执行爬升
                 fire_missile = False
             else:
                 fire_missile = True
         else:
-            num_maneuver = 3  # 低空苟分
+            maneuver_cmds = 3  # 低空苟分
         fire_missile_affirmative = fire_missile
         
-    if  np.random.rand() <= p_random:
-        num_maneuver = np.random.randint(0, 13+1)
-        num_maneuver = np.clip(num_maneuver, 0, 13)
-        # # 不准因为随机行为而出界，效果不好，改回
-        # if d_hor < 8e3:
-        #     num_maneuver = base_offensive_action
+    # if  np.random.rand() <= p_random:
+    #     maneuver_cmds = np.random.randint(0, 13+1)
+    #     maneuver_cmds = np.clip(maneuver_cmds, 0, 13)
+    #     # # 不准因为随机行为而出界，效果不好，改回
+    #     # if d_hor < 8e3:
+    #     #     maneuver_cmds = base_offensive_action
     
     if rules_num in [3, 4]:
         # 不准出界
         if d_hor < 8e3:
-            num_maneuver = base_offensive_action
+            maneuver_cmds = base_offensive_action
     
     # 防撞地规则
     if alt < 3000:
-        if num_maneuver in [0, 3, 4]:
-            num_maneuver = 1
-        if num_maneuver in [8,11,12,13]:
-            num_maneuver = 11
+        action_v = 1
+        # if maneuver_cmds in [0, 3, 4]:
+        #     action_v = 1 # 爬升
+        #     action_h = 1 # 追踪
+        #     maneuver_cmds = 1
+        # if maneuver_cmds in [8,11,12,13]:
+        #     maneuver_cmds = 11
     # 防破升限
     if alt > 12000:
-        if num_maneuver in [1,2]:
-            num_maneuver = 0
-
-    flight_action = {'do': num_maneuver, 'at': selected_index}
+        action_v = 3
+        # if maneuver_cmds in [1,2]:
+        #     maneuver_cmds = 0
+    maneuver_cmds = [action_v, action_h]
+    flight_action = {'do': maneuver_cmds, 'at': selected_index}
     fire_action = {'do': fire_missile_affirmative,'at': selected_index}
     radar_action = 1 # 暂不考虑雷达开关
 
@@ -431,13 +493,13 @@ if __name__=='__main__':
                     fire_action = fire_action_all[id]
                     radar_action = radar_action_all[id]
 
-                    num_maneuver = fly_action['do']
+                    maneuver_cmds = fly_action['do']
                     target_index = fly_action['at']
-                    flight_cmds[id] = env.maneuver_for_1_enm(id, target_index, num_maneuver, rule_inputs_[id])
+                    flight_cmds[id] = env.maneuver_for_1_enm(id, target_index, maneuver_cmds, rule_inputs_[id])
                     # debug
                     if id == 1:
                         print("target_index", target_index)
-                        print("num_maneuver", num_maneuver)
+                        print("maneuver_cmds", maneuver_cmds)
                         print("rule_inputs_", rule_inputs_[id]['enm_infos'][target_index])
                         print("flight_cmds", flight_cmds[id])
 
