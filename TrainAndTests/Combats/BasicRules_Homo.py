@@ -365,7 +365,7 @@ if __name__=='__main__':
                         side_word = 'red' if UAV.side == 'r' else 'blue'
                         num_word = id if UAV.side == 'r' else id-200
 
-                        print("我是", side_word, num_word)
+                        # print("我是", side_word, num_word)
                         
                         # 2. Agent 产生一个动作
                         if 1: # 如果类型是规则智能体而非神经网络
@@ -386,6 +386,21 @@ if __name__=='__main__':
                         
                         # 必须确认雷达开关状态
                         env.radar_action(id, radar_action)
+
+                        # debug
+                        # abs(env.t % 5) < 1e-2 and \
+                        if side_word == 'red' and \
+                            (
+                            47 < env.t < 64 or\
+                                500 < env.t < 512
+                            ):
+                            print('id', UAV.id)
+                            print('enm_infos', rule_inputs_[id]['enm_infos'])
+                            print('weapon_infos', rule_inputs_[id]['weapon_infos'])
+                            print('RWR_infos', rule_inputs_[id]['RWR_infos'])
+                            print('机动动作是：', fly_action)
+                            print('开火动作是:', fire_action)
+                            print()
 
                     decide_steps_after_update += 1
 

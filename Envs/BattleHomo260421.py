@@ -177,6 +177,10 @@ class Battle(object):
         if blue_birth_state is None:
             blue_birth_state = self.BLUE_BIRTH_STATE
 
+        # # 随机对调红蓝双方的出生位置和朝向，消除物理不对称性带来的长期偏置
+        # if np.random.rand() > 0.5:
+        #     red_birth_state, blue_birth_state = blue_birth_state, red_birth_state
+
         self.BLUE_BIRTH_STATE = blue_birth_state
         self.RED_BIRTH_STATE = red_birth_state
         self.dt_maneuver = dt_maneuver  # simulation interval，1 second
@@ -513,10 +517,10 @@ class Battle(object):
                 norm_act = self.PIDController.flight_output(obs_jsbsim, dt=self.dt_move)
                 aileron, elevator, rudder, throttle = norm_act
 
-                if abs(self.t % 10) < 1e-3:
-                    print("target_delta_height", target_delta_height)
-                    print(obs_jsbsim)
-                    print()
+                # if abs(self.t % 10) < 1e-3:
+                #     print("target_delta_height", target_delta_height)
+                #     print(obs_jsbsim)
+                #     print()
 
                 # # 在这里插入强化学习的控制器
                 # # 实时从 UAV 对象读取物理量，与训练环境 get_state() 完全对齐
