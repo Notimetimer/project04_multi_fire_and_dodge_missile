@@ -138,14 +138,14 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
             fire_missile = True
 
     # # 2. 根据目标相对高度选择基础进攻机动
-    if abs(delta_theta) < 30 * pi/180:
-        action_v = 2 # 平飞
+    if abs(delta_theta) < -30 * pi/180:
+        action_v = 3 # 下降
         action_h = 1 # 追踪
     elif delta_theta >= 30 * pi/180:
         action_v = 1 # 爬升
         action_h = 1 # 追踪
     else:
-        action_v = 3 # 下降
+        action_v = 2 # 平飞
         action_h = 1 # 追踪
     maneuver_cmds = [action_v, action_h] # 默认执行基础进攻
     base_offensive_action = [action_v, action_h]
