@@ -403,8 +403,8 @@ class missile_class:
         if np.linalg.norm(np.cross(line_t_, vrt_)) / distance ** 2 > self.sight_angle_rate_max:
             off_lock = True
         if off_lock:
-            nzt1 = self.nzt  # 0
-            nyt1 = self.nyt  # cos(theta_mt1)
+            nzt1 = self.nzt * 0.8  # 降级
+            nyt1 = (self.nyt - g) * 0.8 + g # 降级
         else:
             self.nzt = nzt1
             self.nyt = nyt1

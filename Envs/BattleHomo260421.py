@@ -497,81 +497,82 @@ class Battle(object):
                     continue
 
 
-                # 强化学习控制器状态空间可能不匹配，先换成PID的处理
-                obs_jsbsim = np.zeros(15)
-                obs_jsbsim[0] = (UAV.alt + target_delta_height) / 5000  # 期望高度 # 测试飞行控制器
-                obs_jsbsim[1] = target_delta_heading  # 期望相对航向角
-                obs_jsbsim[2] = target_speed / 340  # 期望速度
-                obs_jsbsim[3] = UAV.theta  # 当前俯仰角
-                obs_jsbsim[4] = UAV.speed / 340  # 当前速度
-                obs_jsbsim[5] = UAV.phi  # 当前滚转角
-                obs_jsbsim[6] = UAV.alpha_air  # 当前迎角
-                obs_jsbsim[7] = UAV.beta_air  # 当前侧滑角
-                obs_jsbsim[8] = UAV.p
-                obs_jsbsim[9] = UAV.q
-                obs_jsbsim[10] = UAV.r
-                obs_jsbsim[11] = UAV.theta_v  # 爬升角
-                obs_jsbsim[12] = sub_of_radian(dynamic_delta_psi, UAV.psi_v)  # 相对航迹角
-                obs_jsbsim[13] = UAV.alt / 5000
-                obs_jsbsim[14] = UAV.Ny
-                norm_act = self.PIDController.flight_output(obs_jsbsim, dt=self.dt_move)
-                aileron, elevator, rudder, throttle = norm_act
+                # # 强化学习控制器状态空间可能不匹配，先换成PID的处理
+                # obs_jsbsim = np.zeros(15)
+                # obs_jsbsim[0] = (UAV.alt + target_delta_height) / 5000  # 期望高度 # 测试飞行控制器
+                # obs_jsbsim[1] = target_delta_heading  # 期望相对航向角
+                # obs_jsbsim[2] = target_speed / 340  # 期望速度
+                # obs_jsbsim[3] = UAV.theta  # 当前俯仰角
+                # obs_jsbsim[4] = UAV.speed / 340  # 当前速度
+                # obs_jsbsim[5] = UAV.phi  # 当前滚转角
+                # obs_jsbsim[6] = UAV.alpha_air  # 当前迎角
+                # obs_jsbsim[7] = UAV.beta_air  # 当前侧滑角
+                # obs_jsbsim[8] = UAV.p
+                # obs_jsbsim[9] = UAV.q
+                # obs_jsbsim[10] = UAV.r
+                # obs_jsbsim[11] = UAV.theta_v  # 爬升角
+                # obs_jsbsim[12] = sub_of_radian(dynamic_delta_psi, UAV.psi_v)  # 相对航迹角
+                # obs_jsbsim[13] = UAV.alt / 5000
+                # obs_jsbsim[14] = UAV.Ny
+                # norm_act = self.PIDController.flight_output(obs_jsbsim, dt=self.dt_move)
+                # aileron, elevator, rudder, throttle = norm_act
 
+                # debug
                 # if abs(self.t % 10) < 1e-3:
                 #     print("target_delta_height", target_delta_height)
                 #     print(obs_jsbsim)
                 #     print()
 
-                # # 在这里插入强化学习的控制器
-                # # 实时从 UAV 对象读取物理量，与训练环境 get_state() 完全对齐
-                # # （不能使用 UAV.current_state 字典缓存——它在整个内层子步循环中不更新，是陈旧的旧状态）
-                # _ego_main_realtime = np.array([
-                #     float(UAV.speed),          # 0 本机速度 m/s
-                #     float(UAV.alt),            # 1 本机高度 m
-                #     float(cos(UAV.theta)),     # 2
-                #     float(sin(UAV.theta)),     # 3
-                #     float(cos(UAV.phi)),       # 4
-                #     float(sin(UAV.phi)),       # 5
-                #     0,                         # 6 弹药量（控制器训练时始终置0）
-                # ])
-                # # 对齐训练环境: ego_control[4] 是目标航向与 速度矢量(psi_v) 的差角
-                # _delta_psi_v = sub_of_radian(UAV.target_heading, UAV.psi_v)
-                # _ego_control_realtime = np.array([
-                #     float(UAV.p),             # 0 p rad/s
-                #     float(UAV.q),             # 1 q rad/s
-                #     float(UAV.r),             # 2 r rad/s
-                #     float(UAV.theta_v),       # 3
-                #     float(_delta_psi_v),      # 4 目标航向与速度方向差角
-                #     float(UAV.alpha_air),     # 5 rad
-                #     float(UAV.beta_air),      # 6 rad
-                #     float(UAV.Ny),            # 7
-                # ])
-                # control_input_state = {
-                #     "ego_main": _ego_main_realtime,
-                #     "ego_control": _ego_control_realtime,
-                #     "flight_cmd": np.array([
-                #         cos(dynamic_delta_psi),
-                #         sin(dynamic_delta_psi),
-                #         np.clip(target_delta_height, -5000, 5000),   # 与训练环境 clip 对齐
-                #         target_speed - UAV.speed,
-                #     ])
-                # }
-                # # 拼接完成后再从control_input_state调用self.control_env.scale_state 做缩放
-                # scaled_control_input_state = self.control_env.scale_state(control_input_state)
-                # # 最后按照 ["ego_main", "ego_control", "flight_cmd"] 顺序拼接为一个np.array作为control_input
-                # control_input = np.concatenate([
-                #     scaled_control_input_state["ego_main"],
-                #     scaled_control_input_state["ego_control"],
-                #     scaled_control_input_state["flight_cmd"]
-                # ])
-                # # # debug
-                # # if self.t > 80 and self.t % 3 == 0:
-                # #     print(UAV.side)
-                # #     print(control_input_state["flight_cmd"])
-                # #     print()
-                # # 控制器作用
-                # control_action, _, _, _ = self.control_actor.get_action(control_input, explore=False)
-                # aileron, elevator, rudder, throttle = control_action['cont']
+                # 在这里插入强化学习的控制器
+                # 实时从 UAV 对象读取物理量，与训练环境 get_state() 完全对齐
+                # （不能使用 UAV.current_state 字典缓存——它在整个内层子步循环中不更新，是陈旧的旧状态）
+                _ego_main_realtime = np.array([
+                    float(UAV.speed),          # 0 本机速度 m/s
+                    float(UAV.alt),            # 1 本机高度 m
+                    float(cos(UAV.theta)),     # 2
+                    float(sin(UAV.theta)),     # 3
+                    float(cos(UAV.phi)),       # 4
+                    float(sin(UAV.phi)),       # 5
+                    0,                         # 6 弹药量（控制器训练时始终置0）
+                ])
+                # 对齐训练环境: ego_control[4] 是目标航向与 速度矢量(psi_v) 的差角
+                _delta_psi_v = sub_of_radian(UAV.target_heading, UAV.psi_v)
+                _ego_control_realtime = np.array([
+                    float(UAV.p),             # 0 p rad/s
+                    float(UAV.q),             # 1 q rad/s
+                    float(UAV.r),             # 2 r rad/s
+                    float(UAV.theta_v),       # 3
+                    float(_delta_psi_v),      # 4 目标航向与速度方向差角
+                    float(UAV.alpha_air),     # 5 rad
+                    float(UAV.beta_air),      # 6 rad
+                    float(UAV.Ny),            # 7
+                ])
+                control_input_state = {
+                    "ego_main": _ego_main_realtime,
+                    "ego_control": _ego_control_realtime,
+                    "flight_cmd": np.array([
+                        cos(dynamic_delta_psi),
+                        sin(dynamic_delta_psi),
+                        np.clip(target_delta_height, -5000, 5000),   # 与训练环境 clip 对齐
+                        target_speed - UAV.speed,
+                    ])
+                }
+                # 拼接完成后再从control_input_state调用self.control_env.scale_state 做缩放
+                scaled_control_input_state = self.control_env.scale_state(control_input_state)
+                # 最后按照 ["ego_main", "ego_control", "flight_cmd"] 顺序拼接为一个np.array作为control_input
+                control_input = np.concatenate([
+                    scaled_control_input_state["ego_main"],
+                    scaled_control_input_state["ego_control"],
+                    scaled_control_input_state["flight_cmd"]
+                ])
+                # # debug
+                # if self.t > 80 and self.t % 3 == 0:
+                #     print(UAV.side)
+                #     print(control_input_state["flight_cmd"])
+                #     print()
+                # 控制器作用
+                control_action, _, _, _ = self.control_actor.get_action(control_input, explore=False)
+                aileron, elevator, rudder, throttle = control_action['cont']
 
                 UAV.move(elevator, aileron, throttle, relevant_height=True, p2p=True, rudder=rudder, dt=self.dt_move)
                 # 上一步动作

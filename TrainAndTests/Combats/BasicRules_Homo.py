@@ -97,15 +97,18 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
             # 优先俯冲回转至5000m以下
             if alt > 5000:
                 action_v = 4 # -60度俯冲
-                action_h = 6 # 水平方向背离
             else:
                 action_v = 2 # 平飞
-                action_h = 6 # 水平方向背离
-            # # 优先俯冲回转至5000m以下
-            # if alt > 5000:
-            #     maneuver_cmds = 12 # 俯冲回转
+
+            # 置尾机动
+            action_h = 6 # 水平方向背离
+
+            # # 三九线机动
+            # if delta_psi < 0:
+            #     action_h = 5 # 9线
             # else:
-            #     maneuver_cmds = 11 # 水平回转
+            #     action_h = 4 # 3线
+
         else:
             action_v = 2 # 平飞
             action_h = 0 # 回中心
@@ -147,15 +150,6 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
     maneuver_cmds = [action_v, action_h] # 默认执行基础进攻
     base_offensive_action = [action_v, action_h]
 
-    # # # 2. 根据目标相对高度选择基础进攻机动
-    # if abs(delta_theta) < 30 * pi/180:
-    #     base_offensive_action = 0  # 平飞追踪
-    # elif delta_theta >= 30 * pi/180:
-    #     base_offensive_action = 1  # 爬升追踪
-    # else: # delta_theta < -pi/6
-    #     base_offensive_action = 3  # 下降追踪
-    # maneuver_cmds = base_offensive_action # 默认执行基础进攻
-
     # 3. 根据规则编号(rules_num)决定最终机动和开火决策
     if rules_num == 0:
         # 规则0: 纯进攻
@@ -168,10 +162,16 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
             # 优先俯冲回转至5000m以下
             if alt > 5000:
                 action_v = 4 # -60度俯冲
-                action_h = 6 # 水平方向背离
             else:
                 action_v = 2 # 平飞
-                action_h = 6 # 水平方向背离
+            # 置尾机动
+            action_h = 6 # 水平方向背离
+            # # 三九线机动
+            # if delta_psi < 0:
+            #     action_h = 5 # 9线
+            # else:
+            #     action_h = 4 # 3线
+
             # if alt > 5000:
             #     maneuver_cmds = 12 # 俯冲回转
             # else:
@@ -197,7 +197,12 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
         # 规则2: Loft爬升射击序列
         if RWR and threat_distance < escape_distance_list[rules_num]: # 受到威胁
             action_v = 5
-            action_h = 6
+            action_h = 6 # 置尾机动
+            # # 三九线机动
+            # if delta_psi < 0:
+            #     action_h = 5 # 9线
+            # else:
+            #     action_h = 4 # 3线
             # maneuver_cmds = 8 # 立刻 split-S
             fire_missile = False # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离，或上一回合是爬升
@@ -223,8 +228,8 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
     
     elif rules_num in [5]:
         if RWR and threat_distance < escape_distance_list[rules_num]: # 受到威胁
-            action_v = 5
-            action_h = 6
+            action_v = 5 # 快速下降
+            action_h = 6 # 置尾机动
             # maneuver_cmds = 8 # 立刻 split-S
             fire_missile = False # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离，或上一回合是爬升
@@ -238,12 +243,14 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
                 # maneuver_cmds = 5 # 左crank
         elif fire_missile and distance > 40e3: # 满足开火条件且在远距离
             if sin_theta < sin(30*pi/180):  # last_action != 2: # 如果上一动作为非爬升 达到高抛角度再发射导弹
-                maneuver_cmds = 2 # 则本回合执行爬升
+                action_v, action_h = 0, 1 # 则本回合执行爬升
+                # maneuver_cmds = 2 # 则本回合执行爬升
                 fire_missile = False
             else:
                 fire_missile = True
         else:
-            maneuver_cmds = 3  # 低空苟分
+            action_v, action_h = 0, 1 # 则本回合执行爬升追踪
+            # maneuver_cmds = 3  # 低空苟分
         fire_missile_affirmative = fire_missile
         
     # if  np.random.rand() <= p_random:
@@ -258,20 +265,6 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
         if d_hor < 8e3:
             maneuver_cmds = base_offensive_action
     
-    # 防撞地规则
-    if alt < 3000:
-        action_v = 1
-        # if maneuver_cmds in [0, 3, 4]:
-        #     action_v = 1 # 爬升
-        #     action_h = 1 # 追踪
-        #     maneuver_cmds = 1
-        # if maneuver_cmds in [8,11,12,13]:
-        #     maneuver_cmds = 11
-    # 防破升限
-    if alt > 12000:
-        action_v = 3
-        # if maneuver_cmds in [1,2]:
-        #     maneuver_cmds = 0
     maneuver_cmds = [action_v, action_h]
     flight_action = {'do': maneuver_cmds, 'at': selected_index}
     fire_action = {'do': fire_missile_affirmative,'at': selected_index}
@@ -314,7 +307,7 @@ if __name__=='__main__':
 
     env = ChooseStrategyEnv(args, tacview_show=use_tacview)
     # test
-    env.dt_move = 0.04 # 0.025 0.02
+    env.dt_move = 0.02 # 4 # 0.025 0.02
 
     env.shielded = 1 # 0 # 有防撞地就可以不要这个
 
@@ -435,7 +428,7 @@ if __name__=='__main__':
                         
                         # 2. Agent 产生一个动作
                         if 1: # 如果类型是规则智能体而非神经网络
-                            fly_action, fire_action, radar_action = basic_rules(rule_inputs_[id], mask_inputs_[id], rules_num=4)
+                            fly_action, fire_action, radar_action = basic_rules(rule_inputs_[id], mask_inputs_[id], rules_num=2)
                         else:
                             # 如果类型是神经网络
                             pass
