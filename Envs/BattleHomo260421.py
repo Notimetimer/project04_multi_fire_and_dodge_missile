@@ -583,7 +583,7 @@ class Battle(object):
             # 
             for missile in self.alive_missiles[:]:  # 使用切片创建副本以允许删除
                 target = self.find_uav_with_id(missile.target_id)
-                # todo 干扰或更换目标逻辑 
+                # todo 干扰或更换目标逻辑，写在这里，箔条设置为从属于UAV的属性 
                 # track_target = f(target, missile, self.UAVs, self.chaffs)
 
                 if target is None:  # 目标不存在, 不更换目标而是击毁导弹
@@ -1226,7 +1226,7 @@ class Battle(object):
                     if getattr(UAV, 'radar_on', 0)==0:
                         data_to_send += f"#{send_t:.2f}\n-{UAV.id+1000}\n"
                     else:
-                        if getattr(UAV, 'lock_on', 0) == 0:
+                        if 0: # getattr(UAV, 'lock_on', 0) == 0:
                             # 正常探测雷达
                             data_to_send += (
                                 f"{UAV.id+1000},T={loc_LLH[0]:.6f}|{loc_LLH[1]:.6f}|{loc_LLH[2]:.6f}|"
@@ -1234,11 +1234,17 @@ class Battle(object):
                                 f"Type=Beam, Color={color},Visible=0.3,Radius=0.0,RadarMode=1,RadarRange=100000, RadarHorizontalBeamwidth=120, RadarVerticalBeamwidth=20\n"
                             )
                         else:
-                            # 锁定目标的画法还不确定，先画成正常探测雷达
+                            # 锁定时的细光束波束
+                            target = self.find_uav_with_id(UAV.current_target_id)
+                            delta_pos = target.pos_ - UAV.pos_
+                            dist = norm(delta_pos)
+                            q_beta = atan2(delta_pos[2], delta_pos[0])
+                            q_epsilon = atan2(delta_pos[1], sqrt(delta_pos[0]**2 + delta_pos[2]**2))
+                            
                             data_to_send += (
                                 f"{UAV.id+1000},T={loc_LLH[0]:.6f}|{loc_LLH[1]:.6f}|{loc_LLH[2]:.6f}|"
-                                f"0|{UAV.theta * 180 / pi:.6f}|{UAV.psi * 180 / pi:.6f},"
-                                f"Type=Beam, Color={color},Visible=0.3,Radius=0.0,RadarMode=1,RadarRange=100000, RadarHorizontalBeamwidth=120, RadarVerticalBeamwidth=20\n"
+                                f"0|{q_epsilon * 180 / pi:.6f}|{q_beta * 180 / pi:.6f},"
+                                f"Type=Beam, Color={color},Visible=0.7,Radius=0.0,RadarMode=1,RadarRange={dist:.1f}, RadarHorizontalBeamwidth=5, RadarVerticalBeamwidth=5\n"
                             )
 
                 else:

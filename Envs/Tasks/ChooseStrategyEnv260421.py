@@ -307,9 +307,11 @@ class ChooseStrategyEnv(Battle):
         max_enm_index = enm_num + 1 # 预留多一个槽位给null_token
         if enm_index >= max_enm_index:
             vice_uav_states["enm_infos"] = self.state_init_mod["enm_info"]
+            ego.current_target_id = None
         else:
-            # 执行动作前压缩信息
+            # 执行动作前筛选目标
             vice_uav_states["enm_infos"] = vice_uav_states["enm_infos"][enm_index]
+            ego.current_target_id = self.index2id(ego.id, enm_index, relation='enm') # 根据index找到id
         enm_info = vice_uav_states["enm_infos"]
 
         # 队友的方位没有考虑在动作空间里，暂不做压缩
