@@ -127,8 +127,8 @@ class missile_class:
         self.empty_weight = 96.82  # kg
         self.stage1_weight = 20.28  # kg
         self.stage2_weight = 44.9  # kg
-        self.stage1_time = 2.3  # s
-        self.stage2_time = 10 # 10.5 11  # s
+        self.stage1_time = 2.3  # 2.3 s
+        self.stage2_time = 10.5 # 10.5 11  # s
         self.stage1_burn_rate = self.stage1_weight / self.stage1_time  # 一级燃烧率kg/s
         self.stage2_burn_rate = self.stage2_weight / self.stage2_time  # 二级燃烧率kg/s
         self.stage1_thrust = 20393  # N
@@ -137,14 +137,14 @@ class missile_class:
         self.stage2_start = self.stage1_start + self.stage1_time  # s
         self.stage2_end = self.stage1_start + self.stage1_time + self.stage2_time  # s
         # 杀伤半径
-        self.kill_range = 100 # 防止大仿真步长下错过目标
+        self.kill_range = 80 # 20  # 为了提高训练效率，这个半径可以被放大，从而避免变步长
         # 最大过载
         self.max_g0 = 40
         self.max_g = self.max_g0
         # 最大马赫数
         self.max_mach = 4.0
         # 特征面积
-        self.area = 0.38 # 435 0.405  # m2
+        self.area = 0.40 # 425 435 0.405  # m2
         # 阻力系数是一个函数，不在这里定义
         # 最小速度
         self.speed_min = 0.65 * 340  # m/s
@@ -153,12 +153,12 @@ class missile_class:
         # 最大跟踪视角速度
         self.sight_angle_rate_max = 0.7  # rad/s
         # 截获距离
-        self.detect_range = 23e3  # 23 25e3 20e3  # m todo 计算截获距离
+        self.detect_range = 18.5e3  # 23e3 25e3 20e3  # m todo 计算截获距离
         self.distance = 100e3
         # 初制导下最大速度倾角
         self.v_theta_of_initial_guidance_max = 45 * pi / 180
         self.t = 0  # 导弹初始计时
-        self.t_max = 120  # 最大运行时间
+        self.t_max = 90  # 最大运行时间
         self.t_go = 120
         self.trajectory = np.empty((0, 7))  # 导弹轨迹, 结构为时间、位置（3）、速度（3）
         self.guidance_stage = 2  # 2为中制导，3为末制导
@@ -177,6 +177,9 @@ class missile_class:
         self.datalink = None
         self.A_pole_moment = None
         self.delta_height = 0
+        self.close_rate = None
+        self.off_lock = False
+        self.ground_close_rate = None
 
     def Cd(self, mach):
         lis0 = np.array([
@@ -316,6 +319,11 @@ class missile_class:
             k_y = 3
         nyt1 = k_y * max(vmt, np.linalg.norm(vrt_)) * q_epsilon_dot / g + cos(theta_mt1)  # test
 
+        # 初制导阶段根据距离判断是否需要靠导弹来高抛
+        if self.t < self.stage2_end:
+            if distance > 50e3:
+                nyt1 += (pi/3-self.theta) * 2 
+
         # 时间过半以后如果目标低于当前飞行高度，不能还在爬升
         delta_height = self.delta_height
         max_available_theta_when_above = pi/3 * np.clip(1 - self.t * 2/self.t_max, 0, 1)
@@ -382,11 +390,11 @@ class missile_class:
         nzt1 = k_z * max(vmt, np.linalg.norm(vrt_)) * q_beta_dot / g * cos(theta_mt1)  # debug
 
         # 导引头脱锁模拟, 速度方向当做导弹头部方向
-        off_lock = False
+        self.off_lock = False
         # 假设脱锁会导致导弹沿直线继续飞
         # # 超出距离脱锁
         # if np.linalg.norm(distance) > self.detect_range:
-        #     off_lock = True
+        #     self.off_lock = True
         # 超出导引头视角导致脱锁
         aoa = np.arccos(np.dot(v_missile_, line_t_) / vmt / distance)
 
@@ -398,13 +406,21 @@ class missile_class:
                 nzt1 = min(0, nzt1)
 
         if np.dot(v_missile_, line_t_) / vmt / distance < cos(self.sight_angle_max):
-            off_lock = True
+            self.off_lock = True
         # 超出跟踪角速度导致脱锁
         if np.linalg.norm(np.cross(line_t_, vrt_)) / distance ** 2 > self.sight_angle_rate_max:
-            off_lock = True
-        if off_lock:
-            nzt1 = self.nzt * 0.8  # 降级
-            nyt1 = (self.nyt - g) * 0.8 + g # 降级
+            self.off_lock = True
+        
+        # 试验：多普勒 导致脱锁
+        if self.ground_close_rate is not None:
+            if abs(self.ground_close_rate - self.close_rate) < 40 and self.pos_[1] < 7000:
+                # 40m/s 约为塞斯纳起飞速度，7000m是随便设的
+                self.off_lock = True
+
+        # 矢量方程，脱锁处理
+        if self.off_lock:
+            nzt1 = self.nzt  # 0
+            nyt1 = self.nyt  # cos(theta_mt1)
         else:
             self.nzt = nzt1
             self.nyt = nyt1
@@ -464,6 +480,10 @@ class missile_class:
 
         vmt = np.linalg.norm(vmt_)
 
+        # 试验：多普勒速度窗口相关计算
+        self.close_rate = - L_dot
+        self.ground_close_rate = vmt if self.theta < np.radians(-15) else 0
+
         # 目标是否进入锁定角度范围
         if np.dot(vmt_, line_t_) / vmt / distance > cos(self.sight_angle_max):
             self.in_angle = 1
@@ -475,7 +495,7 @@ class missile_class:
         else:
             self.in_distance = 0
         
-        self.lock_on = self.in_angle and self.in_distance
+        self.lock_on = self.in_angle and self.in_distance and (not self.off_lock)
 
         vtt = np.linalg.norm(vtt_)
         psi_mt = np.arctan2(vmt_[2], vmt_[0])

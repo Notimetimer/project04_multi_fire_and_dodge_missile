@@ -303,7 +303,7 @@ if __name__=='__main__':
     args = parser.parse_args()
     
     args.max_episode_len = 15*60
-    args.R_cage = 80e3
+    args.R_cage = 60.3e3
 
     env = ChooseStrategyEnv(args, tacview_show=use_tacview)
     # test

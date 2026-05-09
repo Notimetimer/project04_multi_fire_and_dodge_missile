@@ -1,0 +1,9 @@
+清理缓存（从索引中删除）：
+git rm -r --cached .
+
+重新添加文件：
+git add .
+
+提交更改：
+git commit -m "Fix: permanently ignore pyc files"
+git push
