@@ -12,9 +12,20 @@
     // "python-envs.defaultEnvManager": "ms-python.python:conda",
     // "python-envs.defaultPackageManager": "ms-python.python:conda",
     // 别瞎报了
+    // "python.analysis.typeCheckingMode": "off",
+    // "python.analysis.diagnosticSeverityOverrides": {
+    //     "reportGeneralTypeIssues": "none",
+    //     "reportAttributeAccessIssue": "none"
+    // }
+    // 强制关闭类型检查
     "python.analysis.typeCheckingMode": "off",
+    // 针对可能被 IDE 重命名的插件，尝试通用的分析禁用
     "python.analysis.diagnosticSeverityOverrides": {
         "reportGeneralTypeIssues": "none",
-        "reportAttributeAccessIssue": "none"
-    }
+        "reportAttributeAccessIssue": "none",
+        "reportMissingImports": "none",
+        "reportUndefinedVariable": "none"
+    },
+    // 如果 AntiGravity 使用了特定的分析引擎开关
+    "pyrefly.analysis.enable": false
 }

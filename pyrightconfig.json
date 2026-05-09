@@ -1,10 +1,13 @@
 {
   "venvPath": "C:\\Users\\LYH\\miniforge3\\envs",
-  "venv": "38c",
+  "venv": "38",
   "extraPaths": [
     "."
   ],
   "reportMissingImports": false,
   "typeCheckingMode": "off",
-  "diagnosticMode": "openFilesOnly"
+  "diagnosticMode": "openFilesOnly",
+  "disabled": true,
+  "reportGeneralTypeIssues": "none",
+  "reportAttributeAccessIssue": "none"
 }
