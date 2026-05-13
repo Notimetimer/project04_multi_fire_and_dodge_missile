@@ -336,10 +336,10 @@ class track_env():
         time_rate = int(round(self.dt_report/self.dt_move))
         self.RUAV.last_psi_v = self.RUAV.psi_v
         for _ in range(time_rate):
-            # UAVModel.move(p2p=True) 期望第一个参数对应 elevator, 第二个参数对应 aileron, 
+            # UAVModel.move(e2e=True) 期望第一个参数对应 elevator, 第二个参数对应 aileron, 
             # 第四个参数对应 throttle, rudder 参数单独传递
             self.RUAV.move(target_height=elevator, delta_heading=aileron, target_speed=throttle, \
-                relevant_height=True, relevant_speed=False, with_theta_req=False, p2p=True, rudder=rudder)
+                relevant_height=True, relevant_speed=False, with_theta_req=False, e2e=True, rudder=rudder)
             
             # 记录高度超调量: 误差方向与初始误差相反，且取绝对值最大的值
             height_error = self.RUAV.alt - self.height_req

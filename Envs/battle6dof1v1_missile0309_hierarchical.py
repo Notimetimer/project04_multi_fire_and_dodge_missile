@@ -62,7 +62,7 @@ def sigmoid(x):
 class Battle(object):
     def __init__(self, args, tacview_show=0):
         # super(Battle, self).__init__() 
-        # self.p2p_control = False
+        # self.e2e_control = False
         self.horizontal_center = horizontal_center
         # 加载训练好的模型
         import torch
@@ -128,11 +128,11 @@ class Battle(object):
 
         self.RED_BIRTH_STATE = {'position': np.array([-R_birth * cos(0), 8000.0, -R_birth * sin(0)]),
                                         'psi': 0,
-                                        'p2p': False
+                                        'e2e': False
                                         }
         self.BLUE_BIRTH_STATE = {'position': np.array([-R_birth * cos(pi), 8000.0, -R_birth * sin(pi)]),
                                          'psi': pi,
-                                         'p2p': False
+                                         'e2e': False
                                          }
         self.tacview_show = tacview_show
         if tacview_show:
@@ -328,28 +328,28 @@ class Battle(object):
             target_height = action[0]
             target_speed = action[2]
 
-            p2p = False
+            e2e = False
             if UAV.blue:
-                p2p = self.BLUE_BIRTH_STATE.get('p2p', False)
+                e2e = self.BLUE_BIRTH_STATE.get('e2e', False)
             if UAV.red:
-                p2p = self.RED_BIRTH_STATE.get('p2p', False)
+                e2e = self.RED_BIRTH_STATE.get('e2e', False)
 
             # 防撞地系统
             if self.shielded:
                 # 临近撞地强制拉起
                 if UAV.alt < self.min_alt_safe + 1e3:
                     target_height = max(self.min_alt_safe + 1e3 - UAV.alt, target_height)
-                    p2p = False
+                    e2e = False
                     delta_heading = np.clip(delta_heading, -pi/3, pi/3)
 
                 # 不许超过限高
                 if UAV.alt > self.max_alt_safe:
                     target_height = min(self.max_alt_safe - UAV.alt, target_height)
-                    p2p = False
+                    e2e = False
 
                 # 速度过低强制加油门
                 if UAV.speed/340 < 0.5:
-                    if p2p:
+                    if e2e:
                         UAV.target_speed = 1
                     else:
                         target_speed = max(340, target_speed)
@@ -474,7 +474,7 @@ class Battle(object):
                 control_action, _, _, _ = self.control_actor.get_action(control_input, explore=False)
                 aileron, elevator, rudder, throttle = control_action['cont']
 
-                UAV.move(elevator, aileron, throttle, relevant_height=True, p2p=True, rudder=rudder, dt=self.dt_move)
+                UAV.move(elevator, aileron, throttle, relevant_height=True, e2e=True, rudder=rudder, dt=self.dt_move)
                 # 上一步动作
                 # UAV.action_memory = np.array([action[0],action[1],action[2]])
 

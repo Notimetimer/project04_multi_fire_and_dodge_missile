@@ -190,7 +190,7 @@ class UAVModel(object):
     #         cd = 0.2
     #     return cd / 10
 
-    def move(self, target_height, delta_heading, target_speed, relevant_height=True, relevant_speed=False, with_theta_req=False, p2p=True, rudder=None, dt=None):
+    def move(self, target_height, delta_heading, target_speed, relevant_height=True, relevant_speed=False, with_theta_req=False, e2e=True, rudder=None, dt=None):
         if dt is not None:
             self.dt = dt
             self.sim.set_dt(self.dt)
@@ -265,7 +265,7 @@ class UAVModel(object):
         # # norm_act, self.rnn_states, self.hist_act = F16control(obs_jsbsim, self.rnn_states, self.hist_act)
         # # print(self.side, norm_act)
 
-        # if p2p==False: # 通过控制器间接控制
+        # if e2e==False: # 通过控制器间接控制
         #     if with_theta_req == False:
         #         norm_act = self.PIDController.flight_output(obs_jsbsim, dt=self.dt)  # # 测试飞行控制器
         #     else:

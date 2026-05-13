@@ -27,7 +27,7 @@ def ENU2LLH(mark, NUE):
     return out
 
 # 我是谁的支线
-# main_test_SAC2_3dim_PID, main_test_SAC2_3dim_P2P
+# main_test_SAC2_3dim_PID, main_test_SAC2_3dim_e2e
 from main_SAC_3dim_proportion import SACContinuous, hidden_dim, r_action_dim, action_bound, actor_lr0, critic_lr0, \
     alpha_lr, \
     tau, gamma, r_obs_dim, dt, weak_rolling_optim, args, env, device
@@ -97,7 +97,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 agent.actor.load_state_dict(torch.load('3dim_rule_actor_test.pth',
            map_location=device, weights_only=True))  # 根据当前环境自动选择设备
 
-# 3dim_rule_actor_test.pth, 3dim_rule_actor_p2p
+# 3dim_rule_actor_test.pth, 3dim_rule_actor_e2e
 
 steps_of_this_episode = 0
 
