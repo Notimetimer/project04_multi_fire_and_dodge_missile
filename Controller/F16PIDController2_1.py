@@ -1,24 +1,10 @@
-# from abc import ABC
-# import torch
-# import torch.nn as nn
-# import torch.nn.functional as F
 import numpy as np
 from math import *
-# from typing import Literal
-# import matplotlib.pyplot as plt
-# from abc import ABC, abstractmethod
 import sys
 import os
-# import matplotlib
-# matplotlib.use('Qt5Agg')
-# sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-# import socket
-# import threading
 import time
 import jsbsim
-# import matplotlib.pyplot as plt
 import numpy as np
-# from simple_pid import PID
 from numpy.linalg import norm
 
 
@@ -35,14 +21,17 @@ class PositionPID(object):
         self._pre_error = 0  # t-1 时刻误差值
         self._integral = 0  # 误差积分值
 
-    def calculate(self, error, dt):
+    def calculate(self, error, dt, d_error=None, i_error=None):
         """
         计算t时刻PID输出值cur_val
         """
         # 比例项
         p_out = self.k_p * error
         # 积分项
-        self._integral += (error * dt)
+        if i_error is None: # 不可直接获取，再做积分
+            self._integral += (error * dt)
+        else:
+            self._integral = i_error
 
         # 仿照simple_pid，将积分项整项预先限幅
         self._integral = np.clip(self._integral, self._min/self.k_i, self._max/self.k_i) \
@@ -50,7 +39,10 @@ class PositionPID(object):
         
         i_out = self.k_i * self._integral
         # 微分项
-        derivative = (error - self._pre_error) / dt
+        if d_error is None: # 不可直接获取，再做差分
+            derivative = (error - self._pre_error) / dt
+        else:
+            derivative = d_error
         d_out = self.k_d * derivative
         # t 时刻pid输出
         output = p_out + i_out + d_out
@@ -119,7 +111,7 @@ class F16PIDController:
         self.yaw_pid = None
         self.e_pid = PositionPID(max=1, min=-1, p=10 / pi, i=0 / pi, d=0.5 / pi)  # 16, 0.3, 8
         self.r_pid = None
-        self.t_pid = PositionPID(max=1.2, min=-1, p=1, i=0.5, d=0.2)
+        self.t_pid = PositionPID(max=1, min=-1, p=1, i=0.3, d=0.2)
         # self.t_pid = PID(1, 0.3, 0.2, setpoint=0)
         # self.t_pid.output_limits = (-1, 1)
         self.pids = [self.yaw_pid, self.e_pid, self.r_pid, self.t_pid]
@@ -139,9 +131,17 @@ class F16PIDController:
             kh = pi / 2 # + pi/8
 
         target_theta = error_h * kh
+        target_delta_heading = state_input[1]
+        
+        # 加扰动，防止破S机动掉太多高度
+        if current_height_devided * 5000 < 4000 and \
+            target_theta < -pi/3:
+                target_delta_heading = np.sign(target_delta_heading) * np.clip(norm(target_delta_heading), 0, pi-pi/6)
+                target_theta = max(-pi/3, target_theta)
+        
         # print('target_theta',target_theta*180/pi)
 
-        temp = state_input.copy()
+        temp = state_input
         temp[0] = target_theta
         norm_act = self.att_output(temp, dt=dt)
         return norm_act
@@ -252,12 +252,12 @@ class F16PIDController:
         delta_z_angle = np.arctan2(x_b_2L_xy_b_sin, x_b_2L_xy_b_cos)
 
         # 重写的位置式pid
-        elevetor = -e_pid.calculate(delta_z_angle, dt=dt)
-        elevetor = np.clip(elevetor, -1, 1)
+        elevator = -e_pid.calculate(delta_z_angle, dt=dt)
+        elevator = np.clip(elevator, -1, 1)
 
         # 特例：大坡度时不允许推杆
         if abs(phi) * 180 / pi > 50: # and v / 300 > 1:
-            elevetor = np.clip(elevetor, -1, 0)
+            elevator = np.clip(elevator, -1, 0)
 
         # 副翼战术机动控制
         # combat flight
@@ -285,7 +285,7 @@ class F16PIDController:
         #     print('delta_x_angle', delta_x_angle * 180 / pi)
         #     aileron = (roll_error / pi * 6 - p / pi * 8) / 4
         #     if 0.9 < abs(delta_x_angle / (pi / 2)) < 1.1:
-        #         elevetor = 0
+        #         elevator = 0
 
         # steady filght
         # 副翼平稳飞行控制：delta_z_angle**2+delta_x_angle**2足够小时副翼由phi比例控制
@@ -315,7 +315,7 @@ class F16PIDController:
         #     pass
 
         aileron = np.clip(aileron, -1, 1)
-        norm_act = np.array([aileron, elevetor, rudder, throttle])
+        norm_act = np.array([aileron, elevator, rudder, throttle])
         return norm_act
 
 
@@ -365,7 +365,7 @@ if __name__ == '__main__':
     # 连续输出并tacview中可视化
     start_time = time.time()
     # target_theta = 1 # 测试姿态控制
-    target_height = 1e3  # m # 测试飞行控制器
+    target_height = 2e3  # m # 测试飞行控制器
     target_heading = 270  # 度 to rad
     target_speed = 340 * 1.13  # m/s
     t_last = 60 * 5
@@ -407,22 +407,22 @@ if __name__ == '__main__':
 
         # target_heading = np.random.rand()*10
 
-        # 舞狮
-        if current_t < 15:
-            target_height = 5000  # m
-            target_heading = 90  # 度 to rad
-            target_speed = 300
-        elif current_t < 1 * 60:
-            target_height = 10000  # m
-            target_heading = -120  # 度 to rad
-        elif current_t < 1 * 60 + 27:
-            target_height = 7000  # m
-            target_heading = 0  # 度 to rad
-        elif current_t < 2 * 60 + 10:
-            target_height = 8000  # m
-            target_heading = sub_of_degree(sim["attitude/psi-deg"], 60)  # 度 to rad
-        else:
-            target_heading = sub_of_degree(sim["attitude/psi-deg"], -10)
+        # # 舞狮
+        # if current_t < 15:
+        #     target_height = 5000  # m
+        #     target_heading = 90  # 度 to rad
+        #     target_speed = 300
+        # elif current_t < 1 * 60:
+        #     target_height = 10000  # m
+        #     target_heading = -120  # 度 to rad
+        # elif current_t < 1 * 60 + 27:
+        #     target_height = 7000  # m
+        #     target_heading = 0  # 度 to rad
+        # elif current_t < 2 * 60 + 10:
+        #     target_height = 8000  # m
+        #     target_heading = sub_of_degree(sim["attitude/psi-deg"], 60)  # 度 to rad
+        # else:
+        #     target_heading = sub_of_degree(sim["attitude/psi-deg"], -10)
 
         sim.run()
         current_time = step * dt

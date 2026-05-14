@@ -14,10 +14,29 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # from controller.Controller_function import *
 # from Envs.MissileModel1 import *  # test
 
-from Controller.F16PIDController2 import *
+from Controller.F16PIDController2_1 import *
+# from Controller.F16PIDController_baseline import * # 调参没调好，不能用
 from Math_calculates.CartesianOnEarth import NUE2LLH, LLH2NUE
 from Math_calculates.sub_of_angles import *
 from Math_calculates.coord_rotations import *
+
+# 箔条模型
+class chaffModel(object):
+    def __init__(self, pos_, vel_, id, dt=0.02):
+        self.t = 0
+        self.RCS = 0
+        self.max_chaff_RCS = 30
+        self.pos_ = pos_
+        self.vel_ = vel_
+    def fade(self, dt):
+        self.t += dt
+        if self.t < 3:
+            self.RCS = self.max_chaff_RCS
+        else:
+            self.RCS = 0
+        self.vel_ *= 0
+        self.pos_ += self.vel_ * dt
+        return self.RCS, self.pos_
 
 # 无人机模型
 class UAVModel(object):
@@ -46,13 +65,14 @@ class UAVModel(object):
         self.psi = None  # 航向角
         self.theta = None  # 俯仰角
         self.gamma = None  # 滚转角
-        self.nx = None
-        self.ny = None
-        self.nz = None
+        self.Nx = None
+        self.Ny = None
+        self.Nz = None
         # 无人机飞行约束
         self.speed_max = 2 * 340
         self.speed_min = 120
         # 无人机轨迹
+        self.target_heading = 0
         self.trajectory = np.empty((0, 3))  # 新增轨迹列表
         self.vellist = np.empty((0, 3))
         self.lon = None
@@ -61,8 +81,8 @@ class UAVModel(object):
         self.set_height = None
         self.set_speed = None
         # 雷达性能约束
-        self.max_radar_angle_rad = 60*pi/180
-        self.max_radar_range = 120e3
+        self.max_radar_angle_rad = 64 * pi/180 # 60
+        self.max_radar_range = 130e3
 
         # 导弹相关属性
         self.ammo = 6  # 最大可携带导弹数量
@@ -76,9 +96,15 @@ class UAVModel(object):
         self.missile_max_range = 40e3  # 最大发射距离 50
         self.missile_launch_speed_threshold = 100  # 300  # 最小发射速度要求
 
+        self.RCS = 4
+        self.chaffs = 40
+        self.max_chaff_RCS = 30
+        self.activated_chaffs = []
+        self.chaff_release_count = 0
+
         # 过载量控制
-        self.nx_limit = [-1, 1.5]
-        self.ny_limit = [-1.5, 6]
+        self.Nx_limit = [-1, 1.5]
+        self.Ny_limit = [-1.5, 6]
         self.gamma_max = 170 * pi / 180
 
         # 无人机对抗相关
@@ -147,12 +173,19 @@ class UAVModel(object):
         ve = self.sim["velocities/v-east-fps"] * 0.3048  # 向东分量
         vu = -self.sim["velocities/v-down-fps"] * 0.3048  # 向上分量（正表示上升）
         self.climb_rate = vu
-        self.vn, self.ne, self.vu = vn, ve, vu
+        self.vn, self.ve, self.vu = vn, ve, vu
+        self.pos_ = np.array([self.x, self.y, self.z])
+        self.vel_ = np.array([vn, vu, ve])
         
         # 过载量
-        self.Ny = self.sim["accelerations/Nz"]  # 垂直过载
+        # JSBsim 的过载量是左手系，前右上顺序。
+        # 我们这里用右手系，前上右顺序.
+        self.Ny = self.sim["accelerations/Nz"]  # 法向过载
         self.Nz = self.sim["accelerations/Ny"]  # 侧向过载
-        self.Nx = self.sim["accelerations/Nx"]  # 纵向过载
+        self.Nx = self.sim["accelerations/Nx"]  # 前向过载
+        
+        # 马赫数
+        self.mach = self.sim["velocities/mach"]
 
         gamma_angle = atan2(vu, sqrt(vn ** 2 + ve ** 2)) * 180 / pi  # 爬升角（度）
         course_angle = atan2(ve, vn) * 180 / pi  # 航迹角 地面航向（度）速度矢量在地面投影与北方向的夹角
@@ -168,23 +201,59 @@ class UAVModel(object):
         self.PIDController = F16PIDController()
 
         self.obs_memory = None
-        self.act_memory = np.array([0,0,340]) # 动作记忆
+        self.action_memory = np.array([0,0,340]) # 动作记忆
         
         self.missile_launch_time = []
+        self.activated_chaffs = []
+        self.chaff_release_count = 0
 
-    # todo 阻力系数：应该是和马赫数和迎角有关的，但是先借用下导弹的阻力系数函数了
-    def Cd(self, mach):
-        if 0 < mach <= 0.9:
-            cd = 0.16
-        if 0.9 < mach <= 1.1:
-            cd = 0.16 + 0.29 * (mach - 0.9) / 0.2
-        if 1.1 < mach <= 3:
-            cd = 0.45 - 0.25 * (mach - 1.1) / 1.9
-        else:
-            cd = 0.2
-        return cd / 10
+    def release_chaffs(self):
+        # 释放一组箔条
+        if self.chaffs > 0:
+            self.chaffs -= 1
+            chaff_id = 401 + self.chaff_release_count if self.red else 501 + self.chaff_release_count
+            self.chaff_release_count += 1
+            new_chaff = chaffModel(self.pos_.copy(), self.vel_.copy(), id=chaff_id, dt=self.dt)
+            self.activated_chaffs.append(new_chaff)
 
-    def move(self, target_height, delta_heading, target_speed, relevant_height=True, relevant_speed=False, with_theta_req=False, e2e=False, rudder=None):
+    # 简化模型，只有在不考虑导弹速度滤波窗的时候能够在这里算，否则需要改到环境类中
+    def RCS_center(self):
+        # 使用RCS对所有 activated_chaffs 和飞机本身的位置加权计算一个RCS质心，返回北天东坐标
+        total_RCS = self.RCS
+        weighted_pos = self.pos_ * self.RCS
+        
+        if not hasattr(self, 'activated_chaffs'):
+            return self.pos_
+
+        for chaff in self.activated_chaffs:
+            total_RCS += chaff.RCS
+            weighted_pos += chaff.pos_ * chaff.RCS
+            
+        if total_RCS == 0:
+            return self.pos_
+            
+        return weighted_pos / total_RCS
+
+    # # todo 阻力系数：应该是和马赫数和迎角有关的，但是先借用下导弹的阻力系数函数了
+    # def Cd(self, mach):
+    #     if 0 < mach <= 0.9:
+    #         cd = 0.16
+    #     if 0.9 < mach <= 1.1:
+    #         cd = 0.16 + 0.29 * (mach - 0.9) / 0.2
+    #     if 1.1 < mach <= 3:
+    #         cd = 0.45 - 0.25 * (mach - 1.1) / 1.9
+    #     else:
+    #         cd = 0.2
+    #     return cd / 10
+
+    def move(self, target_height, delta_heading, target_speed, relevant_height=True, relevant_speed=False, with_theta_req=False, e2e=False, rudder=None, dt=None):
+        if dt is not None:
+            self.dt = dt
+            self.sim.set_dt(self.dt)
+        # 无限燃油
+        self.sim["propulsion/tank[0]/contents-lbs"] = 5000.0  # 设置0号油箱油量
+        self.sim["propulsion/tank[1]/contents-lbs"] = 5000.0  # 设置1号油箱油量（如果有）
+
         # 单位：m, rad, mm/s, metric公制单位，imperial英制单位
         if relevant_height==False: # 使用绝对高度指令
             self.set_height = target_height
@@ -210,12 +279,16 @@ class UAVModel(object):
         ve = self.sim["velocities/v-east-fps"] * 0.3048  # 向东分量
         vu = -self.sim["velocities/v-down-fps"] * 0.3048  # 向上分量（正表示上升）
         self.climb_rate = vu
-        self.vn, self.ne, self.vu = vn, ve, vu
+        self.vn, self.ve, self.vu = vn, ve, vu
 
         # 过载量
         self.Ny = self.sim["accelerations/Nz"]  # 垂直过载
         self.Nz = self.sim["accelerations/Ny"]  # 侧向过载
         self.Nx = self.sim["accelerations/Nx"]  # 纵向过载
+
+        # 马赫数
+        self.mach = self.sim["velocities/mach"]
+
 
         gamma_angle = atan2(vu, sqrt(vn ** 2 + ve ** 2)) * 180 / pi  # 爬升角（度）
         course_angle = atan2(ve, vn) * 180 / pi  # 航迹角 地面航向（度）速度矢量在地面投影与北方向的夹角
@@ -225,8 +298,10 @@ class UAVModel(object):
 
         current_heading = self.sim["attitude/psi-deg"] * pi / 180
         target_heading = sub_of_radian(current_heading + delta_heading, 0) * 180/pi
+        # self.target_heading = sub_of_radian(current_heading + delta_heading, 0)  # 目标航向
+        # print("==== 调用了旧的UAVmodel =====")
 
-        obs_jsbsim = np.zeros(14)
+        obs_jsbsim = np.zeros(15)
         # obs_jsbsim[0] = target_theta * pi / 180  # 期望俯仰角 # 测试姿态控制器
         obs_jsbsim[0] = self.set_height / 5000  # 期望高度 # 测试飞行控制器
         obs_jsbsim[1] = delta_heading  # 期望相对航向角
@@ -242,7 +317,8 @@ class UAVModel(object):
         obs_jsbsim[11] = gamma_angle * pi / 180  # 爬升角
         obs_jsbsim[12] = sub_of_degree(target_heading, course_angle) * pi / 180  # 相对航迹角
         obs_jsbsim[13] = self.sim["position/h-sl-ft"] * 0.3048 / 5000  # 高度/5000（英尺转米）
-
+        obs_jsbsim[14] = self.Ny
+        
         # norm_act由F16control函数输出
         # norm_act, self.rnn_states, self.hist_act = F16control(obs_jsbsim, self.rnn_states, self.hist_act)
         # print(self.side, norm_act)
@@ -289,13 +365,20 @@ class UAVModel(object):
         # 取姿态角度
         self.phi = self.sim["attitude/phi-deg"] * pi / 180  # 滚转角 (roll)
         self.theta = self.sim["attitude/theta-deg"] * pi / 180  # 俯仰角 (pitch)
-        self.psi = self.sim["attitude/psi-deg"] * pi / 180  # 航向角 (yaw)
+        self.psi = sub_of_radian(self.sim["attitude/psi-deg"] * pi / 180, 0)  # 航向角 (yaw)
 
         self.vel_ = np.array([vn, vu, ve]) # ft.s转m/s
         self.point_ = active_rotation(np.array([1,0,0]), self.psi, self.theta, self.phi)
 
         # 速度更新位置
         self.pos_ = np.array([self.x, self.y, self.z])
+        
+        # 箔条更新
+        if hasattr(self, 'activated_chaffs'):
+            for i in range(len(self.activated_chaffs) - 1, -1, -1):
+                self.activated_chaffs[i].fade(self.dt)
+                if self.activated_chaffs[i].t > 5:
+                    self.activated_chaffs.pop(i)
     
     def short_range_kill(self, target):
         # 近距杀，不需要导弹的模型
@@ -381,10 +464,10 @@ class UAVModel(object):
         new_missile = missile_class(self.pos_, self.vel_, target.pos_, target.vel_, current_time)  # test
         if self.blue:  # target.red:
             new_missile.side = 'b'
-            new_missile.id = None
+            new_missile.id = 301 + self.missile_count
         if self.red:  # target.blue:
             new_missile.side = 'r'
-            new_missile.id = None
+            new_missile.id = 101 + self.missile_count
         # 根据距离调整导弹参数
         distance = np.linalg.norm(target.pos_ - self.pos_)
         new_missile.max_g = 40  # 最大过载
@@ -399,18 +482,6 @@ class UAVModel(object):
         self.last_launch_time = current_time
         return new_missile
 
-    # 是否可探测到目标
-    def can_detect_target(self, target):
-        can = False
-        if self.dead:  # 本机已死，拒绝探测目标
-            return False
-        L_ego_enm_ = target.pos_ - self.pos_
-        dist = norm(L_ego_enm_)
-        if dist <= 160e3:
-            angle = np.arccos(np.dot(L_ego_enm_, self.vel_) / (dist * self.speed))
-            if angle * 180 / pi <= 60:
-                can = True
-        return can
 
     # 是否可跟踪目标
     def can_track_target(self, target):
@@ -419,9 +490,9 @@ class UAVModel(object):
             return False
         L_ego_enm_ = target.pos_ - self.pos_
         dist = norm(L_ego_enm_)
-        if dist <= 80e3:
+        if dist <= self.max_radar_range:
             angle = np.arccos(np.dot(L_ego_enm_, self.vel_) / (dist * norm(self.vel_)))
-            if angle * 180 / pi <= 55:
+            if angle <= self.max_radar_angle_rad:
                 can = True
         return can
 
@@ -440,7 +511,7 @@ class UAVModel(object):
         # 如果分母有效，继续计算
         angle = np.arccos(np.dot(L_ego_m_, self.vel_) / (dist * norm(self.vel_)))
 
-        if angle * 180 / pi < 60 and dist <= 50e3:  # 假设飞机雷达和导弹的通信距离在50km
+        if np.radians(angle) < 65: # and dist <= 50e3:  # 假设飞机雷达和导弹的通信距离在50km
             target_uav = None
             # 根据导弹目标id查找目标
             for uav in UAVs:

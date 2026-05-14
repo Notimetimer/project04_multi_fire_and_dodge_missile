@@ -548,14 +548,14 @@ class Battle(object):
                 UAV.crash = True
                 adv.crash = True
             # 出界判别
-            if self.out_range(UAV):
+            if self.out_cage(UAV):
                 self.running = False
 
         r_reward_n, b_reward_n = self.get_reward()
         terminate = self.get_terminate()
 
         for UAV in self.UAVs:
-            if UAV.got_hit or UAV.crash or self.out_range(UAV):
+            if UAV.got_hit or UAV.crash or self.out_cage(UAV):
                 UAV.dead = True
                 self.running = False
 
@@ -677,7 +677,7 @@ class Battle(object):
         return np.stack(r_obs_n), np.stack(b_obs_n)
 
     # 碰边或撞地
-    def out_range(self, UAV):
+    def out_cage(self, UAV):
         position = UAV.pos_
         out = True
         if min_north <= position[0] <= max_north and \
@@ -735,7 +735,7 @@ class Battle(object):
 
             # 态势优势奖励
             # 高度优势函数
-            if UAV.pos_[1] <= 13e3 and UAV.pos_[1] >= 1e3:     # 其余条件按照out_ranges算
+            if UAV.pos_[1] <= 13e3 and UAV.pos_[1] >= 1e3:     # 其余条件按照out_cages算
                 R_h += 40 / (1 + np.exp(0.1*(UAV.pos_[1]-14e3))) - 40 / (1 + np.exp(0.1*(UAV.pos_[1]-1e3))) - 40
 
             # 速度优势函数
@@ -796,13 +796,13 @@ class Battle(object):
                 rewards[i] -= 30 * (trigger - min(max_east - UAV.pos_[2], UAV.pos_[2] - min_east)) / trigger
 
             # 出界惩罚
-            if self.out_range(UAV):
+            if self.out_cage(UAV):
                 rewards[i] -= 100
             # 超出限高惩罚
             # if UAV.pos_[1] >= max_height:
             #     rewards[i] -= 80  # 重复
             # 对手出界
-            if self.out_range(adv):
+            if self.out_cage(adv):
                 rewards[i] += 100
             # 被命中(不管是导弹还是"扫描枪")
             if UAV.got_hit:

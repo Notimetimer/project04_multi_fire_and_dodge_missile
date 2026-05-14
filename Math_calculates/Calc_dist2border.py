@@ -16,10 +16,12 @@ from math import *
 import numpy as np
 import matplotlib.pyplot as plt
 from numpy.linalg import norm
+from shapely.geometry import Point, Polygon, LineString
+
+
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from Math_calculates.sub_of_angles import *
-from Math_calculates.PolygonCalculations import *
 
 # def sub_of_radian(input1, input2=0):
 #     # 弧度减法
@@ -44,40 +46,64 @@ def calc_intern_dist2circle(R, pos_, psi):
     # left_or_right = np.sign(sub_of_radian(eta, psi)) # -1 左边，0 中间，1 右边
     left_or_right = sub_of_radian(psi, pi+eta)/pi*2 # -1 左边，0 中间，1 右边
     
-    return dh, left_or_right
+    return dh, left_or_right   
 
-def calc_intern_dist2polygon(vertices, pos_, psi):
-    pos2d_ = np.array([pos_[0], pos_[2]])
-    velocity_h_ = np.array([cos(psi), sin(psi)])
-    d_vec, side = calc_dist2polygon_border(vertices, test_pt=pos2d_, velocity=velocity_h_)
-    return norm(d_vec), side
-    
 
-def calc_intern_dist2cylinder(R, pos_, psi, theta):
-    """
-    计算飞机到圆柱形边界的斜距离
+def get_velocity_intercept_info(poly, p, v):
+    """计算沿速度矢量方向与多边形边界的交点"""
+    v_norm = np.linalg.norm(v)
+    if v_norm == 0: return None, None
     
-    参数:
-    R: float, 圆柱形边界半径
-    rho: float, 飞机到圆心的距离
-    eta: float, 飞机相对于圆心的方位角（弧度）
-    psi: float, 飞机航向角（弧度）
-    theta: float, 飞机俯仰角（弧度）
+    v_unit = v / v_norm
+    minx, miny, maxx, maxy = poly.bounds
+    max_dim = np.sqrt((maxx - minx)**2 + (maxy - miny)**2)
+    ray_end = np.array([p.x, p.y]) + v_unit * max_dim
+    ray_line = LineString([(p.x, p.y), (ray_end[0], ray_end[1])])
     
-    返回:
-    d: float, 飞机到边界的斜距离
-    dh: float, 飞机到边界的水平距离
-    pos_: ndarray, 飞机位置坐标 [北、天、东]
-    """
-    dh, left_or_right = calc_intern_dist2circle(R, pos_, psi)
+    intersection = ray_line.intersection(poly.boundary)
+    if intersection.is_empty: return None, None
     
-    # 计算斜距离
-    d = dh/(cos(theta)+1e-5)
+    if intersection.geom_type == 'Point':
+        hit_pt = np.array([intersection.x, intersection.y])
+    else:
+        pts = []
+        if intersection.geom_type == 'MultiPoint':
+            pts = [np.array([pt.x, pt.y]) for pt in intersection.geoms]
+        elif intersection.geom_type == 'GeometryCollection':
+            pts = [np.array([pt.x, pt.y]) for pt in intersection.geoms if pt.geom_type == 'Point']
+        if not pts: return None, None
+        hit_pt = pts[np.argmin([np.linalg.norm(pt - np.array([p.x, p.y])) for pt in pts])]
+        
+    dist_along_v = np.linalg.norm(hit_pt - np.array([p.x, p.y]))
+    return dist_along_v, hit_pt
 
-    # 边界在飞机的左边还是右边
-    left_or_right = np.sign(sub_of_radian(eta, psi)) # -1 左边，0 中间，1 右边
+class polygon_fences:
+    def __init__(self, vertices):
+        # 计算几何重心：所有边界顶点的坐标加权平均
+        self.poly = Polygon(vertices)
+        self.vertices_arr = np.array(vertices)
+        self.center = np.mean(self.vertices_arr, axis=0)
+        
+        self.test_point = np.array([2.5, 5.0]) 
+        self.target_point = np.array([7.0, 7.0])
     
-    return d, dh, left_or_right
+    def calc_intern_dist(self, pos_, psi):
+        p = Point(np.array([pos_[0], pos_[2]]))
+        is_inside = self.poly.contains(p)
+        v = np.array([cos(psi), sin(psi)])
+        dist_along_v, _ = get_velocity_intercept_info(self.poly, p, v)
+        vec2center = self.center - np.array([pos_[0], pos_[2]])
+        if not is_inside:
+            dist_along_v = -100
+        psi_of_vec2center = np.arctan2(vec2center[1], vec2center[0])
+        side = sub_of_radian(psi, psi_of_vec2center)/pi*2
+        # # 给出当前方向相对中心的偏移角度归一化值
+        # crossed = np.array([
+        #     v[0]*vec2center[1]/(norm(vec2center)+1e-8) - 
+        #     v[1]*vec2center[0]/(norm(vec2center)+1e-8)
+        #     ])
+        # side = np.arcsin(crossed) / pi * 2
+        return dist_along_v, side
 
 if __name__ == '__main__':
     # 设置中文字体
@@ -95,11 +121,9 @@ if __name__ == '__main__':
 
     # 计算距离
     d_hor, left_or_right = calc_intern_dist2circle(R,pos_,psi)
-    d, dh, left_or_right = calc_intern_dist2cylinder(R, pos_, psi, theta)
     
     # 可视化
-    print(f"水平距离: {dh:.2f}")
-    print(f"斜距离: {d:.2f}")
+    print(f"水平距离: {d_hor:.2f}")
     print(left_or_right)
     
     # 绘制图形
@@ -115,8 +139,8 @@ if __name__ == '__main__':
     plt.plot([0, pos_[2]], [0, pos_[0]], 'g-', label='圆心到飞机')
     
     # 计算速度向量终点
-    vx = pos_[0] + dh * cos(psi)
-    vz = pos_[2] + dh * sin(psi)
+    vx = pos_[0] + d_hor * cos(psi)
+    vz = pos_[2] + d_hor * sin(psi)
     
     # 绘制飞机位置到速度向量终点的线段
     plt.plot([pos_[2], vz], [pos_[0], vx], 'r-', label='速度向量')

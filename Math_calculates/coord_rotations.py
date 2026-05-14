@@ -48,3 +48,9 @@ def passive_rotation(vector,heading,theta,gamma):
         [0, -sin(gamma), cos(gamma)]
         ])
     return vector@Rpsi.T@Rtheta.T@Rgamma.T
+
+# 罗德里格斯旋转公式
+def RodRot(V, u, alpha):
+    # 原向量，转轴，转角(弧度)
+    V1 = V*cos(alpha)+np.cross(u,V)*sin(alpha)+u*np.dot(u,V)*(1-cos(alpha))
+    return V1

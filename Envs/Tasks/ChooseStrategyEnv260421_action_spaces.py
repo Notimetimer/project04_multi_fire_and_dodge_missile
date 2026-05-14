@@ -67,7 +67,7 @@ class ChooseStrategyEnv(Battle):
         #     "border",  # 2
         # ]
         # self.obs_dim = 1*6+8+7+1+4+2
-        self.fly_act_dim = [14]
+        self.fly_act_dim = [5, 7] # [5,7] 14
         self.fire_dim = 1
         
         # [新增] 初始化 last_obs 属性，用于记录上一帧状态以计算瞬时奖励
@@ -81,8 +81,8 @@ class ChooseStrategyEnv(Battle):
         # self.last_dhor = None
         
         # [新增] 初始化 last_dead 属性，防止死亡惩罚重复计算
-        for UAV in self.UAVsTable.values():
-            UAV.last_dead = False
+        for ego in self.UAVsTable.values():
+            ego.last_dead = False
 
         # [确认存在/修改] 确保每个 Episode 开始时重置 last_obs
         self.last_obs = None 
@@ -331,49 +331,78 @@ class ChooseStrategyEnv(Battle):
         action_v, action_h = action
         # 速度指令，锁定340
         speed_cmd = 340
-
+        
         # 垂直方向指令
-        if action_v == 0:
-            delta_height_cmd = min(5000*2/3, self.max_alt_safe-ego.alt)
-        if action_v == 1:
-            delta_height_cmd = min(5000/3, self.max_alt_safe-ego.alt)
-        if action_v == 2:
-            delta_height_cmd = 135
-        if action_v == 3:
-            delta_height_cmd = max(-5000/3, self.min_alt_safe-ego.alt)
-        if action_v == 4:
-            delta_height_cmd = max(-5000/3*2, self.min_alt_safe-ego.alt)
-        if action_v == 5:
-            delta_height_cmd = max(-2000, self.min_alt_safe-ego.alt)
-
+        theta = ego.theta
+        if action_v == 0: # 比目标高50°
+            theta_desired = np.clip(theta+delta_theta+np.radians(50), -pi/2, pi/2)
+        if action_v == 1: # 比目标高20°
+            theta_desired = np.clip(theta+delta_theta+np.radians(20), -pi/2, pi/2)
+        if action_v == 2: # 纯追踪
+            theta_desired = np.clip(theta+delta_theta+np.radians(1), -pi/2, pi/2)
+        if action_v == 3: # 比目标低30°
+            theta_desired = np.clip(theta+delta_theta+np.radians(-30), -pi/2, pi/2)
+        if action_v == 4: # 急速下降
+            theta_desired = np.radians(-75)
+        
         # 水平方向指令：
-        # 回中心
+        # 追踪
         if action_h == 0:
+            delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
+        # 左crank
+        if action_h == 1:
+            delta_psi_cmd = sub_of_radian(delta_psi - 61 * pi/180, 0)
+        # 右crank
+        if action_h == 5:
+            delta_psi_cmd = sub_of_radian(delta_psi + 61 * pi/180, 0)
+        # 3线
+        if action_h == 2:
+            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
+            delta_psi_cmd = sub_of_radian(delta_psi_temp - pi/2, 0)
+        # 9线
+        if action_h == 4:
+            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
+            delta_psi_cmd = sub_of_radian(delta_psi_temp + pi/2, 0)
+        # 置尾机动
+        if action_h == 3:
+            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
+            delta_psi_cmd = np.clip(sub_of_radian(delta_psi_temp, pi), -pi/2, pi/2)
+
+        # 回中心(连续动作空间离散化禁止使用)
+        if action_h == 6:
             line2center = np.array([self.horizontal_center[0]-ego.pos_[0], self.horizontal_center[1]-ego.pos_[2]])
             psi2center = np.arctan2(line2center[1], line2center[0])
             dist2center = norm(line2center)
             delta_psi_cmd = sub_of_radian(psi2center, ego.psi) * dist2center/self.R_cage
-        # 追踪
-        if action_h == 1:
-            delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
-        # 左crank
-        if action_h == 2:
-            delta_psi_cmd = sub_of_radian(delta_psi - 61 * pi/180, 0)
-        # 右crank
-        if action_h == 3:
-            delta_psi_cmd = sub_of_radian(delta_psi + 61 * pi/180, 0)
-        # 3线
-        if action_h == 4:
-            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
-            delta_psi_cmd = sub_of_radian(delta_psi_temp - pi/2, 0)
-        # 9线
-        if action_h == 5:
-            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
-            delta_psi_cmd = sub_of_radian(delta_psi_temp + pi/2, 0)
-        # 置尾机动
-        if action_h == 6:
-            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
-            delta_psi_cmd = np.clip(sub_of_radian(delta_psi_temp, pi), -pi/2, pi/2)
+
+        
+        # 处理指令，让crank的时候依然能够保持锁定
+        target_delta_point_ = np.array([
+            cos(theta + delta_theta) * cos(delta_psi),
+            sin(theta + delta_theta),
+            cos(theta + delta_theta) * sin(delta_psi)
+        ])
+        desired_point_ = np.array([
+            cos(theta_desired) * cos(delta_psi_cmd),
+            sin(theta_desired),
+            cos(theta_desired) * sin(delta_psi_cmd)
+        ])
+        
+        ATA_estimated = np.arccos(np.dot(desired_point_, target_delta_point_)*0.999)
+        if ATA_estimated > np.radians(59):
+            axis_ = np.cross(target_delta_point_, desired_point_)
+            axis_ = axis_ / (norm(axis_) + 1e-6)
+            target_delta_point_ = RodRot(target_delta_point_, axis_, np.radians(59))
+            
+            if action_h in[1,5]:
+                theta_desired = np.arcsin(target_delta_point_[1])
+                delta_psi_cmd = np.arctan2(target_delta_point_[2], target_delta_point_[0])
+
+        
+        # 不能出安全高度范围
+        delta_height_cmd = np.clip(theta_desired/pi*2*5000, 
+                                   self.min_alt_safe-ego.alt, 
+                                   self.max_alt_safe-ego.alt)
 
         return np.array([delta_height_cmd, delta_psi_cmd, speed_cmd])
 

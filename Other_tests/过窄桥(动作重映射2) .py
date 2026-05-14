@@ -26,12 +26,12 @@ class Env:
         self.min_pos = -10
         self.max_pos = 10
         self.position = None
-        self.out_range = None
+        self.out_cage = None
 
     def reset(self):
         self.position = np.array([random.randint(self.min_pos, self.max_pos)],dtype='float64')
         self.steps=0
-        self.out_range = 0
+        self.out_cage = 0
         return self.get_obs()
 
     def get_obs(self):
@@ -51,7 +51,7 @@ class Env:
         done=0
         if self.position < self.min_pos or self.position > self.max_pos:
             done=1
-            self.out_range = 1
+            self.out_cage = 1
         if self.steps>=20:
             done=1
         return done
@@ -384,7 +384,7 @@ action_dim = 1
 
 agent = PPOContinuous(state_dim, hidden_dims, action_dim, actor_lr, critic_lr,
                       lmbda, epochs, eps, gamma, device)
-out_range_count = 0
+out_cage_count = 0
 return_list = []
 clear_batch_flag=1
 with tqdm(total=int(num_episodes), desc='Iteration') as pbar:  # 进度条
@@ -423,8 +423,8 @@ with tqdm(total=int(num_episodes), desc='Iteration') as pbar:  # 进度条
             state = next_state
             episode_return += reward
 
-        if env.out_range==1:
-            out_range_count+=1
+        if env.out_cage==1:
+            out_cage_count+=1
 
         return_list.append(episode_return)
         if 1: # len(transition_dict['dones'])>20: # 逐batch更新
@@ -457,4 +457,4 @@ plt.ylabel('Returns')
 
 plt.show()
 
-print("出界次数：", out_range_count)
+print("出界次数：", out_cage_count)
