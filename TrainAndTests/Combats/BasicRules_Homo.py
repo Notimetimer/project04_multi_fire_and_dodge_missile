@@ -490,19 +490,18 @@ if __name__=='__main__':
                         env.radar_action(id, radar_action)
 
                         # debug
-                        # abs(env.t % 5) < 1e-2 and \
-                        if side_word == 'red' and \
-                            (
-                            # 47 < env.t < 64 or\
-                                3*60 < env.t < 3*60+12
-                            ):
-                            print('id', UAV.id)
-                            print('enm_infos', rule_inputs_[id]['enm_infos'][fly_action['at']])
-                            print('weapon_infos', rule_inputs_[id]['weapon_infos'])
-                            print('RWR_infos', rule_inputs_[id]['RWR_infos'])
-                            print('机动动作是：', fly_action)
-                            print('开火动作是:', fire_action)
-                            print()
+                        # if side_word == 'red' and \
+                        #     (
+                        #     # 47 < env.t < 64 or\
+                        #         3*60 < env.t < 3*60+12
+                        #     ):
+                        #     print('id', UAV.id)
+                        #     print('enm_infos', rule_inputs_[id]['enm_infos'][fly_action['at']])
+                        #     print('weapon_infos', rule_inputs_[id]['weapon_infos'])
+                        #     print('RWR_infos', rule_inputs_[id]['RWR_infos'])
+                        #     print('机动动作是：', fly_action)
+                        #     print('开火动作是:', fire_action)
+                        #     print()
 
                     decide_steps_after_update += 1
 
@@ -528,12 +527,12 @@ if __name__=='__main__':
                     maneuver_cmds = fly_action['do']
                     target_index = fly_action['at']
                     flight_cmds[id] = env.maneuver_for_1_enm(id, target_index, maneuver_cmds, rule_inputs_[id])
-                    # debug
-                    if id == 1:
-                        print("target_index", target_index)
-                        print("maneuver_cmds", maneuver_cmds)
-                        print("rule_inputs_", rule_inputs_[id]['enm_infos'][target_index])
-                        print("flight_cmds", flight_cmds[id])
+                    # # debug
+                    # if id == 1:
+                    #     print("target_index", target_index)
+                    #     print("maneuver_cmds", maneuver_cmds)
+                    #     print("rule_inputs_", rule_inputs_[id]['enm_infos'][target_index])
+                    #     print("flight_cmds", flight_cmds[id])
 
                 env.step(flight_cmds.values()) # Environment updates every dt_maneuver
                 done, _, _, _ = env.combat_terminate_and_reward('r', None, action_cycle_multiplier)
@@ -548,10 +547,7 @@ if __name__=='__main__':
                 env.render(t_bias=t_bias)
             
             episode_end_time = time.time()  # 记录结束时间
-            # print(f"回合时长: {episode_end_time - episode_start_time} 秒")
 
-            
-            # print(t_bias)
             env.clear_render(t_bias=t_bias)
             t_bias += env.t
 
@@ -565,52 +561,3 @@ if __name__=='__main__':
     finally:
         env.end_render() # 停止发送
 
-    #     import matplotlib.pyplot as plt
-    #     r_action_arrays = np.array(r_action_list)
-    #     b_action_arrays = np.array(b_action_list)
-
-    #     # 绘制红方和蓝方的动作
-    #     x_b = b_action_arrays[:, 0].astype(float)
-    #     y_b = b_action_arrays[:, 1].astype(float)
-        
-    #     x_r = r_action_arrays[:, 0].astype(float)
-    #     y_r = r_action_arrays[:, 1].astype(float)
-
-
-    #     fig, (ax, ax_guide) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
-    #     ax.plot(x_b, y_b, marker='o', linestyle='-', label='Blue (Action Type)', color='blue', alpha=0.7)
-    #     ax.plot(x_r, y_r, marker='x', linestyle='--', label='Red (Action Type)', color='red', alpha=0.7)
-        
-    #     ax.set_ylabel('Action Label')
-    #     ax.set_title('Red & Blue Action Type over time')
-    #     ax.legend()
-    #     ax.grid(True)
-
-    #     # 绘制制导状态
-    #     ax_guide.plot(x_bg, y_bg, label='Blue Guidance Status', color='blue', alpha=0.7)
-    #     ax_guide.plot(x_rg, y_rg, label='Red Guidance Status', color='red', alpha=0.7)
-    #     ax_guide.set_xlabel('time (s)')
-    #     ax_guide.set_ylabel('Guidance Status')
-    #     ax_guide.set_title('Red & Blue Guidance Status (can_guide) over time')
-    #     ax_guide.legend()
-    #     ax_guide.grid(True)
-
-    #     # 自定义 x 轴刻度：每 10s 一个刻度；若刻度能被60整除，额外在刻度下方显示整除后的结果（分钟数），
-    #     # 否则显示该刻度除以60后的余数（秒）
-    #     step = 10
-    #     xmin = min(x_b.min(), x_r.min(), x_rg.min(), x_bg.min())
-    #     xmax = max(x_b.max(), x_r.max(), x_rg.max(), x_bg.max())
-    #     ticks = np.arange(np.floor(xmin / step) * step, np.ceil(xmax / step) * step + 1, step)
-    #     labels = []
-    #     for t in ticks:
-    #         ti = int(round(t))
-    #         if ti % 60 == 0:
-    #             labels.append(f"{ti}\n{ti//60}")
-    #         else:
-    #             labels.append(str(ti % 60))
-    #     ax_guide.set_xticks(ticks)
-    #     ax_guide.set_xticklabels(labels)
-
-    #     plt.tight_layout()
-    #     plt.show()
-    #     print()
