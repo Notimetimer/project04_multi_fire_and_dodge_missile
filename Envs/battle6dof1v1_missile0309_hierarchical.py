@@ -167,7 +167,10 @@ class Battle(object):
         
     def reset(self, red_birth_state=None, blue_birth_state=None, red_init_ammo=6, blue_init_ammo=6, seed=None, options=None, ego_side='b'):  # 重置位置和状态
         self.R_cage = self.R_cage0
-        self.horizontal_center = horizontal_center
+        if self.vertices is not None:
+            self.horizontal_center = np.mean(self.vertices, axis=0)
+        else:
+            self.horizontal_center = horizontal_center
         self.set_ego_side(ego_side)
         # debug
         self.r_can_guide = 0
