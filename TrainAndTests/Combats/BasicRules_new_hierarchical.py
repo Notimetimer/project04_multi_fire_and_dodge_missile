@@ -329,7 +329,7 @@ if __name__=='__main__':
         b_guide_list = []
         
         # 采集不同轨迹的动作
-        for i_episode in range(6): # 5
+        for i_episode in range(1): # 6
 
             last_r_action_label = 0
             last_b_action_label = 0
@@ -387,14 +387,14 @@ if __name__=='__main__':
 
                     # 红方根据规则活动
                     r_state_check = env.unscale_state(env.obs2obs_check(r_obs))  # r_check_obs)
-                    r_action_label, r_fire = basic_rules(r_state_check, rules_num=5) # i_episode 或 5 
+                    r_action_label, r_fire = basic_rules(r_state_check, rules_num=2) # i_episode 或 5
                     last_r_action_label = r_action_label
                     if r_fire:
                         env.RUAV.about_to_fire = 1
 
                     # 蓝方根据规则活动
                     b_state_check = env.unscale_state(env.obs2obs_check(b_obs))  # b_check_obs)
-                    b_action_label, b_fire = basic_rules(b_state_check, rules_num=i_episode)
+                    b_action_label, b_fire = basic_rules(b_state_check, rules_num=2) # i_episode 或 5
                     last_b_action_label = b_action_label
                     if b_fire:
                         env.BUAV.about_to_fire = 1

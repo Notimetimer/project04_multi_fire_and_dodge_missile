@@ -229,8 +229,11 @@ class Battle(object):
             
             # 出生点 (注意：使用 copy 防止修改外部传入的字典数据)
             # 构造一个0, 1, -1, 2，-2 的函数
-            temp = (-1)**index_in_side * int((index_in_side+1)/2)
-            UAV.pos_ = birth_state['position'].copy() + np.array([1, 0, 0]) * temp*10e3 # 出生点间距1km，南北排开
+            # temp = (-1)**index_in_side * int((index_in_side+1)/2)
+            # 1/2, -1/2, 3/2, -3/2, 5/2, -5/2...
+            temp = (-1)**index_in_side * (np.floor(index_in_side/2) + 1) / 2
+            UAV.pos_ = birth_state['position'].copy() + np.array([1, 0, 0]) * temp * 20e3 # 出生点间距10e3，南北排开
+            
             # 不能出生在外面
             init_R = norm([UAV.pos_[0], UAV.pos_[2]])
             safe_R_cage = self.R_cage - 5e3
@@ -503,7 +506,7 @@ class Battle(object):
                 if self.out_cage(UAV):
                     UAV.dead = 1
                     continue
-                e2e=0
+                e2e=1
                 # 临时改动，关闭端到端控制，改为PID
                 if e2e==1:
                     # 在这里插入强化学习的控制器
@@ -849,7 +852,7 @@ class Battle(object):
         # 3. 敌机信息:
         # [存活、可见性、是否能锁定、是否锁定我、相对方位、相对俯仰角、相对距离、速度、hot/cold]*数量
         #------------------------
-
+        ego.lock_on = 0
         enm_infos = []
         enm_uavs = self.RUAVs if ego_side =='b' else self.BUAVs
         for enm in enm_uavs:
@@ -889,6 +892,7 @@ class Battle(object):
             if ego.radar_on and \
                 ATA < ego.max_radar_angle_rad and dist < ego.max_radar_range:
                 enm_locked = 1
+                ego.lock_on = 1
             else:
                 enm_locked = 0
 
@@ -1207,7 +1211,7 @@ class Battle(object):
                     if getattr(UAV, 'radar_on', 0)==0:
                         data_to_send += f"#{send_t:.2f}\n-{UAV.id+1000}\n"
                     else:
-                        if 0: # getattr(UAV, 'lock_on', 0) == 0:
+                        if getattr(UAV, 'lock_on', 0) == 0:
                             # 正常探测雷达
                             data_to_send += (
                                 f"{UAV.id+1000},T={loc_LLH[0]:.6f}|{loc_LLH[1]:.6f}|{loc_LLH[2]:.6f}|"

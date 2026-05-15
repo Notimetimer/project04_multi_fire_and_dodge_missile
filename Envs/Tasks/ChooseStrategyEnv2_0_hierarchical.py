@@ -266,7 +266,7 @@ class ChooseStrategyEnv(Battle):
         if action_v == 3: # 比目标低30°
             theta_desired = np.clip(theta+delta_theta+np.radians(-30), -pi/2, pi/2)
         if action_v == 4: # 急速下降
-            theta_desired = -pi/2
+            theta_desired = np.radians(-90)
         
         # 水平方向指令：
         # 追踪
@@ -426,6 +426,16 @@ class ChooseStrategyEnv(Battle):
         delta_height_cmd = np.clip(theta_desired/pi*2*5000, 
                                    self.min_alt_safe-UAV.alt, 
                                    self.max_alt_safe-UAV.alt)
+
+        # # 防撞地
+        # radius = speed ** 2 / (7*9.8)
+        # if theta < 0:
+        #     min_pull_up_height = 500 + radius*(1-cos(-theta))
+        # else:
+        #     min_pull_up_height = 0
+        # # 可能撞地强硬拉起
+        # if UAV.alt <= min_pull_up_height:
+        #     delta_height_cmd = 5000
         
         return np.array([delta_height_cmd, delta_psi_cmd, speed_cmd])
 

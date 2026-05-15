@@ -399,7 +399,7 @@ class Battle(object):
                 if self.out_cage(UAV):
                     UAV.dead = 1
 
-                e2e=0
+                e2e=1
                 # 临时改动，关闭端到端控制，改为PID
                 if e2e==1:
                     # 在这里插入强化学习的控制器

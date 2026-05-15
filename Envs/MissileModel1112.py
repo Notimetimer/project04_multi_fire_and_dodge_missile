@@ -156,7 +156,7 @@ class missile_class:
         # 最大视角
         self.sight_angle_max = np.radians(40) # 极限离轴可能接近40度，也有用53度的，稳定跟踪区在正负25度以内
         # 最大跟踪视角速度
-        self.sight_angle_rate_max = 0.7  # rad/s
+        self.sight_angle_rate_max = np.radians(40) # 0.7  # rad/s
         # 截获距离
         self.detect_range = 14e3  # 23e3 25e3 20e3  # m todo 计算截获距离
         self.distance = 100e3
@@ -279,8 +279,9 @@ class missile_class:
                 vtt_predict = self.vt0_
                 ptt_predict = self.pt0_ + self.vt0_ * (self.t - self.latest_time_of_target)
             else:
-                vtt_predict = self.last_target_v  # * 0.5 #  0.8
+                vtt_predict = self.last_target_v * np.exp(-(self.t - self.last_target_t) / 15.0)  # * 0.5 #  0.8 # 预测速度带衰减
                 ptt_predict = self.last_target_pos + vtt_predict*(self.t - self.last_target_t)
+                ptt_predict[1] = max(ptt_predict[1], 1000) # 禁止往地底下线性递推
 
             if norm(ptt_predict-p_missile_) < self.detect_range:
                 self.radar_on = True
@@ -343,6 +344,7 @@ class missile_class:
             k_z = 4
         else:
             k_z = 0.5
+            nyt1 = k_z * max(vmt, np.linalg.norm(vrt_)) * q_epsilon_dot / g + cos(theta_mt1)
         nzt1 = k_z * max(vmt, np.linalg.norm(vrt_)) * q_beta_dot / g * cos(theta_mt1)
 
         return 2, [nzt1, nyt1]
@@ -374,6 +376,7 @@ class missile_class:
         psi = np.arctan2(vmt_[2], vmt_[0])
         line_psi = np.arctan2(line_t_[2], line_t_[0])
         delta_psi = sub_of_radian(line_psi, psi)
+        line_theta = np.arcsin(line_t_[1]/(norm(line_t_)+1e-6))
 
         # if distance > 40e3:
         #     k_y = 3
@@ -396,12 +399,6 @@ class missile_class:
 
         # 导引头脱锁模拟, 速度方向当做导弹头部方向
         self.off_lock = False
-        # 假设脱锁会导致导弹沿直线继续飞
-        # # 超出距离脱锁
-        # if np.linalg.norm(distance) > self.detect_range:
-        #     self.off_lock = True
-        # 超出导引头视角导致脱锁
-        aoa = np.arccos(np.dot(v_missile_, line_t_) / vmt / distance)
 
         # 防止转过
         if abs(delta_psi) > 70*pi/180:
@@ -410,7 +407,10 @@ class missile_class:
             else:
                 nzt1 = min(0, nzt1)
 
-        if np.dot(v_missile_, line_t_) / vmt / distance < cos(self.sight_angle_max):
+
+        # 超出导引头视角导致脱锁
+        ATA = np.arccos(np.dot(v_missile_, line_t_) / vmt / distance)
+        if ATA > self.sight_angle_max:
             self.off_lock = True
         # 超出跟踪角速度导致脱锁
         if np.linalg.norm(np.cross(line_t_, vrt_)) / distance ** 2 > self.sight_angle_rate_max:
@@ -422,10 +422,14 @@ class missile_class:
                 # 40m/s 约为塞斯纳起飞速度，7000m是随便设的
                 self.off_lock = True
 
-        # 矢量方程，脱锁处理
+        # 脱锁处理
         if self.off_lock:
             nzt1 = self.nzt  # 0
             nyt1 = self.nyt  # cos(theta_mt1)
+            self.lock_on = 0
+            if ATA > self.sight_angle_max:
+                self.nzt = 0
+                self.nyt = cos(theta_mt1)
         else:
             self.nzt = nzt1
             self.nyt = nyt1

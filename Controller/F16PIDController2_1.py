@@ -109,7 +109,7 @@ class F16PIDController:
 
         # 调参
         self.yaw_pid = None
-        self.e_pid = PositionPID(max=1, min=-1, p=10 / pi, i=0 / pi, d=0.5 / pi)  # 16, 0.3, 8
+        self.e_pid = PositionPID(max=1, min=-1, p=10 / pi, i=0 / pi, d=2 / pi)  # 10 / pi, i=0 / pi, d=0.5 / pi
         self.r_pid = None
         self.t_pid = PositionPID(max=1, min=-1, p=1, i=0.3, d=0.2)
         # self.t_pid = PID(1, 0.3, 0.2, setpoint=0)
@@ -158,18 +158,18 @@ class F16PIDController:
             Ny = 0
 
         k_alpha_air = 0
-        # # 迎角限制器 -8~13
-        if alpha<=-1.2:
-            k_alpha_air = 0.5
-        elif alpha>17:
-            k_alpha_air = 0.3 # 0.2
-        else:
-            if alpha>=0:
-                k_alpha_air = 0.01
-            else:
-                k_alpha_air = 0.01
-        if theta * 180 / pi < -70: # 大俯仰机动时降低迎角干预
-            k_alpha_air = 0
+        # # # 迎角限制器 -8~13
+        # if alpha<=-1.2:
+        #     k_alpha_air = 0.5
+        # elif alpha>17:
+        #     k_alpha_air = 0.3 # 0.2
+        # else:
+        #     if alpha>=0:
+        #         k_alpha_air = 0.01
+        #     else:
+        #         k_alpha_air = 0.01
+        # if theta * 180 / pi < -70: # 大俯仰机动时降低迎角干预
+        #     k_alpha_air = 0
         
         # 过载限制器 (EMA 融合比例)
         if Ny >= 7.0: # 正过载死区 7
@@ -245,11 +245,18 @@ class F16PIDController:
         # 体轴系的两个基当做向量转到“转过一个航向角的惯性系”
         y_b_ = active_rotation(np.array([0, 1, 0]), 0, theta, phi)
         z_b_ = active_rotation(np.array([0, 0, 1]), 0, theta, phi)
-        L_xy_b_ = L_ - np.dot(L_, z_b_) * z_b_ / (norm(z_b_)+1e-8)
-        x_b_2L_xy_b_ = np.cross(x_b_, L_xy_b_) / (norm(L_xy_b_)+1e-8)
-        x_b_2L_xy_b_sin = np.dot(x_b_2L_xy_b_, z_b_)
-        x_b_2L_xy_b_cos = np.dot(x_b_, L_xy_b_) / (norm(L_xy_b_)+1e-8)
-        delta_z_angle = np.arctan2(x_b_2L_xy_b_sin, x_b_2L_xy_b_cos)
+
+        AO_control = np.arccos(np.dot(L_, x_b_))
+        L_on_yz_ = L_- np.dot(L_, x_b_) * x_b_ / (norm(x_b_)+1e-8)
+        delta_z_angle = AO_control * (
+            np.dot(L_on_yz_, y_b_) / (norm(L_on_yz_)+1e-8)
+        )
+
+        # L_xy_b_ = L_ - np.dot(L_, z_b_) * z_b_ / (norm(z_b_)+1e-8)
+        # x_b_2L_xy_b_ = np.cross(x_b_, L_xy_b_) / (norm(L_xy_b_)+1e-8)
+        # x_b_2L_xy_b_sin = np.dot(x_b_2L_xy_b_, z_b_)
+        # x_b_2L_xy_b_cos = np.dot(x_b_, L_xy_b_) / (norm(L_xy_b_)+1e-8)
+        # delta_z_angle = np.arctan2(x_b_2L_xy_b_sin, x_b_2L_xy_b_cos)
 
         # 重写的位置式pid
         elevator = -e_pid.calculate(delta_z_angle, dt=dt)
