@@ -35,7 +35,10 @@ def latest(vectors):
 # 大气密度计算
 def rho(h):
     # 输入高度(m)
-    answer = 1.225 * np.exp(-h / 9300)
+    # # 拟合公式1（高空误差大）
+    # answer = 1.225 * np.exp(-h / 9300)
+    # 拟合公式2（高空误差小）
+    answer = 101325*(1-h/44300)**5.256/(286.9*(288.15-0.0065*h))
     return answer
 
 
