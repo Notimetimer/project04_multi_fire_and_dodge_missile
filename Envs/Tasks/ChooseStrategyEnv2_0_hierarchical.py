@@ -51,8 +51,8 @@ action_optionsLR = {
                 }
 
 class ChooseStrategyEnv(Battle):
-    def __init__(self, args, tacview_show=0):
-        super().__init__(args, tacview_show)
+    def __init__(self, args, tacview_show=0, vertices=None):
+        super().__init__(args, tacview_show, vertices=vertices)
         self.key_order_1v1 = [
             "target_alive", # 1
             "target_observable", # 1

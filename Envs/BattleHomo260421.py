@@ -27,8 +27,9 @@ from Math_calculates.CartesianOnEarth import NUE2LLH, LLH2NUE
 from Math_calculates.sub_of_angles import *
 from Math_calculates.coord_rotations import *
 from Math_calculates.SimpleAeroDynamics import *
-from Math_calculates.Calc_dist2border import calc_intern_dist2circle
+from Math_calculates.Calc_dist2border import calc_intern_dist2circle, polygon_fences
 from Visualize.tacview_visualize2 import *
+from shapely.geometry import Point
 from Utilities.FlattenDictObs import flatten_obs2 as flatten_obs
 from Utilities.LocateDirAndAgents import *
 from Controller.F16PIDController2_1 import *
@@ -69,7 +70,10 @@ def sigmoid(x):
 
 
 class Battle(object):
-    def __init__(self, args, tacview_show=0):
+    def __init__(self, args, tacview_show=0, vertices=None):
+        self.vertices = vertices
+        if self.vertices is not None:
+            self.polygon_fences = polygon_fences(self.vertices)
         self.horizontal_center = horizontal_center
         # 加载PID控制器
         self.PIDController = F16PIDController()
@@ -234,13 +238,29 @@ class Battle(object):
             temp = (-1)**index_in_side * (np.floor(index_in_side/2) + 1) / 2
             UAV.pos_ = birth_state['position'].copy() + np.array([1, 0, 0]) * temp * 20e3 # 出生点间距10e3，南北排开
             
-            # 不能出生在外面
-            init_R = norm([UAV.pos_[0], UAV.pos_[2]])
-            safe_R_cage = self.R_cage - 5e3
-            if init_R > safe_R_cage:
-                scale_factor = safe_R_cage / init_R
-                UAV.pos_[0] *= scale_factor
-                UAV.pos_[2] *= scale_factor
+            if self.vertices is not None:
+                # 对长方形边界，直接分维度压进边界内
+                min_x = min(v[0] for v in self.vertices) + 5e3
+                max_x = max(v[0] for v in self.vertices) - 5e3
+                min_z = min(v[1] for v in self.vertices) + 5e3
+                max_z = max(v[1] for v in self.vertices) - 5e3
+                UAV.pos_[0] = np.clip(UAV.pos_[0], min_x, max_x)
+                UAV.pos_[2] = np.clip(UAV.pos_[2], min_z, max_z)
+            else:
+                # 不能出生在外面
+                init_R = norm([UAV.pos_[0], UAV.pos_[2]])
+                safe_R_cage = self.R_cage - 5e3
+                if init_R > safe_R_cage:
+                    scale_factor = safe_R_cage / init_R
+                    UAV.pos_[0] *= scale_factor
+                    UAV.pos_[2] *= scale_factor
+            # # 不能出生在外面
+            # init_R = norm([UAV.pos_[0], UAV.pos_[2]])
+            # safe_R_cage = self.R_cage - 5e3
+            # if init_R > safe_R_cage:
+            #     scale_factor = safe_R_cage / init_R
+            #     UAV.pos_[0] *= scale_factor
+            #     UAV.pos_[2] *= scale_factor
                 
             # 判断是否有自定义初始速度、theta、phi
             default_speed = 300 if is_red else (UAV.speed_max - UAV.speed_min) / 2
@@ -439,15 +459,27 @@ class Battle(object):
                             UAV.target_speed = 1
                         else:
                             UAV.target_speed = max(340, target_speed)
-                    
-                d_hor, left_or_right = calc_intern_dist2circle(self.R_cage, UAV.pos_, UAV.psi_v)
+                
                 # 不准出界
                 if self.no_out:
-                    if d_hor < 8e3:
-                        if left_or_right == 1:
+                    if self.vertices is not None:
+                        d_hor, left_or_right = self.polygon_fences.calc_intern_dist(UAV.pos_, UAV.psi_v)
+                    else:
+                        d_hor, left_or_right = calc_intern_dist2circle(self.R_cage, UAV.pos_, UAV.psi_v)
+                    if d_hor < 8e3: # 8e3
+                        if left_or_right > 0:
                             target_delta_heading = min(-pi/2, target_delta_heading)
-                        if left_or_right == -1:
+                        else:
                             target_delta_heading = max(pi/2, target_delta_heading)
+                
+                # d_hor, left_or_right = calc_intern_dist2circle(self.R_cage, UAV.pos_, UAV.psi_v)
+                # # 不准出界
+                # if self.no_out:
+                #     if d_hor < 8e3:
+                #         if left_or_right == 1:
+                #             target_delta_heading = min(-pi/2, target_delta_heading)
+                #         if left_or_right == -1:
+                #             target_delta_heading = max(pi/2, target_delta_heading)
 
                 # 将调整后的动作写回，Python引用就地修改
                 action[0] = target_delta_height
@@ -749,7 +781,10 @@ class Battle(object):
         ego_alive = not ego.dead  # 自己活着没
 
         # 边界信息
-        d_hor, left_or_right = calc_intern_dist2circle(self.R_cage, ego.pos_, ego.psi_v)
+        if self.vertices is not None:
+            d_hor, left_or_right = self.polygon_fences.calc_intern_dist(ego.pos_, ego.psi)
+        else:
+            d_hor, left_or_right = calc_intern_dist2circle(self.R_cage, ego.pos_, ego.psi)
 
         #------------------------
         # 1. 己方信息向量（固定结构）
@@ -1164,12 +1199,16 @@ class Battle(object):
             return False
 
     def out_cage(self, UAV):
-        position = UAV.pos_
-        pos_h = np.array([position[0], position[2]])
-        R_uav = norm(pos_h - self.horizontal_center)
-        out = True
-        if R_uav <= self.R_cage:
-            out = False
+        if self.vertices is not None:
+            p = Point(np.array([UAV.pos_[0], UAV.pos_[2]]))
+            out = not self.polygon_fences.poly.contains(p)
+        else:
+            position = UAV.pos_
+            pos_h = np.array([position[0], position[2]])
+            R_uav = norm(pos_h - self.horizontal_center)
+            out = True
+            if R_uav <= self.R_cage:
+                out = False
         
         # # 敌机全都死了之后可以出界
         # # （警告，这样可能需要同步更改border观测项和奖励）
@@ -1293,30 +1332,34 @@ class Battle(object):
             pass
 
     def visualize_cage(self, ):
-        # 航路点画法, 适用于复杂边界形状
-        # temp = np.zeros((19,3))
-        # cage = np.zeros((19,3))
-        # cage_dot_id = 10000
-        # data_to_send=''
-        # for i in range(18):
-        #     temp[i] = np.array([self.R_cage*cos(i/18*2*pi), 5000, self.R_cage*sin(i/18*2*pi)])
-        #     cage[i][:]=NUE2LLH(temp[i][0], temp[i][1], temp[i][2], lon_o=o00[0], lat_o=o00[1], h_o=0)
-        #     cage_dot_id += 1
-        #     data_to_send += (
-        #                 f"{cage_dot_id},Type=Navaid+Static+Waypoint,"
-        #                 f"T={cage[i][0]:.6f}|{cage[i][1]:.6f}|{cage[i][2]:.6f},Name=RedWP{i+1},Color=Red,"
-        #                 f"Next={cage_dot_id+1}\n"
-        #                 )
-        # data_to_send += (
-        #                 f"{cage_dot_id+1},Type=Navaid+Static+Waypoint,"
-        #                 f"T={cage[0][0]:.6f}|{cage[0][1]:.6f}|{cage[0][2]:.6f},Name=RedWP19,Color=Red\n"
-        #                 )
-        # 雷达画法
-        data_to_send = (
-            f"10000,T={o00[0]}|{o00[1]}|{1000}"
-            f",Type=Beam,ShortName=Cage,Color=White,Visible=1,Radius=0.0,RadarMode=1"
-            f",RadarRange={self.R_cage},RadarHorizontalBeamwidth=360,RadarVerticalBeamwidth=0\n"
-        )
+        if self.vertices is not None:
+            # 航路点画法（多边形边界）
+            cage = np.zeros((len(self.vertices), 3))
+            cage_dot_id = 10000
+            data_to_send = ''
+            for i, v in enumerate(self.vertices):
+                cage[i][:] = NUE2LLH(v[0], 300, v[1], lon_o=o00[0], lat_o=o00[1], h_o=0)
+            
+            for i in range(len(self.vertices)):
+                data_to_send += (
+                    f"{cage_dot_id},Type=Navaid+Static+Waypoint,"
+                    f"T={cage[i][0]:.6f}|{cage[i][1]:.6f}|{cage[i][2]:.6f},Name=WP{i+1},Color=Red,"
+                    f"Next={cage_dot_id+1 if i < len(self.vertices)-1 else 10000}\n"
+                )
+                cage_dot_id += 1
+                
+        else:
+            # 雷达画法（圆形边界）
+            data_to_send = (
+                # 外圈（纯白）
+                f"10000,T={o00[0]}|{o00[1]}|{300}"
+                f",Type=Beam,ShortName=Cage,Color=#FFFFFF,Visible=1,Radius=0.0,RadarMode=1"
+                f",RadarRange={self.R_cage},RadarHorizontalBeamwidth=360,RadarVerticalBeamwidth=0\n"
+            # # 内圈（浅灰，颜色更深/更暗）
+            # f"10001,T={o00[0]}|{o00[1]}|{300}"
+            # f",Type=Beam,ShortName=Cage,Color=#AAAAAA,Visible=1,Radius=0.0,RadarMode=1"
+            # f",RadarRange={self.half_R_cage},RadarHorizontalBeamwidth=360,RadarVerticalBeamwidth=0\n"
+            )
 
         self.tacview.send_data_to_client(data_to_send)
         print('cage set')

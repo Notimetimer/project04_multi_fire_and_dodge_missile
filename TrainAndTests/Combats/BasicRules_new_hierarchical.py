@@ -278,7 +278,9 @@ if __name__=='__main__':
                         help="")
     args = parser.parse_args()
 
-    env = ChooseStrategyEnv(args, tacview_show=use_tacview)
+    # 构建场地边界，南北长54km，东西宽100km的长方形边界
+    vertices = [[15e3, 50e3], [-15e3, 50e3], [-15e3, -50e3], [15e3, -50e3]]
+    env = ChooseStrategyEnv(args, tacview_show=use_tacview, vertices=vertices)
     # test
     env.dt_move = 0.04 # 4 # 0.025 0.02
 
@@ -387,14 +389,14 @@ if __name__=='__main__':
 
                     # 红方根据规则活动
                     r_state_check = env.unscale_state(env.obs2obs_check(r_obs))  # r_check_obs)
-                    r_action_label, r_fire = basic_rules(r_state_check, rules_num=2) # i_episode 或 5
+                    r_action_label, r_fire = basic_rules(r_state_check, rules_num=5) # i_episode 或 5
                     last_r_action_label = r_action_label
                     if r_fire:
                         env.RUAV.about_to_fire = 1
 
                     # 蓝方根据规则活动
                     b_state_check = env.unscale_state(env.obs2obs_check(b_obs))  # b_check_obs)
-                    b_action_label, b_fire = basic_rules(b_state_check, rules_num=2) # i_episode 或 5
+                    b_action_label, b_fire = basic_rules(b_state_check, rules_num=5) # i_episode 或 5
                     last_b_action_label = b_action_label
                     if b_fire:
                         env.BUAV.about_to_fire = 1

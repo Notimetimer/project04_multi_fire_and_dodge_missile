@@ -344,7 +344,9 @@ if __name__=='__main__':
     args.max_episode_len = 15*60
     args.R_cage = 60.3e3
 
-    env = ChooseStrategyEnv(args, tacview_show=use_tacview)
+    # 构建场地边界，南北长54km，东西宽100km的长方形边界
+    vertices = [[30e3, 50e3], [-30e3, 50e3], [-30e3, -50e3], [30e3, -50e3]]
+    env = ChooseStrategyEnv(args, tacview_show=use_tacview, vertices=vertices)
     # test
     env.dt_move = 0.04 # 4 # 0.025 0.02
 
@@ -467,7 +469,7 @@ if __name__=='__main__':
                         
                         # 2. Agent 产生一个动作
                         if 1: # 如果类型是规则智能体而非神经网络
-                            fly_action, fire_action, radar_action = basic_rules(rule_inputs_[id], mask_inputs_[id], rules_num=2)
+                            fly_action, fire_action, radar_action = basic_rules(rule_inputs_[id], mask_inputs_[id], rules_num=5)
                         else:
                             # 如果类型是神经网络
                             pass
