@@ -111,7 +111,7 @@ class F16PIDController:
         self.yaw_pid = None
         self.e_pid = PositionPID(max=1, min=-1, p=10 / pi, i=0 / pi, d=2 / pi)  # 10 / pi, i=0 / pi, d=0.5 / pi
         self.r_pid = None
-        self.t_pid = PositionPID(max=1, min=-1, p=1, i=0.3, d=0.2)
+        self.t_pid = PositionPID(max=1, min=0, p=1, i=0.3, d=0.2)
         # self.t_pid = PID(1, 0.3, 0.2, setpoint=0)
         # self.t_pid.output_limits = (-1, 1)
         self.pids = [self.yaw_pid, self.e_pid, self.r_pid, self.t_pid]
@@ -131,14 +131,6 @@ class F16PIDController:
             kh = pi / 2 # + pi/8
 
         target_theta = error_h * kh
-        target_delta_heading = state_input[1]
-        
-        # 加扰动，防止破S机动掉太多高度
-        if current_height_devided * 5000 < 4000 and \
-            target_theta < -pi/3:
-                target_delta_heading = np.sign(target_delta_heading) * np.clip(norm(target_delta_heading), 0, pi-pi/6)
-                target_theta = max(-pi/3, target_theta)
-        
         # print('target_theta',target_theta*180/pi)
 
         temp = state_input
@@ -158,43 +150,22 @@ class F16PIDController:
             Ny = 0
 
         k_alpha_air = 0
-        # # # 迎角限制器 -8~13
-        # if alpha<=-1.2:
-        #     k_alpha_air = 0.5
-        # elif alpha>17:
-        #     k_alpha_air = 0.3 # 0.2
-        # else:
-        #     if alpha>=0:
-        #         k_alpha_air = 0.01
-        #     else:
-        #         k_alpha_air = 0.01
-        # if theta * 180 / pi < -70: # 大俯仰机动时降低迎角干预
-        #     k_alpha_air = 0
-        
-        # 过载限制器 (EMA 融合比例)
-        if Ny >= 7.0: # 正过载死区 7
-            k_Ny = 0.2
-            ny_term = Ny / 7.0
-        elif Ny <= -1.2: # 负过载危险区，加大抑制力度
-            k_Ny = 0.85
-            ny_term = Ny / 1.2 
-        else: # 安全区
-            if Ny>0:
-                k_Ny = 0.01
-            else:
-                k_Ny = 0.6
-        # 非对称过载系数限制
-        if Ny>0:    
-            ny_term = Ny / 9.5
+        # # 迎角限制器 -8~13
+        if alpha<=-1.2:
+            k_alpha_air = 0.5
+        elif alpha>17:
+            k_alpha_air = 0.3 # 0.2
         else:
-            ny_term = Ny / 3
+            if alpha>=0:
+                k_alpha_air = 0.01
+            else:
+                k_alpha_air = 0.01
+        if theta * 180 / pi < -70: # 大俯仰机动时降低迎角干预
+            k_alpha_air = 0
 
-        # 改成级联的指数滑动平均 (EMA) 形式，确保始终保持限制且系数归一化
-        # 1. 先融合迎角限制
+        # # 改成级联的指数滑动平均 (EMA) 形式，确保始终保持限制且系数归一化
+        # 迎角限制
         norm_act[1] = (1 - k_alpha_air) * norm_act[1] + k_alpha_air * (alpha / 20)
-        # 2. 再融合过载限制
-        if Ny * norm_act[1] < 0: # 杆位加剧过载的时候加限制，否则不限制
-            norm_act[1] = (1 - k_Ny) * norm_act[1] + k_Ny * ny_term
         
         norm_act[1] = np.clip(norm_act[1], -1, 1)
 
@@ -225,21 +196,32 @@ class F16PIDController:
         # throttle = 0.5 + 0.5 * t_pid(v, dt)
 
         v_error = v_req-v
-        throttle = 0.5 + 0.5 * t_pid.calculate(v_error, dt)
+        throttle = t_pid.calculate(v_error, dt)
 
         # # 方向舵控制
         # rudder=0 # abaaba
         rudder = -beta_air / (5 * pi / 180)
+        # rudder = -beta_air / (5 * pi / 180) * 0.5 - r * 0.9
 
         # 升降舵控制
-        L_ = 1 * np.array(
-            [np.cos(theta_req) * np.cos(delta_heading_req), np.sin(theta_req),
-             np.cos(theta_req) * np.sin(delta_heading_req)])
-        v_ = 1 * np.array(
-            [np.cos(climb_rad) * np.cos(delta_course_rad), np.sin(climb_rad),
-             np.cos(climb_rad) * np.sin(delta_course_rad)])
-        x_b_ = 1 * np.array(
-            [np.cos(theta) * np.cos(0), np.sin(theta), np.cos(theta) * np.sin(0)])
+        L_ = np.array([
+            np.cos(theta_req)*np.cos(delta_heading_req),
+            np.sin(theta_req),
+            np.cos(theta_req)*np.sin(delta_heading_req)
+            ])
+        L_ /= (norm(L_)+1e-8)
+        v_ = 1 * np.array([
+            np.cos(climb_rad) * np.cos(delta_course_rad), 
+            np.sin(climb_rad),
+            np.cos(climb_rad) * np.sin(delta_course_rad)
+            ])
+        x_b_ = 1 * np.array([
+            np.cos(theta) * np.cos(0), 
+            np.sin(theta), 
+            np.cos(theta) * np.sin(0)
+            ])
+
+        ny_actual = state_input[14]   # 需你把法向过载塞进状态
 
         # 将期望航向投影到体轴xy平面上，后根据与体轴x夹角设定升降舵量的大小
         # 体轴系的两个基当做向量转到“转过一个航向角的惯性系”
@@ -252,6 +234,13 @@ class F16PIDController:
             np.dot(L_on_yz_, y_b_) / (norm(L_on_yz_)+1e-8)
         )
 
+        # 根据当前过载缩放delta_z_angle
+        if ny_actual > 0:
+            delta_z_angle *= (1-ny_actual / 9) * 1.5 # 过载限制
+        else:
+            delta_z_angle *= (1+ny_actual / 2.5)
+
+
         # L_xy_b_ = L_ - np.dot(L_, z_b_) * z_b_ / (norm(z_b_)+1e-8)
         # x_b_2L_xy_b_ = np.cross(x_b_, L_xy_b_) / (norm(L_xy_b_)+1e-8)
         # x_b_2L_xy_b_sin = np.dot(x_b_2L_xy_b_, z_b_)
@@ -259,7 +248,7 @@ class F16PIDController:
         # delta_z_angle = np.arctan2(x_b_2L_xy_b_sin, x_b_2L_xy_b_cos)
 
         # 重写的位置式pid
-        elevator = -e_pid.calculate(delta_z_angle, dt=dt)
+        elevator = -e_pid.calculate(delta_z_angle, dt=dt, d_error=-q)
         elevator = np.clip(elevator, -1, 1)
 
         # 特例：大坡度时不允许推杆
@@ -274,25 +263,9 @@ class F16PIDController:
         y_b_2L_yz_b_cos = np.dot(y_b_, L_yz_b_) / (norm(L_yz_b_)+1e-8)
         delta_x_angle = np.arctan2(y_b_2L_yz_b_sin, y_b_2L_yz_b_cos)
 
-        # # 特例：压机头能够得着的，就不翻转机身
-        # if abs(delta_x_angle) > 5 / 6 * pi and -pi / 6 < delta_z_angle < 0 and abs(theta) < 80 * pi / 180:
-        #     delta_x_angle = sub_of_radian(delta_x_angle + pi, 0)
-        #     # print('push')
-        # # else:
-        # # print('pull')
-
         # 通用
         roll_error = delta_x_angle
         aileron = roll_error / pi * 2 - p / pi * 2 # 1
-        # aileron = roll_error/pi*3 - p/pi * 2
-
-        # # debug
-        # if alpha_air*180/pi<-5:
-        #     print('strange')
-        #     print('delta_x_angle', delta_x_angle * 180 / pi)
-        #     aileron = (roll_error / pi * 6 - p / pi * 8) / 4
-        #     if 0.9 < abs(delta_x_angle / (pi / 2)) < 1.1:
-        #         elevator = 0
 
         # steady filght
         # 副翼平稳飞行控制：delta_z_angle**2+delta_x_angle**2足够小时副翼由phi比例控制
@@ -312,14 +285,6 @@ class F16PIDController:
             self.type = 0  # steady
         else:
             self.type = 1  # fast
-
-        # print(self.check_switch1)
-        # print(self.check_switch2)
-        # input("Press any key to continue...")
-        
-        # if alpha_air*180/pi<-5:
-        #     print('?')
-        #     pass
 
         aileron = np.clip(aileron, -1, 1)
         norm_act = np.array([aileron, elevator, rudder, throttle])
