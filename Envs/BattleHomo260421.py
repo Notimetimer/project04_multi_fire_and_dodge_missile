@@ -201,8 +201,8 @@ class Battle(object):
         self.dt_maneuver = dt_maneuver  # simulation interval，1 second
         self.t = 0
         # 初始化无人机
-        self.Rnum = 2 # test
-        self.Bnum = 2
+        self.Rnum = 1 # test
+        self.Bnum = 1 # 2
         self.RUAVsTable = {}
         self.BUAVsTable = {}
         self.UAVsTable = {}
@@ -291,6 +291,7 @@ class Battle(object):
                 self.BUAVsTable[UAV.id] = UAV
                 
             UAV.lock_on = 0
+            UAV.current_target_id = None
         self.running = True
         self.UAVsTable = {**self.RUAVsTable, **self.BUAVsTable}
         self.UAV_ids = [UAV.id for UAV in self.UAVs]
@@ -1253,7 +1254,7 @@ class Battle(object):
                     if getattr(UAV, 'radar_on', 0)==0:
                         data_to_send += f"#{send_t:.2f}\n-{UAV.id+1000}\n"
                     else:
-                        if getattr(UAV, 'lock_on', 0) == 0:
+                        if getattr(UAV, 'lock_on', 0) == 0 or getattr(UAV, 'current_target_id', None) is None:
                             # 正常探测雷达
                             data_to_send += (
                                 f"{UAV.id+1000},T={loc_LLH[0]:.6f}|{loc_LLH[1]:.6f}|{loc_LLH[2]:.6f}|"

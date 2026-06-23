@@ -348,7 +348,7 @@ if __name__=='__main__':
     vertices = [[30e3, 50e3], [-30e3, 50e3], [-30e3, -50e3], [30e3, -50e3]]
     env = ChooseStrategyEnv(args, tacview_show=use_tacview, vertices=vertices)
     # test
-    env.dt_move = 0.04 # 4 # 0.025 0.02
+    env.dt_move = 0.1 # 0.04 # 4 # 0.025 0.02
 
     env.shielded = 1 # 0 # 有防撞地就可以不要这个
 
