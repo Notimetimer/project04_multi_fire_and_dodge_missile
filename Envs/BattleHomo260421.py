@@ -1299,7 +1299,7 @@ class Battle(object):
                     data_to_send += (
                                     f"#{send_t:.2f}\n{missile.id},T={loc_m[0]:.6f}|{loc_m[1]:.6f}|{loc_m[2]:.6f}|"
                                     f"{0.0:.6f}|{missile.theta * 180 / pi:.6f}|{missile.psi * 180 / pi:.6f},"
-                                    f"Name=AIM-120C,Color={color}\n"
+                                    f"Name={missile.WeaponType},Color={color}\n"
                                     )
                     # 导弹雷达波束显示
                     if getattr(missile, 'radar_on', 0):

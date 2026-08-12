@@ -115,7 +115,10 @@ def sub_of_radian(input1, input2):
 class missile_class:
     def __init__(self, pos0_, vel0_, pt0_, vt0_, launch_time=0):
         super(missile_class, self).__init__()
+        self.WeaponType = "AIM-120C"
+        self.exhausted = False # 导弹是否没电
         self.dead = False  # 导弹是否死亡
+        self.miss = False
         self.hit = False  # 导弹是否命中目标
         self.launch_time = launch_time  # 导弹发射时间
         self.lock_time = None
@@ -132,9 +135,10 @@ class missile_class:
         self.maxH_m = 25000
         self.minH_m = 100 # 500
         # 重量参数和燃烧时间参数
-        self.empty_weight = 157-51.01 # 96.82  # kg
-        self.stage1_weight = 51.01 # 20.28  # kg
-        self.stage2_weight = 1e-8 # 44.9  # kg
+        self.max_weight = 161.5 # 157 # kg 
+        self.stage1_weight = 52 # 51.01 # kg
+        self.stage2_weight = 1e-8 # 44.9 # kg
+        self.empty_weight = self.max_weight - self.stage1_weight # kg
         self.stage1_time = 8 # 7.75  # 2.3 s
         self.stage2_time = 1e-8 # 10.5 # 10.5 11  # s
         # self.stage1_burn_rate = self.stage1_weight / self.stage1_time  # 一级燃烧率kg/s
@@ -145,7 +149,7 @@ class missile_class:
         self.stage2_start = self.stage1_start + self.stage1_time  # s
         self.stage2_end = self.stage1_start + self.stage1_time + self.stage2_time  # s
         # 杀伤半径
-        self.kill_range = 85 # 20  # 为了提高训练效率，这个半径可以被放大，从而避免变步长
+        self.kill_range = 90 # 85 # 20  # 为了提高训练效率，这个半径可以被放大，从而避免变步长
         # 最大过载
         self.max_g0 = 40
         self.max_g = self.max_g0
@@ -155,18 +159,18 @@ class missile_class:
         self.area = 0.4 # 425 435 0.405  # m2
         # 阻力系数是一个函数，不在这里定义
         # 最小速度
-        self.speed_min = 0.9 * 340  # m/s
+        self.speed_min = 0.7 * 340  # m/s
         # 最大视角
         self.sight_angle_max = np.radians(40) # 极限离轴可能接近40度，也有用53度的，稳定跟踪区在正负25度以内
         # 最大跟踪视角速度
         self.sight_angle_rate_max = np.radians(40) # 0.7  # rad/s
         # 截获距离
-        self.detect_range = 14e3  # 23e3 25e3 20e3  # m todo 计算截获距离
+        self.detect_range = 15e3  # 15~20km之间, 14km有些激进了  # m todo 计算截获距离
         self.distance = 100e3
         # 初制导下最大速度倾角
         self.v_theta_of_initial_guidance_max = 45 * pi / 180
         self.t = 0  # 导弹初始计时
-        self.t_max = 100  # 最大运行时间
+        self.t_max = self.stage1_start + 120  # 110 电池工作时间
         self.t_go = 120
         self.trajectory = np.empty((0, 7))  # 导弹轨迹, 结构为时间、位置（3）、速度（3）
         self.guidance_stage = 2  # 2为中制导，3为末制导
@@ -184,10 +188,20 @@ class missile_class:
         self.side = None
         self.datalink = None
         self.A_pole_moment = None
+        self.A_pole_moment_time = None
+        self.shoot_time = None
+        self.reward_function_info={"time":None ,"value":0}
+        self.get_in_12km = 0
+        self.get_in_4km = 0
+        self.force_enm_out = 0
         self.delta_height = 0
-        self.close_rate = None
+        self.target_close_v = None
+        self.closing_rate = None
         self.off_lock = False
         self.ground_close_rate = None
+        self.dt = 0.04 # 初始值
+        self.v_dot = 0
+        self.gliding = 0
 
     def Cd(self, mach):
         lis0 = np.array([
@@ -277,7 +291,45 @@ class missile_class:
         # print("中制导")
         
         if not datalink:
-            # 线性递推预测目标位置
+            "线性递推加误差"
+            # # if self.last_target_t is None:
+            # #     t_lost_data = 0.0
+            # # else:
+            # #     t_lost_data = self.t - self.last_target_t
+            # if self.last_target_t is None:
+            #     vtt_predict = self.vt0_.copy()
+            #     ptt_predict = self.pt0_ + self.vt0_ * (self.t - self.latest_time_of_target)
+            #     # 保存预测状态，便于后续累积
+            #     self.last_target_v = vtt_predict.copy()
+            #     self.last_target_pos = ptt_predict.copy()
+            #     self.last_target_t = self.t
+            # else:
+            #     # 上一帧预测速度
+            #     vtt_predict = self.last_target_v.copy() if self.last_target_v is not None else self.vt0_.copy()
+            #     # 未知机动噪声（随机游走）
+            #     sigma_a = 8.0 # 8.0   # m/s^2，可调
+            #     a_noise = np.random.randn(3) * sigma_a
+            #     # 高度方向弱一些
+            #     a_noise[1] *= 0.1
+            #     # 更新预测速度：误差累积
+            #     vtt_predict += a_noise * self.dt
+            #     # 限制最大预测速度
+            #     vmax = np.inf # 450.0
+            #     v_norm = np.linalg.norm(vtt_predict)
+            #     if v_norm > vmax:
+            #         vtt_predict *= vmax / v_norm
+            #     self.last_target_v = vtt_predict.copy()
+            #     # 更新预测位置
+            #     if self.last_target_pos is not None:
+            #         ptt_predict = self.last_target_pos + vtt_predict * self.dt
+            #     else:
+            #         ptt_predict = self.pt0_ + vtt_predict * (self.t - self.latest_time_of_target)
+            #     # 防止预测扎地
+            #     ptt_predict[1] = max(ptt_predict[1], 1000.0)
+            #     self.last_target_pos = ptt_predict.copy()
+            
+            "原位置预测模型，没有考虑误差，精度过高被钻了空子"
+            # # 线性递推预测目标位置
             if self.last_target_t is None:
                 vtt_predict = self.vt0_
                 ptt_predict = self.pt0_ + self.vt0_ * (self.t - self.latest_time_of_target)
@@ -290,7 +342,7 @@ class missile_class:
                 self.radar_on = True
             else:
                 self.radar_on = False
-        else:
+        else: # 有数据链支持
             self.radar_on = False
             vtt_predict = v_target_
             ptt_predict = p_target_
@@ -298,6 +350,10 @@ class missile_class:
             self.last_target_v = vtt_predict.copy()
             self.last_target_t = self.t
 
+        # 没电关雷达
+        if self.t > self.t_max:
+            self.radar_on = False
+            self.exhausted = True # 导弹是否没电
         # 输入参数
         vmt_ = v_missile_
         ptt_ = ptt_predict
@@ -330,8 +386,9 @@ class missile_class:
 
         # 初制导阶段根据距离判断是否需要靠导弹来高抛
         if self.t < self.stage2_end:
-            if distance > 50e3:
-                nyt1 += max(0, (pi/6-self.theta)) * 4 # 2
+            if distance > 30e3: # 50e3
+                nyt1 += (pi/6-self.theta) * 4.5 # 4
+                # nyt1 += max(0, (pi/6-self.theta)) * 4 # 2
 
         # 时间过半以后如果目标低于当前飞行高度，不能还在爬升
         delta_height = self.delta_height
@@ -355,6 +412,9 @@ class missile_class:
     # 末制导
     def terminal_guidance(self, v_missile_, v_target_, p_missile_, p_target_):
         self.radar_on = True
+        # 没电关雷达
+        if self.t > self.t_max:
+            self.radar_on = False
         # 输入参数
         vmt_ = v_missile_
         ptt_ = p_target_
@@ -412,16 +472,18 @@ class missile_class:
 
 
         # 超出导引头视角导致脱锁
-        ATA = np.arccos(np.dot(v_missile_, line_t_) / vmt / distance)
+        ATA = np.arccos(np.dot(v_missile_, line_t_) / (vmt * distance + 1e-7))
         if ATA > self.sight_angle_max:
             self.off_lock = True
         # 超出跟踪角速度导致脱锁
-        if np.linalg.norm(np.cross(line_t_, vrt_)) / distance ** 2 > self.sight_angle_rate_max:
+        if np.linalg.norm(np.cross(line_t_, vrt_)) / (distance ** 2 + 1e-7) > self.sight_angle_rate_max:
             self.off_lock = True
         
         # 试验：多普勒 导致脱锁
         if self.ground_close_rate is not None:
-            if abs(self.ground_close_rate - self.close_rate) < 40 and self.pos_[1] < 7000:
+            if abs(self.ground_close_rate - self.target_close_v) < 40 and \
+                self.pos_[1] < 7000 and \
+                    self.theta < np.radians(-15):
                 # 40m/s 约为塞斯纳起飞速度，7000m是随便设的
                 self.off_lock = True
 
@@ -467,6 +529,7 @@ class missile_class:
         '''
         输入结构：是否看到目标(1)，目标的位置(3)、目标的速度(3)
         '''
+        self.dt = dt
         # 根据目标信息产生制导指令
         visable = target_information[0]
         # if visable==0:
@@ -487,13 +550,14 @@ class missile_class:
 
         v_rel_ = vtt_-vmt_
         L_dot = np.dot(v_rel_, line_t_)/distance
+        self.closing_rate = - L_dot
         self.t_go = -distance/L_dot # if L_dot<0 else self.t_max # 弹目距离
         self.t_go = max(self.t_go, 0.1)
 
         vmt = np.linalg.norm(vmt_)
 
         # 试验：多普勒速度窗口相关计算
-        self.close_rate = - L_dot
+        self.target_close_v = - np.dot(vtt_, line_t_)/distance        
         self.ground_close_rate = vmt if self.theta < np.radians(-15) else 0
 
         # 目标是否进入锁定角度范围
@@ -552,8 +616,19 @@ class missile_class:
         # 速率更新
         v_dot = (Fp - Fx) / m_missile1 - g * sin(theta_mt)
         vmt += v_dot * dt
-        # 限马赫数
-        vmt = min(vmt, self.max_mach * sound_speed)
+        
+        self.v_dot = v_dot
+
+        # 速度过低没有舵效
+        if vmt < self.speed_min:
+            nzt = 0 # np.clip(nzt, -1, 1)
+            nyt = 0 # np.clip(nyt, -1, 1)
+
+        # 电池耗尽也没有舵效
+        if self.t > self.t_max:
+            nzt = 0
+            nyt = 0
+
         # 过载限制2
         self.get_max_g(Rho, vmt) # 动态改变最大过载
         nt = np.clip(np.linalg.norm([nyt, nzt]), 0, self.max_g)
@@ -577,6 +652,10 @@ class missile_class:
         self.t += dt
         self.t = round(self.t, 2)  # 保留两位小数
 
+        if self.t < self.stage2_end or self.t > self.t_max:
+            self.gliding = 0
+        else:
+            self.gliding = 1
 
         # print(self.t)
         # 记录运行轨迹
@@ -660,10 +739,10 @@ if __name__ == '__main__':
     # list_vt_ = np.array([-200, 0, 0])
 
     # 抛射
-    p_carrier_ = np.array([0, 12e3, 0])
+    p_carrier_ = np.array([0, 11e3, 0])
     v_carrier_ = np.array([cos(pi/6), sin(pi/6), 0]) * 1.2 *340
-    list_pt_ = np.array([80e3, 3e3, 0])  # 目标 3e3
-    list_vt_ = np.array([-300, 0, 80])
+    list_pt_ = np.array([140e3, 9e3, 0])  # 目标 3e3
+    list_vt_ = np.array([-300, 0, 40])
 
     missile_used = 0
     hit = False
@@ -691,6 +770,14 @@ if __name__ == '__main__':
     for i in i_list:
         t = np.round(i * dt, 2)
         # 更新载机位置和速度
+        theta_carrier = np.arcsin(v_carrier_[1]/norm(v_carrier_))
+        # theta_carrier = (15000-pmt_[1])/5000 * pi/2 # 不管载机了，定高不好写
+        psi_carrier = atan2(v_carrier_[2], v_carrier_[0])
+        v_carrier_ = norm(v_carrier_)*np.array([
+            cos(theta_carrier)*cos(psi_carrier),
+            sin(theta_carrier),
+            cos(theta_carrier)*sin(psi_carrier),
+        ])
         p_carrier_ += v_carrier_ * dt
         # 更新目标位置和速度
         ptt_, vtt_ = Target.step(dt=dt)
@@ -757,8 +844,9 @@ if __name__ == '__main__':
             for j, missile1 in enumerate(list_missiles):
                 if not missile1.dead:
                     loc_m = ENU2LLH(mark, missile1.pos_)
-                    data_to_send += f"#{send_t:.2f}\n{10+j},T={loc_m[0]:.6f}|{loc_m[1]:.6f}|{loc_m[2]:.6f}," \
-                                    f"Name=AIM-120C,Color=Orange\n"
+                    data_to_send += f"#{send_t:.2f}\n{10+j},T={loc_m[0]:.6f}|{loc_m[1]:.6f}|{loc_m[2]:.6f}|" \
+                                    f"{0.0:.6f}|{missile1.theta * 180 / pi:.6f}|{missile1.psi * 180 / pi:.6f}," \
+                                    f"Name={missile1.WeaponType},Color=Orange\n"
 
         tacview.send_data_to_client(data_to_send)
         if t % 1 == 0:

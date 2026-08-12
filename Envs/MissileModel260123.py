@@ -62,6 +62,11 @@ def hit_target(pmt_1, vmt_1, ptt_1, vtt_1, dt=0.02, kill_range=20):
     M1M2_ = M2 - M1
     M1T1_ = T1 - M1
     M2T2_ = T2 - M2
+    
+    # 超出5km跳过计算
+    if np.linalg.norm(M1-T1) > 5e3:
+        return False, M1, T1
+
     if np.linalg.norm(T1T2_ - M1M2_) < 1e-3:
         # 平行移动了，另一套公式
         d_min = np.linalg.norm(M1T1_)
@@ -94,6 +99,7 @@ def hit_target(pmt_1, vmt_1, ptt_1, vtt_1, dt=0.02, kill_range=20):
 class missile_class:
     def __init__(self, pos0_, vel0_, pt0_, vt0_, launch_time=0):
         super(missile_class, self).__init__()
+        self.WeaponType = "AIM-120C"
         self.dead = False  # 导弹是否死亡
         self.hit = False  # 导弹是否命中目标
         self.launch_time = launch_time  # 导弹发射时间
@@ -145,7 +151,7 @@ class missile_class:
         self.v_theta_of_initial_guidance_max = 45 * pi / 180
         self.t = 0  # 导弹初始计时
         self.t_max = 120  # 最大运行时间
-        self.time2hit = 120
+        self.t_go = 120
         self.trajectory = np.empty((0, 7))  # 导弹轨迹, 结构为时间、位置（3）、速度（3）
         self.guidance_stage = 2  # 2为中制导，3为末制导
         self.in_angle = 1
@@ -337,7 +343,7 @@ class missile_class:
         # 超出跟踪角速度导致脱锁
         if np.linalg.norm(np.cross(line_t_, vrt_)) / distance ** 2 > self.sight_angle_rate_max:
             off_lock = True
-            
+
         # 矢量方程，脱锁处理
         if off_lock:
             aN_target_required_ = self.aN_target_required_
@@ -403,7 +409,8 @@ class missile_class:
 
         v_rel_ = vtt_-vmt_
         L_dot = np.dot(v_rel_, line_t_)/distance
-        self.time2hit = -distance/L_dot if L_dot<0 else 0 # 弹目距离
+
+        self.t_go = -distance/L_dot # if L_dot<0 else self.t_max # 弹目距离
         vmt = np.linalg.norm(vmt_)
         if np.dot(vmt_, line_t_) / vmt / distance > cos(self.sight_angle_max):
             self.in_angle = 1
@@ -574,7 +581,7 @@ if __name__ == '__main__':
     list_pm_ = p_carrier_
     list_vm_ = v_carrier_
     list_vm = np.linalg.norm(list_vm_)
-    list_pt_ = np.array([25e3, 3e3, 0])  # 目标
+    list_pt_ = np.array([5e3, 3e3, 0])  # 目标
     list_vt_ = np.array([-300, 0, 0]) # np.array([-150, 0, -150])
     # missile1 = missile_class(list_pm_, list_vm_, t)
     Target = target(list_pt_, list_vt_)
@@ -662,7 +669,8 @@ if __name__ == '__main__':
             for j, missile1 in enumerate(list_missiles):
                 if not missile1.dead:
                     loc_m = ENU2LLH(mark, missile1.pos_)
-                    data_to_send += f"#{send_t:.2f}\n{10+j},T={loc_m[0]:.6f}|{loc_m[1]:.6f}|{loc_m[2]:.6f}," \
+                    data_to_send += f"#{send_t:.2f}\n{10+j},T={loc_m[0]:.6f}|{loc_m[1]:.6f}|{loc_m[2]:.6f}|" \
+                                    f"{0.0:.6f}|{missile1.theta * 180 / pi:.6f}|{missile1.psi * 180 / pi:.6f}," \
                                     f"Name=AIM-120C,Color=Orange\n"
 
         tacview.send_data_to_client(data_to_send)

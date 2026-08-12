@@ -60,6 +60,7 @@ class UAVModel(object):
         # 无人机的状态
         self.pos_ = np.zeros(3)
         self.speed = None  # 速率
+        self.acceleration = None
         self.vel_ = None  # 速度矢量
         self.mach = None
         self.psi = None  # 航向角
@@ -159,6 +160,7 @@ class UAVModel(object):
         self.q = self.sim["velocities/q-rad_sec"]  # 俯仰角速度（弧度/秒）
         self.r = self.sim["velocities/r-rad_sec"]        
         self.speed = self.sim["velocities/vt-fps"] * 0.3048  # ego_vc (unit: m/s)
+        self.acceleration = 0.0
         self.point_ = active_rotation(np.array([1,0,0]), self.psi, self.theta, self.phi)
         
         # 取当前位置
@@ -363,6 +365,7 @@ class UAVModel(object):
         # self.y = alt * 0.3048 # 高度转米
         # self.z = (lon - start_lon) * 111320 # 纬度差转米（近似）
         v = self.sim["velocities/vt-fps"] * 0.3048  # ego_vc (unit: m/s)
+        self.acceleration = (v - self.speed) / (self.dt + 1e-8) if self.speed is not None else 0.0
         self.speed = v
 
         # 取姿态角度

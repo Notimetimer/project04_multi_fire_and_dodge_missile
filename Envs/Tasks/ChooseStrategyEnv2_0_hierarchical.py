@@ -65,8 +65,9 @@ class ChooseStrategyEnv(Battle):
             "weapon", # 1
             "threat",  # 4
             "border",  # 2
+            "out_locked", # 1
         ]
-        self.obs_dim = 1*6+8+7+1+4+2
+        self.obs_dim = self.full_obs_dim - 7 # 砍去ego_control
         self.fly_act_dim = [5, 7] # [5,7] 14
         self.fly_act_dim_circ = [5, 6]
         self.fire_dim = 1
@@ -135,6 +136,7 @@ class ChooseStrategyEnv(Battle):
             "weapon": 1,              # float -> 1
             "threat": 4,              # np.array length 4
             "border": 2,              # np.array length 2
+            "out_locked": 1,          # float -> 1
         }
         
         # 3. 确定是否为 Batch 模式
@@ -209,7 +211,10 @@ class ChooseStrategyEnv(Battle):
         speed_cmd = 340
 
         # 垂直
-        theta_desired = np.clip(theta+delta_theta + np.clip(action_v, -pi/2, pi/2), -pi/2, pi/2)
+        theta_desired = np.clip(theta+delta_theta + 
+            np.clip(action_v, np.radians(-75), np.radians(45)), 
+            np.radians(-75), np.radians(60))
+
         # 不能出安全高度范围
         delta_height_cmd = np.clip(theta_desired/pi*2*5000, 
                                    self.min_alt_safe-UAV.alt, 
@@ -236,6 +241,7 @@ class ChooseStrategyEnv(Battle):
         sin_delta_psi = uav_obs["target_information"][1]
         delta_psi = atan2(sin_delta_psi, cos_delta_psi)
         delta_psi_threat = atan2(uav_obs["threat"][1], uav_obs["threat"][0])
+        RWR = uav_obs["warning"]
 
         move_action = np.zeros(3)
 
@@ -257,8 +263,8 @@ class ChooseStrategyEnv(Battle):
         speed_cmd = 340
 
         # 垂直方向指令
-        if action_v == 0: # 比目标高50°
-            theta_desired = np.clip(theta+delta_theta+np.radians(50), -pi/2, pi/2)
+        if action_v == 0: # 比目标高45°
+            theta_desired = np.clip(theta+delta_theta+np.radians(45), -pi/2, pi/2)
         if action_v == 1: # 比目标高20°
             theta_desired = np.clip(theta+delta_theta+np.radians(20), -pi/2, pi/2)
         if action_v == 2: # 纯追踪
@@ -266,7 +272,7 @@ class ChooseStrategyEnv(Battle):
         if action_v == 3: # 比目标低30°
             theta_desired = np.clip(theta+delta_theta+np.radians(-30), -pi/2, pi/2)
         if action_v == 4: # 急速下降
-            theta_desired = -pi/2
+            theta_desired = -np.radians(85)  # -pi/2
         
         # 水平方向指令：
         # 追踪
@@ -321,14 +327,28 @@ class ChooseStrategyEnv(Battle):
         ])
         
         ATA_estimated = np.arccos(np.dot(desired_point_, target_delta_point_)*0.999)
-        if ATA_estimated > np.radians(59):
-            axis_ = np.cross(target_delta_point_, desired_point_)
-            axis_ = axis_ / (norm(axis_) + 1e-6)
-            target_delta_point_ = RodRot(target_delta_point_, axis_, np.radians(59))
-            
-            if action_h in[1,5]:
+        # crank
+        if action_h in[1,5]:
+            crank_angle = 53 # 59 # 偏置机动角度
+            if ATA_estimated > np.radians(crank_angle):
+                axis_ = np.cross(target_delta_point_, desired_point_)
+                axis_ = axis_ / (norm(axis_) + 1e-6)
+                target_delta_point_ = RodRot(target_delta_point_, axis_, np.radians(crank_angle))
                 theta_desired = np.arcsin(target_delta_point_[1])
                 delta_psi_cmd = np.arctan2(target_delta_point_[2], target_delta_point_[0])
+        
+        # # 39机动 有bug，屏蔽处理
+        # if action_h in[2,4]:
+        #     if RWR:
+        #         crank_angle = 90
+        #     else: # 未收到告警保持锁定
+        #         crank_angle = 90 # 59 # 偏置机动角度
+        #     if ATA_estimated != np.radians(crank_angle):
+        #         axis_ = np.cross(target_delta_point_, desired_point_)
+        #         axis_ = axis_ / (norm(axis_) + 1e-6)
+        #         target_delta_point_ = RodRot(target_delta_point_, axis_, np.radians(crank_angle))
+        #         theta_desired = np.arcsin(target_delta_point_[1])
+        #         delta_psi_cmd = np.arctan2(target_delta_point_[2], target_delta_point_[0])
         
         # 不能出安全高度范围
         delta_height_cmd = np.clip(theta_desired/pi*2*5000,
@@ -339,6 +359,7 @@ class ChooseStrategyEnv(Battle):
 
     # 重写近距杀方法（加了print）
     def close_range_kill(self,):
+        WVR = 0
         for RUAV in self.RUAVs:
             if RUAV.dead:
                 continue
@@ -357,19 +378,18 @@ class ChooseStrategyEnv(Battle):
                     # 角度优势杀
                     if cos_ATA_r >= cos(pi / 6) and cos_ATA_b < cos(pi / 6):
                         BUAV.dead = True
-                        BUAV.got_hit = True
                         print('近距单杀')
+                        WVR = 1
                     elif cos_ATA_r < cos(pi / 6) and cos_ATA_b >= cos(pi / 6):
                         RUAV.dead = True
-                        RUAV.got_hit = True
                         print('近距单杀')
+                        WVR = 1
                     # 都在可攻击角度
                     elif cos_ATA_r >= cos(pi / 6) and cos_ATA_b >= cos(pi / 6):
                         RUAV.dead = True
                         BUAV.dead = True
-                        RUAV.got_hit = True
-                        BUAV.got_hit = True
                         print('近距双杀')
+                        WVR = 1
 
                     # 更复杂，但不一定好用的判定逻辑
                     #     # 看高度
@@ -402,9 +422,9 @@ class ChooseStrategyEnv(Battle):
                         
                     else: # 都不在可攻击角度
                         pass  # 无法杀
+        return WVR
 
-                        
-                    
+
 # # 水平跟踪
 # if action == 0:
 #     delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
