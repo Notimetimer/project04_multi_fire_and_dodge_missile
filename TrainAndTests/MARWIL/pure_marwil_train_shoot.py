@@ -26,7 +26,7 @@ import torch.nn.functional as F
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import pandas as pd
-from Envs.UAVmodel6d import UAVModel
+from Envs.UAVmodel6dF16 import UAVModel
 from Math_calculates.CartesianOnEarth import NUE2LLH, LLH2NUE
 from Visualize.tacview_visualize import *
 from Visualize.tensorboard_visualize import *
@@ -96,7 +96,7 @@ if __name__ == "__main__":
                                     'psi': pi/2
                                     }
         env.reset(red_birth_state=DEFAULT_RED_BIRTH_STATE, blue_birth_state=DEFAULT_BLUE_BIRTH_STATE,
-                    red_init_ammo=0, blue_init_ammo=6)
+                    red_init_ammo=0, blue_init_ammo=4)
         RUAV_set_speed = random.uniform(0.7, 1.5) * 340
         RUAV_set_height = red_height
         BUAV_set_speed = random.uniform(0.7, 1.5) * 340
@@ -157,7 +157,7 @@ if __name__ == "__main__":
 
             if at == 1:
                 last_launch_time = env.t
-                launch_missile_immediately(env, side='b')                  
+                launch_120_immediately(env, side='b')                  
 
 
             # 机动决策

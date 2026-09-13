@@ -61,7 +61,7 @@ def run_rules(gamma=0.995, weight_reward=np.array([1,1,0]), action_cycle_multipl
                 DEFAULT_RED_BIRTH_STATE, DEFAULT_BLUE_BIRTH_STATE = creat_initial_state(randomized=1)
 
                 env.reset(red_birth_state=DEFAULT_RED_BIRTH_STATE, blue_birth_state=DEFAULT_BLUE_BIRTH_STATE,
-                        red_init_ammo=6, blue_init_ammo=6)
+                        red_init_ammo=4, blue_init_ammo=4)
                 r_action_label=0
                 b_action_label=0
                 last_decision_state = None
@@ -104,13 +104,13 @@ def run_rules(gamma=0.995, weight_reward=np.array([1,1,0]), action_cycle_multipl
                         r_state_check = env.unscale_state(r_check_obs)
                         r_action_label, r_fire = basic_rules(r_state_check, i_episode)
                         if r_fire:
-                            launch_missile_immediately(env, 'r')
+                            launch_120_immediately(env, 'r')
 
                         # 蓝方维持最优规则
                         b_state_check = env.unscale_state(b_check_obs)
                         b_action_label, b_fire = basic_rules(b_state_check, current_rule)
                         if b_fire:
-                            launch_missile_immediately(env, 'b')
+                            launch_120_immediately(env, 'b')
 
                         decide_steps_after_update += 1
                         

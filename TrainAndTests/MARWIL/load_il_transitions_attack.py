@@ -152,7 +152,7 @@ if __name__ == "__main__":
     #                                 'psi': np.random.choice([pi/2, -pi/2])
     #                                 }
     #     env.reset(red_birth_state=DEFAULT_RED_BIRTH_STATE, blue_birth_state=DEFAULT_BLUE_BIRTH_STATE,
-    #             red_init_ammo=6, blue_init_ammo=6)
+    #             red_init_ammo=4, blue_init_ammo=4)
     #     env.dt_maneuver = dt_maneuver
     #     step = 0
     #     done = False
@@ -187,8 +187,8 @@ if __name__ == "__main__":
     #         # # 发射导弹判决
     #         # if distance <= 80e3 and distance >= 5e3:  # 在合适的距离范围内每0.2s判决一次导弹发射
     #         #     launch_time_count = 0
-    #         #     launch_missile_with_basic_rules(env, side='r')
-    #         #     launch_missile_with_basic_rules(env, side='b')
+    #         #     launch_120_with_basic_rules(env, side='r')
+    #         #     launch_120_with_basic_rules(env, side='b')
 
     #         env.step(r_action_n, b_action_n)  # 2、环境更新并反馈
     #         done, b_reward, _ = env.get_terminate_and_reward('b')

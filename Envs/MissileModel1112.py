@@ -112,9 +112,9 @@ def sub_of_radian(input1, input2):
     return diff
 
 # 导弹模型
-class missile_class:
+class aim120:
     def __init__(self, pos0_, vel0_, pt0_, vt0_, launch_time=0):
-        super(missile_class, self).__init__()
+        super(aim120, self).__init__()
         self.WeaponType = "AIM-120C"
         self.exhausted = False # 导弹是否没电
         self.dead = False  # 导弹是否死亡
@@ -159,7 +159,7 @@ class missile_class:
         self.area = 0.4 # 425 435 0.405  # m2
         # 阻力系数是一个函数，不在这里定义
         # 最小速度
-        self.speed_min = 0.7 * 340  # m/s
+        self.speed_min = 0.8 * 340  # m/s 0.7
         # 最大视角
         self.sight_angle_max = np.radians(40) # 极限离轴可能接近40度，也有用53度的，稳定跟踪区在正负25度以内
         # 最大跟踪视角速度
@@ -170,7 +170,7 @@ class missile_class:
         # 初制导下最大速度倾角
         self.v_theta_of_initial_guidance_max = 45 * pi / 180
         self.t = 0  # 导弹初始计时
-        self.t_max = self.stage1_start + 120  # 110 电池工作时间
+        self.t_max = self.stage1_start + 110  # 120 电池工作时间
         self.t_go = 120
         self.trajectory = np.empty((0, 7))  # 导弹轨迹, 结构为时间、位置（3）、速度（3）
         self.guidance_stage = 2  # 2为中制导，3为末制导
@@ -202,6 +202,7 @@ class missile_class:
         self.dt = 0.04 # 初始值
         self.v_dot = 0
         self.gliding = 0
+        self.energy_chage_rate = 0
 
     def Cd(self, mach):
         lis0 = np.array([
@@ -618,6 +619,7 @@ class missile_class:
         vmt += v_dot * dt
         
         self.v_dot = v_dot
+        self.energy_chage_rate = vmt * self.v_dot + g * vmt_[1]  # 对机械能求导
 
         # 速度过低没有舵效
         if vmt < self.speed_min:
@@ -750,7 +752,7 @@ if __name__ == '__main__':
     list_pm_ = p_carrier_
     list_vm_ = v_carrier_
     list_vm = np.linalg.norm(list_vm_)
-    # missile1 = missile_class(list_pm_, list_vm_, t)
+    # missile1 = aim120(list_pm_, list_vm_, t)
     Target = target(list_pt_, list_vt_)
 
     list_line_ = list_pt_ - list_pm_
@@ -790,7 +792,7 @@ if __name__ == '__main__':
 
         # 最快每隔5s发射一枚导弹，一共4枚导弹
         if t - t_count_start >= 10 and in_range and missile_used < 1: # 4
-            missile1 = missile_class(p_carrier_, v_carrier_, ptt_, vtt_, t)
+            missile1 = aim120(p_carrier_, v_carrier_, ptt_, vtt_, t)
             list_missiles.append(missile1)
             t_count_start = t  # 重置计时器
             missile_used += 1
@@ -846,7 +848,7 @@ if __name__ == '__main__':
                     loc_m = ENU2LLH(mark, missile1.pos_)
                     data_to_send += f"#{send_t:.2f}\n{10+j},T={loc_m[0]:.6f}|{loc_m[1]:.6f}|{loc_m[2]:.6f}|" \
                                     f"{0.0:.6f}|{missile1.theta * 180 / pi:.6f}|{missile1.psi * 180 / pi:.6f}," \
-                                    f"Name={missile1.WeaponType},Color=Orange\n"
+                                    f"Name=AIM-120C,Color=Orange\n"
 
         tacview.send_data_to_client(data_to_send)
         if t % 1 == 0:

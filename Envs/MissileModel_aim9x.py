@@ -1,9 +1,5 @@
 """
-尚未更改使用矢量计算导弹导引率，避免欧拉角死锁
-发现observe的调用逻辑、脱锁的效果需要重写
-取消根据距离决定步长的逻辑，导弹固定用小步长，飞机固定用大步长
 
-欠缺重构：脱锁的逻辑没有写在observe中，而是在step里面反映在输出结果中
 """
 
 import numpy as np
@@ -113,9 +109,9 @@ def sub_of_radian(input1, input2):
     return diff
 
 # 导弹模型
-class missile_class:
+class aim9x:
     def __init__(self, pos0_, vel0_, pt0_, vt0_, launch_time=0):
-        super(missile_class, self).__init__()
+        super(aim9x, self).__init__()
         self.WeaponType = "AIM-9X"
         self.dead = False  # 导弹是否死亡
         self.hit = False  # 导弹是否命中目标
@@ -598,7 +594,7 @@ if __name__ == '__main__':
     list_pm_ = p_carrier_
     list_vm_ = v_carrier_
     list_vm = np.linalg.norm(list_vm_)
-    # missile1 = missile_class(list_pm_, list_vm_, t)
+    # missile1 = aim120(list_pm_, list_vm_, t)
     Target = target(list_pt_, list_vt_)
 
     list_line_ = list_pt_ - list_pm_
@@ -638,7 +634,7 @@ if __name__ == '__main__':
 
         # 最快每隔5s发射一枚导弹，一共4枚导弹
         if t - t_count_start >= 10 and in_range and missile_used < 1: # 4
-            missile1 = missile_class(p_carrier_, v_carrier_, ptt_, vtt_, t)
+            missile1 = aim9x(p_carrier_, v_carrier_, ptt_, vtt_, t)
             list_missiles.append(missile1)
             t_count_start = t  # 重置计时器
             missile_used += 1

@@ -365,7 +365,7 @@ class UAVModel(object):
         if distance < 8e3 and attack_angle * 180 / pi < 30:
             return True  # "杀伤锥"
 
-    def can_launch_missile(self, target, current_time):
+    def can_launch_120(self, target, current_time):
         can_shoot = True
         """判断是否可以发射导弹"""
         if self.dead or target.dead:  # 如果自己或者目标死了，不能发射导弹
@@ -432,11 +432,11 @@ class UAVModel(object):
         # 导弹发射概率输出
         return can_shoot
 
-    def launch_missile(self, target, current_time, missile_class):
+    def launch_120(self, target, current_time, aim120):
         """发射导弹"""
         # 创建新导弹
-        # new_missile = missile_class(self.pos_, self.vel_, current_time)
-        new_missile = missile_class(self.pos_, self.vel_, target.pos_, target.vel_, current_time)  # test
+        # new_missile = aim120(self.pos_, self.vel_, current_time)
+        new_missile = aim120(self.pos_, self.vel_, target.pos_, target.vel_, current_time)  # test
         if self.blue:  # target.red:
             new_missile.side = 'b'
             new_missile.id = 301 + self.missile_count

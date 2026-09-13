@@ -36,7 +36,7 @@ from Utilities.LocateDirAndAgents import *
 from TrainAndTests.Controls.UPolicyWrapper import *
 from TrainAndTests.Controls.FlightControl_Train_dual_a_out2 import *
 # 临时关闭端到端控制，加回PID控制
-from Envs.UAVmodel6d import UAVModel
+from Envs.UAVmodel6dF16 import UAVModel
 # from Envs.UAVmodel6d0309 import UAVModel
 
 # 调用黑名单：删除 PPOHybrid，防止污染命名空间导致外层调用时 IDE 混淆
@@ -183,7 +183,7 @@ class Battle(object):
     def set_ego_side(self, side='b'):
         self.ego_side = side
         
-    def reset(self, red_birth_state=None, blue_birth_state=None, red_init_ammo=6, blue_init_ammo=6, seed=None, options=None, ego_side='b'):  # 重置位置和状态
+    def reset(self, red_birth_state=None, blue_birth_state=None, red_init_ammo=4, blue_init_ammo=4, seed=None, options=None, ego_side='b'):  # 重置位置和状态
         self.R_cage = self.R_cage0
         if self.vertices is not None:
             self.horizontal_center = np.mean(self.vertices, axis=0)
@@ -1466,7 +1466,7 @@ class Battle(object):
         else:
             return 0
 
-def launch_missile_immediately(env, side='r', tabu=0, action_label=None):
+def launch_120_immediately(env, side='r', tabu=0, action_label=None):
     """
     立即发射导弹 (受俯仰角限制)
     """
@@ -1496,7 +1496,7 @@ def launch_missile_immediately(env, side='r', tabu=0, action_label=None):
     if uav.ammo>0 and not uav.dead:
         if (not tabu) or\
                 target_locked and ego_state["weapon"]>=0.1 and ATA<=env.RUAV.max_radar_angle_rad:
-            new_missile = uav.launch_missile(target, env.t, missile_class)
+            new_missile = uav.launch_120(target, env.t, aim120)
             uav.ammo -= 1
             uav.fired += 1
 

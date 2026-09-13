@@ -14,7 +14,7 @@ from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 from _context import * # 包含 project_root
 from Envs.Tasks.ChooseStrategyEnv2_2 import ChooseStrategyEnv
 from Algorithms.PPOHybrid23_0 import PolicyNetHybrid, HybridActorWrapper
-from Envs.battle6dof1v1_missile0919 import launch_missile_immediately
+from Envs.battle6dof1v1_missile0919 import launch_120_immediately
 # --- 2. 辅助函数 ---
 from Utilities.LocateDirAndAgents2 import get_latest_log_dir
 
@@ -59,7 +59,7 @@ def get_agent_teams(log_dir):
 
 def run_battle(env, blue_wrapper, red_wrapper, device):
     """单场仿真逻辑"""
-    env.reset(red_init_ammo=6, blue_init_ammo=6) # 此处可加入固定初始位置逻辑
+    env.reset(red_init_ammo=4, blue_init_ammo=4) # 此处可加入固定初始位置逻辑
     done = False
     
     # [修复] 初始化动作标签，防止第一次循环未定义
@@ -78,8 +78,8 @@ def run_battle(env, blue_wrapper, red_wrapper, device):
                 # 蓝方决策
                 b_act, _, _, _ = blue_wrapper.get_action(b_obs, explore={'cat':using_explore_maneuver,'bern':1})
             
-            if r_act['bern'][0]: launch_missile_immediately(env, 'r')
-            if b_act['bern'][0]: launch_missile_immediately(env, 'b')
+            if r_act['bern'][0]: launch_120_immediately(env, 'r')
+            if b_act['bern'][0]: launch_120_immediately(env, 'b')
             
             r_label, b_label = r_act['cat'][0], b_act['cat'][0]
 

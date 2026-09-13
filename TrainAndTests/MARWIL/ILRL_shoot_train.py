@@ -200,7 +200,7 @@ if __name__ == "__main__":
                                         'psi': pi/2
                                         }
             env.reset(red_birth_state=DEFAULT_RED_BIRTH_STATE, blue_birth_state=DEFAULT_BLUE_BIRTH_STATE,
-                    red_init_ammo=0, blue_init_ammo=6)
+                    red_init_ammo=0, blue_init_ammo=4)
             RUAV_set_speed = random.uniform(0.7, 1.5) * 340
             RUAV_set_height = red_height
             BUAV_set_speed = random.uniform(0.7, 1.5) * 340
@@ -266,7 +266,7 @@ if __name__ == "__main__":
                     missile_id = None
                     if at == 1:
                         last_launch_time = env.t
-                        missile_id = launch_missile_immediately(env, side='b')                  
+                        missile_id = launch_120_immediately(env, side='b')                  
                         if missile_id is not None:
                             missiles_launch_information[missile_id] = env.t
 

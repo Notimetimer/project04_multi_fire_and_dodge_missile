@@ -15,7 +15,7 @@ from _context import *
 
 from Envs.Tasks.ChooseStrategyEnv2_2 import ChooseStrategyEnv
 from TrainAndTests.Combats.BasicRules_new import basic_rules
-from Envs.battle6dof1v1_missile0919 import launch_missile_immediately
+from Envs.battle6dof1v1_missile0919 import launch_120_immediately
 from Algorithms.PPOHybrid23_0 import PolicyNetHybrid, HybridActorWrapper
 # from Algorithms.PPOHybrid23 import PolicyNetHybrid, HybridActorWrapper
 
@@ -135,8 +135,8 @@ if __name__ == "__main__":
                         # last_b_action_label = b_action_label # 更新上一机动，供规则使用
 
                     if r_fire:
-                        launch_missile_immediately(env, 'r', tabu=1)
-                        # launch_missile_immediately(env, 'r')
+                        launch_120_immediately(env, 'r', tabu=1)
+                        # launch_120_immediately(env, 'r')
                     last_r_action_label = r_action_label
 
                     # 蓝方 (RL 智能体)
@@ -157,7 +157,7 @@ if __name__ == "__main__":
                     # last_b_action_label = b_action_label # 更新上一机动，供规则使用
 
                     if b_fire:
-                        launch_missile_immediately(env, 'b', tabu=1)
+                        launch_120_immediately(env, 'b', tabu=1)
                     
                     # print(f"Time: {env.t:.1f}s, Blue Action: Maneuver={b_action_label}, Fire Rule Active={b_fire}")
 

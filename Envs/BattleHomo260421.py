@@ -36,7 +36,7 @@ from Controller.F16PIDController2_1 import *
 from TrainAndTests.Controls.UPolicyWrapper import *
 from TrainAndTests.Controls.FlightControl_Train_dual_a_out2 import *
 # 临时关闭端到端控制，加回PID控制
-from Envs.UAVmodel6d import UAVModel
+from Envs.UAVmodel6dF16 import UAVModel
 # from Envs.UAVmodel6d0309 import UAVModel
 
 # 调用黑名单：删除 PPOHybrid，防止污染命名空间导致外层调用时 IDE 混淆
@@ -96,7 +96,7 @@ class Battle(object):
 
         # 正常的开始
         self.ego_side = None  # 我到底在哪一边
-        self.shielded = False
+        self.shielded = True # 默认开启防撞地
         self.no_out = False
         self.alive_b_missiles = None
         self.alive_r_missiles = None
@@ -172,7 +172,7 @@ class Battle(object):
         return self.Rmissiles + self.Bmissiles
 
 
-    def reset(self, red_birth_state=None, blue_birth_state=None, red_init_ammo=6, blue_init_ammo=6, seed=None, options=None, ego_side='b'):  # 重置位置和状态
+    def reset(self, red_birth_state=None, blue_birth_state=None, red_init_ammo=4, blue_init_ammo=4, seed=None, options=None, ego_side='b'):  # 重置位置和状态
         self.R_cage = self.R_cage0
         if self.vertices is not None:
             self.horizontal_center = np.mean(self.vertices, axis=0)
@@ -201,8 +201,8 @@ class Battle(object):
         self.dt_maneuver = dt_maneuver  # simulation interval，1 second
         self.t = 0
         # 初始化无人机
-        self.Rnum = 1 # test
-        self.Bnum = 1 # 2
+        self.Rnum = 3 # test
+        self.Bnum = 5 # 2
         self.RUAVsTable = {}
         self.BUAVsTable = {}
         self.UAVsTable = {}
@@ -238,8 +238,9 @@ class Battle(object):
             # 构造一个0, 1, -1, 2，-2 的函数
             # temp = (-1)**index_in_side * int((index_in_side+1)/2)
             # 1/2, -1/2, 3/2, -3/2, 5/2, -5/2...
+            ally_dist_init = 5e3
             temp = (-1)**index_in_side * (np.floor(index_in_side/2) + 1) / 2
-            UAV.pos_ = birth_state['position'].copy() + np.array([1, 0, 0]) * temp * 20e3 # 出生点间距10e3，南北排开
+            UAV.pos_ = birth_state['position'].copy() + np.array([1, 0, 0]) * temp * 2 * ally_dist_init # 出生点间距ally_dist_init，南北排开
             
             if self.vertices is not None:
                 # 对长方形边界，直接分维度压进边界内
@@ -374,7 +375,7 @@ class Battle(object):
                 pass
         
 
-    def launch_1_missile(self, source_id, target_id):
+    def launch_120(self, source_id, target_id):
         """
         source_id: 发射导弹的无人机 id
         target_id: 被击中的无人机 id
@@ -385,7 +386,7 @@ class Battle(object):
 
         # 发射导弹
         if uav.ammo>0 and not uav.dead:
-            new_missile = uav.launch_missile(target, self.t, missile_class)
+            new_missile = uav.launch_120(target, self.t, aim120)
             uav.ammo -= 1
             new_missile.side = side
             new_missile.guider_id = source_id
@@ -405,7 +406,34 @@ class Battle(object):
 
             return new_missile
         return None
+
+    def launch_9x(self, source_id, target_id):
+        uav = self.find_uav_with_id(source_id)
+        target = self.find_uav_with_id(target_id)
+        side = uav.side
+
+        # 发射导弹
+        if uav.ammo>0 and not uav.dead:
+            new_missile = uav.launch_9x(target, self.t, aim120)
+            uav.ammo -= 1
+            new_missile.side = side
+            new_missile.guider_id = source_id
+            if side == 'r':
+                self.Rmissiles.append(new_missile)
+                self.r_missile_count += 1
+                new_missile.id = 101 + self.r_missile_count
+                self.RMissileTable[new_missile.id] = new_missile
+            else:
+                self.Bmissiles.append(new_missile)
+                self.b_missile_count += 1
+                new_missile.id = 301 + self.b_missile_count
+                self.BMissileTable[new_missile.id] = new_missile
             
+            
+            self.MissileTable = {**self.RMissileTable, **self.BMissileTable}
+
+            return new_missile
+        return None
 
     # todo 输入动作打包为大小不确定的量
     def step(self, flight_cmds):

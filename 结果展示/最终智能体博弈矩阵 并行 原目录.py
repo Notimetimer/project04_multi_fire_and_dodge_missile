@@ -12,7 +12,7 @@ from multiprocessing import Pool, cpu_count # 引入多进程库
 from _context import * # 包含 project_root
 from Envs.Tasks.ChooseStrategyEnv2_2 import ChooseStrategyEnv
 from Algorithms.PPOHybrid23_0 import PolicyNetHybrid, HybridActorWrapper
-from Envs.battle6dof1v1_missile0919 import launch_missile_immediately
+from Envs.battle6dof1v1_missile0919 import launch_120_immediately
 # --- 2. 辅助函数 ---
 from Utilities.LocateDirAndAgents2 import get_latest_log_dir
 # [新增] 引入绘图函数
@@ -118,7 +118,7 @@ def get_top_elo_agents(log_dir, top_n=50):
 # --- 保持原样，完全不改动 ---
 def run_battle(env, blue_wrapper, red_wrapper, device):
     """仿真逻辑 (保持与文件 1 一致)"""
-    env.reset(red_init_ammo=6, blue_init_ammo=6)
+    env.reset(red_init_ammo=4, blue_init_ammo=4)
     done = False
     r_label, b_label = 0, 0
     
@@ -130,8 +130,8 @@ def run_battle(env, blue_wrapper, red_wrapper, device):
             with torch.no_grad():
                 r_act, _, _, _ = red_wrapper.get_action(r_obs, explore={'cat':using_explore_maneuver,'bern':1})
                 b_act, _, _, _ = blue_wrapper.get_action(b_obs, explore={'cat':using_explore_maneuver,'bern':1})
-            if r_act['bern'][0]: launch_missile_immediately(env, 'r')
-            if b_act['bern'][0]: launch_missile_immediately(env, 'b')
+            if r_act['bern'][0]: launch_120_immediately(env, 'r')
+            if b_act['bern'][0]: launch_120_immediately(env, 'b')
             r_label, b_label = r_act['cat'][0], b_act['cat'][0]
 
         r_maneuver = env.maneuver14LR(env.RUAV, r_label)

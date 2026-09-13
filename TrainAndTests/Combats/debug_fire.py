@@ -82,7 +82,7 @@ for count in range(500):
             
             if fire_action['do']:
                 print(f"!!! Step {count}: UAV {id} fired! !!!")
-                env.fire_missile(id, fire_action['at'], tabu=0)
+                env.fire_120(id, fire_action['at'], tabu=0)
             if fly_action['do'] in [5, 6]:
                 print(f"!!! Step {count}: UAV {id} is cranking! (action {fly_action['do']}) !!!")
                 

@@ -130,12 +130,12 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
     AA_hor = AA_hor_list[selected_index]
 
     # 1. 计算初始的开火意图
-    fire_missile = False
-    case1 = distance < 95e3 and (sin_theta >= sin(30*pi/180) or alt >= 9e3) # 105, 30
-    case2 = distance < 80e3 # 75e3
+    fire_120 = False
+    case1 = distance < 0.7*70e3 and (sin_theta >= sin(30*pi/180) or alt >= 9e3) # 105, 30
+    case2 = distance < 0.7*60e3 # 75e3
     if (case1 or case2) and ATA < 60 * pi/180 and abs(delta_psi) < 30*pi/180:
         if t_fired >= 40 and not on_guiding and not (distance>12e3 and abs(AA_hor) < 30*pi/180):
-            fire_missile = True
+            fire_120 = True
 
     action_v = 2 # 追踪
     action_h = 0 # 追踪
@@ -146,7 +146,7 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
     if rules_num == 0:
         # 规则0: 纯进攻
         maneuver_cmds = base_offensive_action
-        fire_missile_affirmative = fire_missile
+        fire_missile_affirmative = fire_120
 
     elif rules_num == 1:
         # 规则1: 带防御机动
@@ -168,7 +168,7 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
                 action_h = 1 # Lcrank
         else:
             [action_v, action_h] = base_offensive_action
-        fire_missile_affirmative = fire_missile
+        fire_missile_affirmative = fire_120
         maneuver_cmds = [action_v, action_h]
 
     elif rules_num == 2:
@@ -178,7 +178,7 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
             action_h = 3 # 置尾机动
             maneuver_cmds = [action_v, action_h]
             # maneuver_cmds = 8 # 立刻 split-S
-            fire_missile = False # 防御时不发射
+            fire_120 = False # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离，或上一回合是爬升
             if delta_psi < 0:
                 action_v = 2 # 平飞
@@ -191,25 +191,25 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
                 maneuver_cmds = [action_v, action_h]
                 # maneuver_cmds = 5 # 左crank
             # maneuver_cmds = 6 if delta_psi < 0 else 5 # random.choice([5,6]) # 立刻crank
-        elif fire_missile and distance > 40e3: # 满足开火条件且在远距离
+        elif fire_120 and distance > 40e3: # 满足开火条件且在远距离
             if sin_theta < sin(30*pi/180) and alt < 9500:  # last_action != 2: # 如果上一动作为非爬升
                 action_v = 0 # 爬升
                 action_h = 0 # 追踪
                 # maneuver_cmds = 2 # 则本回合执行爬升
-                fire_missile = False
+                fire_120 = False
                 maneuver_cmds = [action_v, action_h]
             else:
-                fire_missile = True
+                fire_120 = True
         else:
             maneuver_cmds = base_offensive_action
-        fire_missile_affirmative = fire_missile
+        fire_missile_affirmative = fire_120
 
     elif rules_num == 3:
         if RWR: # : # 受到威胁
             action_v = 4 # 下降高度
             action_h = 3 # 置尾机动
             maneuver_cmds = [action_v, action_h]
-            fire_missile = False # 防御时不发射
+            fire_120 = False # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离，或上一回合是爬升
             if delta_psi < 0:
                 action_v = 3 # 下降
@@ -219,17 +219,17 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
                 action_v = 3 # 下降
                 action_h = 1 # Lcrank
                 maneuver_cmds = [action_v, action_h]
-        elif fire_missile and distance > 40e3: # 满足开火条件且在远距离
+        elif fire_120 and distance > 40e3: # 满足开火条件且在远距离
             if sin_theta < sin(30*pi/180) and alt < 9500:  # last_action != 2: # 如果上一动作为非爬升
                 action_v = 0 # 爬升
                 action_h = 0 # 追踪
-                fire_missile = False
+                fire_120 = False
                 maneuver_cmds = [action_v, action_h]
             else:
-                fire_missile = True
+                fire_120 = True
         else:
             maneuver_cmds = base_offensive_action
-        fire_missile_affirmative = fire_missile
+        fire_missile_affirmative = fire_120
     
     elif rules_num == 4:
         # 规则4: 只知道进攻和防御，不知道crank
@@ -237,22 +237,22 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
             action_v = 4 # 下降高度
             action_h = 3 # 置尾机动
             maneuver_cmds = [action_v, action_h]
-            fire_missile = False # 防御时不发射
+            fire_120 = False # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离
             action_v = 2 # 平飞
             action_h = 0 # 追踪，不crank
             maneuver_cmds = [action_v, action_h]
-        elif fire_missile and distance > 40e3: # 满足开火条件且在远距离
+        elif fire_120 and distance > 40e3: # 满足开火条件且在远距离
             if sin_theta < sin(30*pi/180) and alt < 9500:
                 action_v = 0 # 爬升
                 action_h = 0 # 追踪
-                fire_missile = False
+                fire_120 = False
                 maneuver_cmds = [action_v, action_h]
             else:
-                fire_missile = True
+                fire_120 = True
         else:
             maneuver_cmds = base_offensive_action
-        fire_missile_affirmative = fire_missile
+        fire_missile_affirmative = fire_120
 
     elif rules_num == 5:
         # 规则5: 在rule2基础上，leftright>0时左crank，否则右crank
@@ -260,7 +260,7 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
             action_v = 4 # 下降高度
             action_h = 3 # 置尾机动
             maneuver_cmds = [action_v, action_h]
-            fire_missile = False # 防御时不发射
+            fire_120 = False # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离
             if delta_psi < 0:
                 action_v = 3 # 下降
@@ -280,17 +280,17 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
                     action_v = 2 # 平飞
                     action_h = 5 # Rcrank
                 maneuver_cmds = [action_v, action_h]
-        elif fire_missile and distance > 40e3: # 满足开火条件且在远距离
+        elif fire_120 and distance > 40e3: # 满足开火条件且在远距离
             if sin_theta < sin(30*pi/180) and alt < 9500:
                 action_v = 0 # 爬升
                 action_h = 0 # 追踪
-                fire_missile = False
+                fire_120 = False
                 maneuver_cmds = [action_v, action_h]
             else:
-                fire_missile = True
+                fire_120 = True
         else:
             maneuver_cmds = base_offensive_action
-        fire_missile_affirmative = fire_missile
+        fire_missile_affirmative = fire_120
         
     # if  np.random.rand() <= p_random:
     #     maneuver_cmds = np.random.randint(0, 13+1)
@@ -345,14 +345,10 @@ if __name__=='__main__':
     args.R_cage = 60.3e3
 
     # 构建场地边界，南北长54km，东西宽100km的长方形边界
-    vertices = [[30e3, 50e3], [-30e3, 50e3], [-30e3, -50e3], [30e3, -50e3]]
+    vertices = [[50e3, 50e3], [-50e3, 50e3], [-50e3, -50e3], [50e3, -50e3]]
     env = ChooseStrategyEnv(args, tacview_show=use_tacview, vertices=vertices)
     # test
     env.dt_move = 0.1 # 0.04 # 4 # 0.025 0.02
-
-    env.shielded = 1 # 0 # 有防撞地就可以不要这个
-
-    
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -405,7 +401,7 @@ if __name__=='__main__':
             DEFAULT_RED_BIRTH_STATE, DEFAULT_BLUE_BIRTH_STATE = creat_initial_state()
 
             env.reset(red_birth_state=DEFAULT_RED_BIRTH_STATE, blue_birth_state=DEFAULT_BLUE_BIRTH_STATE,
-                    red_init_ammo=6, blue_init_ammo=6)
+                    red_init_ammo=4, blue_init_ammo=4)
             r_action_label=0
             b_action_label=0
             last_decision_state = None
@@ -481,12 +477,12 @@ if __name__=='__main__':
                         # 暂不考虑同时攻击多个目标
                         if fire_action['do']:
                             target_index = fire_action['at']
-                            env.fire_missile(id, target_index, tabu=0)
-
+                            env.fire_120(id, target_index, tabu=0)
+                            
                         # for i, fire in enumerate(fire_action['do']):
                         #     if fire:
                         #         target_index = fire_action['at'][i]
-                        #         env.fire_missile(id, target_index, tabu=0)
+                        #         env.fire_120(id, target_index, tabu=0)
                         
                         # 必须确认雷达开关状态
                         env.radar_action(id, radar_action)

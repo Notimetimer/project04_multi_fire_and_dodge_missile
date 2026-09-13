@@ -73,7 +73,7 @@ class ChooseStrategyEnv(Battle):
         # [新增] 初始化 last_obs 属性，用于记录上一帧状态以计算瞬时奖励
         self.last_obs = None
 
-    def reset(self, red_birth_state=None, blue_birth_state=None, red_init_ammo=6, blue_init_ammo=6, pomdp=1, ego_side='b'):
+    def reset(self, red_birth_state=None, blue_birth_state=None, red_init_ammo=4, blue_init_ammo=4, pomdp=1, ego_side='b'):
         # 1. 调用父类 Battle 的 reset 方法，执行所有通用初始化
         super().reset(red_birth_state, blue_birth_state, red_init_ammo, blue_init_ammo, ego_side=ego_side)
         # # 初始化红蓝远离速度
@@ -225,9 +225,68 @@ class ChooseStrategyEnv(Battle):
         else:
             ego.radar_on = 0
         return ego.radar_on
-    
+
+    # 发射9x
+    def fire_9x(self, source_id, enm_index):
+        ego = self.find_uav_with_id(source_id)
+        ego_side = ego.side
+        if ego_side =='r':
+            enm_side = 'b'
+            ego_num = self.Rnum
+            enm_num = self.Bnum
+        else:
+            enm_side = 'r'
+            ego_num = self.Bnum
+            enm_num = self.Rnum
+        
+        # 输入动作与动力运动学状态
+        max_enm_index = enm_num + 1 # 预留多一个槽位给null_token
+        if enm_index >= max_enm_index:
+            can_fire = 0 # 禁止向虚token开火
+            return None
+        else:
+            can_fire = 1
+
+        new_missile_id = None
+        ego = self.find_uav_with_id(source_id)
+        enm_id = self.index2id(source_id, enm_index, relation='enm')
+        enm = self.find_uav_with_id(enm_id)
+        ego_state = self.get_state(source_id)
+        
+        # tabu 自变量
+        enm_locked = ego_state["enm_infos"][enm_index][3]
+        ATA = ego_state["enm_infos"][enm_index][9]
+        distance = ego_state["enm_infos"][enm_index][8]
+        AA_hor = ego_state["enm_infos"][enm_index][11]
+
+        # 绝对禁止开火条件
+        # 1. 我死了
+        case1 = ego.dead
+        # 2. 没有弹药
+        case2 = (ego.ammo == 0)
+
+        # 绝对禁止开火情况
+        if case1 or case2 :
+            return None
+
+        # 部分禁止开火条件
+        # tabu1. 未锁定目标
+        tabu_case1 = not enm_locked
+        # tabu2. 目标已死
+        tabu_case2 = enm.dead
+
+        if (tabu_case1 or tabu_case2):
+            can_fire = 0
+        
+        # 发射导弹
+        if can_fire:
+            # 调用唯一注册入口，严禁直接修改self.Rmissiles或self.Bmissiles
+            new_missile_id = self.launch_9x(source_id, enm_id)
+
+
+
     # 开火动作,这个函数一次只处理一枚导弹的发射
-    def fire_missile(self, source_id, enm_index, tabu=0):
+    def fire_120(self, source_id, enm_index, tabu=0):
         ego = self.find_uav_with_id(source_id)
         ego_side = ego.side
         if ego_side =='r':
@@ -282,7 +341,7 @@ class ChooseStrategyEnv(Battle):
         # 发射导弹
         if can_fire:
             # 调用唯一注册入口，严禁直接修改self.Rmissiles或self.Bmissiles
-            new_missile_id = self.launch_1_missile(source_id, enm_id)
+            new_missile_id = self.launch_120(source_id, enm_id)
         return new_missile_id
 
     # 只针对一个敌机的动作空间（不考虑队友也不考虑综合情况）
@@ -412,7 +471,7 @@ class ChooseStrategyEnv(Battle):
     # 综合动作空间（考虑队友和综合情况）
     def maneuver_complex(self, id, action):
         pass
-
+                            
     # 近距杀方法，多对多也能用（加了print）
     def close_range_kill(self,):
         for ruav in self.RUAVs:

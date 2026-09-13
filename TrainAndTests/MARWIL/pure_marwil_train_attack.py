@@ -26,7 +26,7 @@ import torch.nn.functional as F
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import pandas as pd
-from Envs.UAVmodel6d import UAVModel
+from Envs.UAVmodel6dF16 import UAVModel
 from Math_calculates.CartesianOnEarth import NUE2LLH, LLH2NUE
 from Visualize.tacview_visualize import *
 from Visualize.tensorboard_visualize import *
@@ -134,8 +134,8 @@ if __name__ == "__main__":
                     # # 发射导弹判决
                     # if distance <= 80e3 and distance >= 5e3:  # 在合适的距离范围内每0.2s判决一次导弹发射
                     #     launch_time_count = 0
-                    #     launch_missile_with_basic_rules(env, side='r')
-                    #     launch_missile_with_basic_rules(env, side='b')
+                    #     launch_120_with_basic_rules(env, side='r')
+                    #     launch_120_with_basic_rules(env, side='b')
 
                     env.step(r_action_n, b_action_n)  # 2、环境更新并反馈
                     done, b_reward, _ = env.get_terminate_and_reward('b')
