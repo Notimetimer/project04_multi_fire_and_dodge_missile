@@ -22,7 +22,7 @@ def worker(remote, parent_remote, env_fn_wrapper):
                     if isinstance(r_input, (tuple, list)) and len(r_input) == 2 and isinstance(r_input[1], (bool, int, np.bool_)):
                         r_action, r_fire = r_input
                         # if r_fire:
-                        #     launch_missile_if_possible(env, 'r')
+                        #     launch_120_if_possible(env, 'r')
                     else:
                         r_action = r_input
                 else:
