@@ -41,8 +41,7 @@ class ReplayBuffer:
             data = pickle.load(f)
             self.buffer = collections.deque(data, maxlen=self.capacity)
 
-
-def moving_average(a, window_size):
+def old_moving_average(a, window_size):
     cumulative_sum = np.cumsum(np.insert(a, 0, 0))
     middle = (cumulative_sum[window_size:] - cumulative_sum[:-window_size]) / window_size
     r = np.arange(1, window_size - 1, 2)
@@ -50,6 +49,36 @@ def moving_average(a, window_size):
     end = (np.cumsum(a[:-window_size:-1])[::2] / r)[::-1]
     return np.concatenate((begin, middle, end))
 
+def moving_average(a, window_size):
+    """
+    计算移动平均，支持任何窗口大小，并自动处理边缘对齐
+    """
+    window_size = int(window_size)
+    if window_size <= 1:
+        return a
+    n = len(a)
+    if n == 0:
+        return a
+    # 使用卷积计算总和
+    kernel = np.ones(window_size)
+    # mode='same' 保证输出长度与输入一致
+    sum_a = np.convolve(a, kernel, mode='same')
+    # 计算每个位置实际参与求和的元素个数（用于修正边缘）
+    counts = np.convolve(np.ones(n), kernel, mode='same')
+    return sum_a / counts
+
+def ema(a, epsilon, bigger_smoother=1):
+    # epsilon越大，越趋向于最新的数据
+    if bigger_smoother:
+        epsilon=1-epsilon
+    ema_list = []
+    v = 0
+    for t, x in enumerate(a, 1):
+        v = (1 - epsilon) * v + epsilon * x
+        # 偏差修正：根据样本数进行缩放，防止初始值趋向于0
+        v_corrected = v / (1 - (1 - epsilon)**t)
+        ema_list.append(v_corrected)
+    return np.array(ema_list)
 
 def train_on_policy_agent(env, agent, num_episodes):
     return_list = []

@@ -46,7 +46,7 @@ def main():
     lmbda = 0.97
     epochs = 10
     eps = 0.2
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    device = torch.device("cpu")  # torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
     print(f"Using device: {device}")
 

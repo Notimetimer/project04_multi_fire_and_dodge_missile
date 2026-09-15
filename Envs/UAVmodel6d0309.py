@@ -463,11 +463,11 @@ class UAVModel(object):
         # 导弹发射概率输出
         return can_shoot
 
-    def launch_missile(self, target, current_time, missile_class):
+    def launch_missile(self, target, current_time, aim120):
         """发射导弹"""
         # 创建新导弹
-        # new_missile = missile_class(self.pos_, self.vel_, current_time)
-        new_missile = missile_class(self.pos_, self.vel_, target.pos_, target.vel_, current_time)  # test
+        # new_missile = aim120(self.pos_, self.vel_, current_time)
+        new_missile = aim120(self.pos_, self.vel_, target.pos_, target.vel_, current_time)  # test
         if self.blue:  # target.red:
             new_missile.side = 'b'
             new_missile.id = 301 + self.missile_count

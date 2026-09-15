@@ -14,7 +14,7 @@ from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import *
 from Math_calculates.sub_of_angles import *
 import re
 
-use_tacview = 1  # 是否可视化
+use_tacview = 2  # 静默写入 acmi_records
 action_cycle_multiplier = 10
 
 def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
@@ -350,7 +350,7 @@ if __name__=='__main__':
     # test
     env.dt_move = 0.1 # 0.04 # 4 # 0.025 0.02
 
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    device = torch.device("cpu")  # torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 
     def creat_initial_state():

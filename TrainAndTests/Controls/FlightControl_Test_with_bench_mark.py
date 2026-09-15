@@ -22,7 +22,7 @@ from Utilities.LocateDirAndAgents import *
 from TrainAndTests.Controls.UPolicyWrapper import *
 
 # 设备设置
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+device = torch.device("cpu")  # torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 # 网络初始化
 action_dims_dict = {'cont': 4, 'cat': [], 'bern': 0}

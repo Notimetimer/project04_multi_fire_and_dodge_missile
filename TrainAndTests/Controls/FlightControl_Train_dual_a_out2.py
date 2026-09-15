@@ -618,7 +618,7 @@ action_dim = 4 # test
 action_bound = np.array([[-1.1,1.1],[-1.1,1.1],[-1.1,1.1],[-0.2,1.2]])  # aileron, elevator, rudder, throttle
 mission_name = 'FlightControl_测试'
 
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+device = torch.device("cpu")  # torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 # --- 仅保存一次网络形状（meta json），如果已存在则跳过
 # log_dir = "./logs"

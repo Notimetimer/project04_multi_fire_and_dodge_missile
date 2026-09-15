@@ -13,7 +13,7 @@ from Envs.Tasks.ChooseStrategyEnv2_2_hierarchical import * # 三元组奖励
 from Math_calculates.sub_of_angles import *
 import re
 
-use_tacview = 1  # 是否可视化
+use_tacview = 2  # 静默写入 acmi_records
 action_cycle_multiplier = 10
 
 def basic_rules(state_check, rules_num, last_action=0, p_random=0):
@@ -50,6 +50,7 @@ def basic_rules(state_check, rules_num, last_action=0, p_random=0):
                                     45, # 3
                                     45, # 4
                                     45, # 5
+                                    45, # 6
                                     ]) * 1e3
 
     # 1. 计算初始的开火意图：允许发射距离随我机高度线性插值
@@ -69,10 +70,10 @@ def basic_rules(state_check, rules_num, last_action=0, p_random=0):
         [level_launch_dist, climb_launch_dist],
     )
 
-    fire_120 = False
+    fire_missile = False
     if ATA < 60 * pi/180 and abs(delta_psi) < 30*pi/180 and distance < max_launch_dist:
         if t_fired >= 40 and not on_guiding and not (distance>12e3 and abs(AA_hor) < 45*pi/180): # 30 # 不可以设置成超过120度，否则一旦先敌开火然后回撤，对手就打不出导弹了
-            fire_120 = True
+            fire_missile = True
 
     # # # 2. 根据目标相对高度选择基础进攻机动
     # if delta_theta < -15 * pi/180:
@@ -93,10 +94,10 @@ def basic_rules(state_check, rules_num, last_action=0, p_random=0):
     if rules_num == 0:
         # 规则0: 纯进攻
         action_number = [1, 0] # base_offensive_action
-        if ATA < 60 * pi/180 and abs(delta_psi) < 30*pi/180 and distance < max_launch_dist:
-            if t_fired >= 10 and not on_guiding and not (distance>12e3 and abs(AA_hor) < 30*pi/180):
-                fire_120 = True
-        fire_missile_affirmative = fire_120
+        # if (distance < 95e3) and ATA < 60 * pi/180 and abs(delta_psi) < 30*pi/180:
+        #     if t_fired >= 10 and not on_guiding and not (distance>12e3 and abs(AA_hor) < 30*pi/180):
+        #         fire_missile = True
+        fire_missile_affirmative = fire_missile
 
     elif rules_num == 1:
         # 规则1: 带防御机动
@@ -123,7 +124,7 @@ def basic_rules(state_check, rules_num, last_action=0, p_random=0):
                 action_h = 1 # Lcrank
         else:
             action_number = base_offensive_action
-        fire_missile_affirmative = fire_120
+        fire_missile_affirmative = fire_missile
         action_number = [action_v, action_h]
 
     elif rules_num == 2:
@@ -136,7 +137,7 @@ def basic_rules(state_check, rules_num, last_action=0, p_random=0):
             # else:
             #     action_h = 2 # 39
             action_number = [action_v, action_h]
-            fire_120 = False # 防御时不发射
+            fire_missile = False # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离，或上一回合是爬升
             action_v = 2 # 平飞
             if abs(delta_psi) < 5*pi/180:
@@ -146,18 +147,18 @@ def basic_rules(state_check, rules_num, last_action=0, p_random=0):
             else:
                 action_h = 1 # Lcrank
             action_number = [action_v, action_h]
-        elif fire_120 and distance > 40e3: # 满足开火条件且在远距离
+        elif fire_missile and distance > 40e3: # 满足开火条件且在远距离
             if sin_theta < sin(30*pi/180) and alt < 9500:  # last_action != 2: # 如果上一动作为非爬升
                 action_v = 0 # 爬升
                 action_h = 0 # 追踪
                 # action_number = 2 # 则本回合执行爬升
-                fire_120 = False
+                fire_missile = False
                 action_number = [action_v, action_h]
             else:
-                fire_120 = True
+                fire_missile = True
         else:
             action_number = base_offensive_action
-        fire_missile_affirmative = fire_120
+        fire_missile_affirmative = fire_missile
 
     elif rules_num == 3:
         if RWR: #  and threat_distance < threat_distance_list[rules_num]: # 受到威胁
@@ -168,7 +169,7 @@ def basic_rules(state_check, rules_num, last_action=0, p_random=0):
             # else:
             #     action_h = 2 # 39
             action_number = [action_v, action_h]
-            fire_120 = False # 防御时不发射
+            fire_missile = False # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离，或上一回合是爬升
             action_v = 3 # 下降
             if abs(delta_psi) < 5*pi/180:
@@ -178,7 +179,7 @@ def basic_rules(state_check, rules_num, last_action=0, p_random=0):
             else:
                 action_h = 1 # Lcrank
             action_number = [action_v, action_h]
-        elif fire_120 and distance > 40e3: # 满足开火条件且在远距离
+        elif fire_missile and distance > 40e3: # 满足开火条件且在远距离
             if sin_theta < sin(30*pi/180) and alt < 9500:  # last_action != 2: # 如果上一动作为非爬升
                 action_v = 0 # 爬升
                 # 防止无弹药爬高
@@ -186,53 +187,74 @@ def basic_rules(state_check, rules_num, last_action=0, p_random=0):
                     action_v = max(2, action_v)
 
                 action_h = 0 # 追踪
-                fire_120 = False
+                fire_missile = False
                 action_number = [action_v, action_h]
             else:
-                fire_120 = True
+                fire_missile = True
         else:
             action_number = base_offensive_action
-        fire_missile_affirmative = fire_120
+        fire_missile_affirmative = fire_missile
     
     elif rules_num == 4:
-        # 规则4: 只知道进攻和防御，不知道crank
+        # 规则4: 原规则1副本（带防御机动）
         if RWR and threat_distance < threat_distance_list[rules_num]: # 受到威胁
-            action_v = 4 # 下降高度
-            action_h = 3 # 置尾机动
-            # if delta_psi < 0:
-            #     action_h = 4 # 39
-            # else:
-            #     action_h = 2 # 39
-            action_number = [action_v, action_h]
-            fire_120 = False # 防御时不发射
-        elif on_guiding: # 满足开火条件但在中近距离
-            action_v = 2 # 平飞
-            action_h = 0 # 追踪，不crank
-            action_number = [action_v, action_h]
-        elif fire_120 and distance > 40e3: # 满足开火条件且在远距离
-            if sin_theta < sin(30*pi/180) and alt < 9500:
-                action_v = 0 # 爬升
-                action_h = 0 # 追踪
-                fire_120 = False
-                action_number = [action_v, action_h]
+            # 优先俯冲回转至5000m以下
+            if alt > 5000:
+                action_v = 4 # 快速下高
             else:
-                fire_120 = True
+                action_v = 2 # 平飞
+            # 置尾机动
+            action_h = 3 # 水平方向背离
+        elif on_guiding: # 如果本回合决定发射导弹
+            action_v = 2 # 平飞
+            if abs(delta_psi) < 5*pi/180:
+                action_h = random.choice([1,5])
+            elif delta_psi < 0:
+                action_h = 5 # Rcrank
+            else:
+                action_h = 1 # Lcrank
         else:
             action_number = base_offensive_action
-        fire_missile_affirmative = fire_120
+        fire_missile_affirmative = fire_missile
+        action_number = [action_v, action_h]
 
     elif rules_num == 5:
-        # 规则5: 在rule2基础上，leftright>0时左crank，否则右crank
+        # 规则5: 原规则2副本（Loft爬升射击序列）
         if RWR and threat_distance < threat_distance_list[rules_num]: # 受到威胁
             action_v = 4 # 下降高度
             action_h = 3 # 置尾机动
-            # if delta_psi < 0:
-            #     action_h = 4 # 39
-            # else:
-            #     action_h = 2 # 39
             action_number = [action_v, action_h]
-            fire_120 = False # 防御时不发射
-        elif on_guiding: # 满足开火条件但在中近距离
+            fire_missile = False # 防御时不发射
+        elif on_guiding: # 满足开火条件但在中近距离，或上一回合是爬升
+            action_v = 2 # 平飞
+            if abs(delta_psi) < 5*pi/180:
+                action_h = random.choice([1,5])
+            elif delta_psi < 0:
+                action_h = 5 # Rcrank
+            else:
+                action_h = 1 # Lcrank
+            action_number = [action_v, action_h]
+        elif fire_missile and distance > 40e3: # 满足开火条件且在远距离
+            if sin_theta < sin(30*pi/180) and alt < 9500:  # last_action != 2: # 如果上一动作为非爬升
+                action_v = 0 # 爬升
+                action_h = 0 # 追踪
+                # action_number = 2 # 则本回合执行爬升
+                fire_missile = False
+                action_number = [action_v, action_h]
+            else:
+                fire_missile = True
+        else:
+            action_number = base_offensive_action
+        fire_missile_affirmative = fire_missile
+
+    elif rules_num == 6:
+        # 规则6: 原规则3副本
+        if RWR: #  and threat_distance < threat_distance_list[rules_num]: # 受到威胁
+            action_v = 4 # 下降高度
+            action_h = 3 # 置尾机动
+            action_number = [action_v, action_h]
+            fire_missile = False # 防御时不发射
+        elif on_guiding: # 满足开火条件但在中近距离，或上一回合是爬升
             action_v = 3 # 下降
             if abs(delta_psi) < 5*pi/180:
                 action_h = random.choice([1,5])
@@ -241,24 +263,21 @@ def basic_rules(state_check, rules_num, last_action=0, p_random=0):
             else:
                 action_h = 1 # Lcrank
             action_number = [action_v, action_h]
-            # 保留战略纵深
-            if d_hor < 50e3:
-                if leftright > 0:
-                    action_h = 1 # Lcrank
-                if leftright < 0:
-                    action_h = 5 # Rcrank
-                action_number = [action_v, action_h]
-        elif fire_120 and distance > 40e3: # 满足开火条件且在远距离
-            if sin_theta < sin(30*pi/180) and alt < 9500:
+        elif fire_missile and distance > 40e3: # 满足开火条件且在远距离
+            if sin_theta < sin(30*pi/180) and alt < 9500:  # last_action != 2: # 如果上一动作为非爬升
                 action_v = 0 # 爬升
+                # 防止无弹药爬高
+                if ammo == 0:
+                    action_v = max(2, action_v)
+
                 action_h = 0 # 追踪
-                fire_120 = False
+                fire_missile = False
                 action_number = [action_v, action_h]
             else:
-                fire_120 = True
+                fire_missile = True
         else:
             action_number = base_offensive_action
-        fire_missile_affirmative = fire_120
+        fire_missile_affirmative = fire_missile
 
     if np.random.rand() <= p_random:
         # 再出现动作数值越界改这里
@@ -285,7 +304,7 @@ def basic_rules(state_check, rules_num, last_action=0, p_random=0):
     #     if action_number in [1,2]:
     #         action_number = 0
 
-    # print(f"[basic_rules] rules_num={rules_num}, RWR={int(RWR) if 'RWR' in locals() else 'N/A'}, on_guiding={int(on_guiding) if 'on_guiding' in locals() else 'N/A'}, fire_120={int(fire_120) if 'fire_120' in locals() else 'N/A'}, action_v={action_v}, action_h={action_h}, action_number={action_number}")
+    # print(f"[basic_rules] rules_num={rules_num}, RWR={int(RWR) if 'RWR' in locals() else 'N/A'}, on_guiding={int(on_guiding) if 'on_guiding' in locals() else 'N/A'}, fire_missile={int(fire_missile) if 'fire_missile' in locals() else 'N/A'}, action_v={action_v}, action_h={action_h}, action_number={action_number}")
     return np.array(action_number), fire_missile_affirmative
 
 
@@ -305,13 +324,13 @@ if __name__=='__main__':
     # vertices = [[15e3, 50e3], [-15e3, 50e3], [-15e3, -50e3], [15e3, -50e3]]
     env = ChooseStrategyEnv(args, tacview_show=use_tacview, vertices=vertices)
     # test
-    env.dt_move = 0.07 # 4 # 0.025 0.02
+    env.dt_move = 0.1 # 4 # 0.025 0.02
 
     env.shielded = 1 # 0 # 有防撞地就可以不要这个
 
     r_action_spaces, b_action_spaces = env.r_action_spaces, env.b_action_spaces
 
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    device = torch.device("cpu")  # torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 
     # def creat_initial_state():
@@ -365,7 +384,7 @@ if __name__=='__main__':
             DEFAULT_RED_BIRTH_STATE, DEFAULT_BLUE_BIRTH_STATE = None, None # creat_initial_state()
 
             env.reset(red_birth_state=DEFAULT_RED_BIRTH_STATE, blue_birth_state=DEFAULT_BLUE_BIRTH_STATE,
-                    red_init_ammo=4, blue_init_ammo=4)
+                    red_init_ammo=6, blue_init_ammo=6)
             r_action_label=0
             b_action_label=0
             last_decision_state = None
@@ -447,9 +466,9 @@ if __name__=='__main__':
                 # action_label 设置为 r_action_label 或者 b_action_label 适合测试，完全禁止在动作没到位时开火
                 # 设置为 None 适合采样，试错，必须错才能学会
                 if getattr(env.RUAV, 'about_to_fire', 0):
-                    launch_120_immediately(env, 'r', action_label=None) # r_action_label)
+                    launch_missile_immediately(env, 'r', action_label=None) # r_action_label)
                 if getattr(env.BUAV, 'about_to_fire', 0):
-                    launch_120_immediately(env, 'b', action_label=None) # b_action_label)
+                    launch_missile_immediately(env, 'b', action_label=None) # b_action_label)
 
                 r_action = env.maneuver14LR(env.RUAV, r_action_label)
                 b_action = env.maneuver14LR(env.BUAV, b_action_label)

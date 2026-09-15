@@ -75,18 +75,21 @@ class ChannelAttention(nn.Module):
 
 # GRU-MLP
 class GruMlp(nn.Module):
-    def __init__(self, input_dim, gru_hidden_size, gru_num_layers=1, output_dim=None, batch_first=True):
+    def __init__(self, input_dim, gru_hidden_size, gru_num_layers=1, output_dim=None, batch_first=True, bidirectional=False):
         super(GruMlp, self).__init__()
         self.input_dim = input_dim
         self.gru_hidden_size = gru_hidden_size
-        self.gru_num_layers = gru_num_layers  # 添加GRU层数参数
+        self.gru_num_layers = gru_num_layers
         self.output_dim = output_dim
+        self.bidirectional = bidirectional
 
-        # GRU层处理序列数据，增加num_layers参数
-        self.gru = nn.GRU(input_dim, gru_hidden_size, num_layers=gru_num_layers, batch_first=batch_first)
+        # GRU层处理序列数据
+        self.gru = nn.GRU(input_dim, gru_hidden_size, num_layers=gru_num_layers,
+                          batch_first=batch_first, bidirectional=bidirectional)
 
-        # MLP输出层
-        self.mlp_out = nn.Linear(gru_hidden_size, output_dim)
+        # MLP输出层：双向时输入维度翻倍
+        mlp_in = gru_hidden_size * (2 if bidirectional else 1)
+        self.mlp_out = nn.Linear(mlp_in, output_dim)
 
         # # debug: 在 GruMlp 初始化完成后立即检查 self.gru._flat_weights 类型
         # if hasattr(self, "gru") and hasattr(self.gru, "_flat_weights") and isinstance(self.gru._flat_weights, list):

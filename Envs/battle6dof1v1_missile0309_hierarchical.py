@@ -21,7 +21,7 @@ def get_current_file_dir():
 current_dir = get_current_file_dir()
 sys.path.append(os.path.dirname(current_dir))
 
-from Envs.MissileModel1112 import *  # 传统三自由度动力学导弹模型
+from Envs.MissileModel_aim120 import *  # 传统三自由度动力学导弹模型
 # from Envs.MissileModel260123 import * # 可垂直飞行的导弹模型
 from Math_calculates.CartesianOnEarth import NUE2LLH, LLH2NUE
 from Math_calculates.sub_of_angles import *
@@ -36,7 +36,7 @@ from Utilities.LocateDirAndAgents import *
 from TrainAndTests.Controls.UPolicyWrapper import *
 from TrainAndTests.Controls.FlightControl_Train_dual_a_out2 import *
 # 临时关闭端到端控制，加回PID控制
-from Envs.UAVmodel6dF16 import UAVModel
+from Envs.UAVmodel6d import UAVModel
 # from Envs.UAVmodel6d0309 import UAVModel
 
 # 调用黑名单：删除 PPOHybrid，防止污染命名空间导致外层调用时 IDE 混淆
@@ -172,18 +172,22 @@ class Battle(object):
 
         # 动作平滑参数
         self.action_ema_beta = 0.006 ** (self.dt_maneuver / 2.0)  # 2秒后旧动作权重降至 0.006 0.2
+        self.max_cmd_chaging_rate = np.radians(15) # 每秒最多能转多少度 18
         self.r_actions_ema = None
         self.b_actions_ema = None
         
         if tacview_show:
-            self.tacview = Tacview()
+            if tacview_show == 2:
+                self.tacview = Tacview_s()
+            else:
+                self.tacview = Tacview()
             self.tacview.handshake()
             self.visualize_cage()
             
     def set_ego_side(self, side='b'):
         self.ego_side = side
         
-    def reset(self, red_birth_state=None, blue_birth_state=None, red_init_ammo=4, blue_init_ammo=4, seed=None, options=None, ego_side='b'):  # 重置位置和状态
+    def reset(self, red_birth_state=None, blue_birth_state=None, red_init_ammo=6, blue_init_ammo=6, seed=None, options=None, ego_side='b'):  # 重置位置和状态
         self.R_cage = self.R_cage0
         if self.vertices is not None:
             self.horizontal_center = np.mean(self.vertices, axis=0)
@@ -366,23 +370,42 @@ class Battle(object):
         if self.r_actions_ema is None:
             self.r_actions_ema = r_actions.copy()
         else:
-            # 高度仍做 EMA
-            self.r_actions_ema[0] = self.action_ema_beta * self.r_actions_ema[0] + (1 - self.action_ema_beta) * r_actions[0]
-            # 航向：小指令或符号切换时直出，避免相位滞后导致蛇行
-            if abs(r_actions[1]) < heading_dead or np.sign(r_actions[1]) != np.sign(self.r_actions_ema[1]):
-                self.r_actions_ema[1] = r_actions[1]
-            else:
-                self.r_actions_ema[1] = self.action_ema_beta * self.r_actions_ema[1] + (1 - self.action_ema_beta) * r_actions[1]
+            # # 高度仍做 EMA
+            # self.r_actions_ema[0] = self.action_ema_beta * self.r_actions_ema[0] + (1 - self.action_ema_beta) * r_actions[0]
+            # # 航向：小指令或符号切换时直出，避免相位滞后导致蛇行
+            # if abs(r_actions[1]) < heading_dead or np.sign(r_actions[1]) != np.sign(self.r_actions_ema[1]):
+            #     self.r_actions_ema[1] = r_actions[1]
+            # else:
+            #     # # 指数滑动平滑机动指令
+            #     # self.r_actions_ema[1] = self.action_ema_beta * self.r_actions_ema[1] + (1 - self.action_ema_beta) * r_actions[1]
+            #     pass
+            # 一阶惯性环节平滑机动指令（最快不能超过50度/s）
+            r_expected_delta_h = r_actions[0]
+            self.r_actions_ema[0] = self.r_actions_ema[0] + np.sign(r_expected_delta_h - self.r_actions_ema[0]) * \
+                min(abs(r_actions[0] - self.r_actions_ema[0]), self.max_cmd_chaging_rate * 5000/(pi/2) * self.dt_maneuver)
+
+            self.r_actions_ema[1] = self.r_actions_ema[1] + np.sign(r_actions[1] - self.r_actions_ema[1]) * \
+                min(abs(r_actions[1] - self.r_actions_ema[1]), self.max_cmd_chaging_rate * self.dt_maneuver)
+
         if self.b_actions_ema is None:
             self.b_actions_ema = b_actions.copy()
         else:
-            # 高度仍做 EMA
-            self.b_actions_ema[0] = self.action_ema_beta * self.b_actions_ema[0] + (1 - self.action_ema_beta) * b_actions[0]
+            # # 高度仍做 EMA
+            # self.b_actions_ema[0] = self.action_ema_beta * self.b_actions_ema[0] + (1 - self.action_ema_beta) * b_actions[0]
             # 航向：小指令或符号切换时直出，避免相位滞后导致蛇行
-            if abs(b_actions[1]) < heading_dead or np.sign(b_actions[1]) != np.sign(self.b_actions_ema[1]):
-                self.b_actions_ema[1] = b_actions[1]
-            else:
-                self.b_actions_ema[1] = self.action_ema_beta * self.b_actions_ema[1] + (1 - self.action_ema_beta) * b_actions[1]
+            # if abs(b_actions[1]) < heading_dead or np.sign(b_actions[1]) != np.sign(self.b_actions_ema[1]):
+            #     self.b_actions_ema[1] = b_actions[1]
+            # else:
+            #     # 指数滑动平滑机动指令
+            #     # self.b_actions_ema[1] = self.action_ema_beta * self.b_actions_ema[1] + (1 - self.action_ema_beta) * b_actions[1]
+            #     pass
+            # 一阶惯性环节平滑机动指令（最快不能超过50度/s）
+            b_expected_delta_h = b_actions[0]
+            self.b_actions_ema[0] = self.b_actions_ema[0] + np.sign(b_expected_delta_h - self.b_actions_ema[0]) * \
+                min(abs(b_actions[0] - self.b_actions_ema[0]), self.max_cmd_chaging_rate * 5000/(pi/2) * self.dt_maneuver)
+
+            self.b_actions_ema[1] = self.b_actions_ema[1] + np.sign(b_actions[1] - self.b_actions_ema[1]) * \
+                min(abs(b_actions[1] - self.b_actions_ema[1]), self.max_cmd_chaging_rate * self.dt_maneuver)
         # 使用平滑后的动作执行
         actions = [self.r_actions_ema] + [self.b_actions_ema]
 
@@ -531,10 +554,10 @@ class Battle(object):
                     control_action, _, _, _ = self.control_actor.get_action(control_input, explore=False)
                     aileron, elevator, rudder, throttle = control_action['cont']
 
-                    # 弱化俯仰控制
-                    elevator*=0.75
-                    if UAV.mach > 0.85:
-                        elevator=np.clip(elevator, -0.72, 0.72)
+                    # # 弱化俯仰控制
+                    # elevator*=0.75
+                    # if UAV.mach > 0.85:
+                    #     elevator=np.clip(elevator, -0.72, 0.72)
 
                     UAV.move(elevator, aileron, throttle, relevant_height=True, e2e=True, rudder=rudder, dt=substep_dt)
                 else:
@@ -586,10 +609,10 @@ class Battle(object):
                 # 毁伤判别
                 vmt1 = norm(last_vmt_)
                 # 导弹慢速自爆，节省计算量
-                # if vmt1 < missile.speed_min \
-                #     and missile.t > 0.5 + missile.stage1_time + missile.stage2_time \
-                #         and last_pmt_[1] < 15e3: # 3000
-                #     missile.dead = True
+                if vmt1 < missile.speed_min \
+                    and missile.t > 0.5 + missile.stage1_time + missile.stage2_time \
+                        and last_pmt_[1] < 15e3: # 3000
+                    missile.dead = True
                 if last_pmt_[1] < missile.minH_m:  # 高度小于限高自爆
                     missile.dead = True
                 if missile.t > missile.t_max:  # 超时自爆
@@ -1208,9 +1231,9 @@ class Battle(object):
             if R_uav <= self.R_cage:
                 out = False
         
-        # 试验举措：保持对对手的锁定，就不算出界
-        if UAV.lock_on:
-            out = False
+        # # 试验举措：保持对对手的锁定，就不算出界
+        # if UAV.lock_on:
+        #     out = False
 
         # # 试验举措：敌机死后边界消失
         # # 敌机全都死了之后可以出界
@@ -1466,7 +1489,7 @@ class Battle(object):
         else:
             return 0
 
-def launch_120_immediately(env, side='r', tabu=0, action_label=None):
+def launch_missile_immediately(env, side='r', tabu=0, action_label=None):
     """
     立即发射导弹 (受俯仰角限制)
     """
@@ -1478,13 +1501,12 @@ def launch_120_immediately(env, side='r', tabu=0, action_label=None):
         uav = env.BUAV
         target = env.RUAV
 
-    if action_label is not None and hasattr(env, 'maneuver14LR'):
-        action_array = env.maneuver14LR(uav, action_label)
-        delta_target_height = action_array[0]
-
-        desired_theta = (min(delta_target_height, env.max_alt_safe-uav.alt) / 5000.0) * (pi / 2) # 不能再爬升了，就得降低期望俯仰角
-        if (desired_theta - uav.theta > (15 * pi / 180)) and uav.alt < 7000: # 7000m以上很难再维持大爬升角，高抛延迟开火仅对7000m以下生效
-            return None
+    # if action_label is not None and hasattr(env, 'maneuver14LR'):
+    #     action_array = env.maneuver14LR(uav, action_label)
+    #     delta_target_height = action_array[0]
+    #     desired_theta = (min(delta_target_height, env.max_alt_safe-uav.alt) / 5000.0) * (pi / 2) # 不能再爬升了，就得降低期望俯仰角
+    #     if (desired_theta - uav.theta > (15 * pi / 180)) and uav.alt < 7000: # 7000m以上很难再维持大爬升角，高抛延迟开火仅对7000m以下生效
+    #         return None
 
     ego_state = env.get_state(uav.side)
     ATA = ego_state["target_information"][4]
@@ -1493,10 +1515,13 @@ def launch_120_immediately(env, side='r', tabu=0, action_label=None):
     target_locked = ego_state["target_locked"]
 
     # 发射导弹
+    # 若 tabu=1，要求 target_locked、weapon>=0.1 且 ATA<=max_radar_angle_rad 同时满足才能成功发射。
+    # 只要上层 about_to_fire=1 未被清除，智能体在接下来的多个物理微步内每次 step 都会进入此处尝试发射，
+    # 一旦在某个中间微步满足上述条件，导弹便会发射成功。
     if uav.ammo>0 and not uav.dead:
         if (not tabu) or\
                 target_locked and ego_state["weapon"]>=0.1 and ATA<=env.RUAV.max_radar_angle_rad:
-            new_missile = uav.launch_120(target, env.t, aim120)
+            new_missile = uav.launch_missile(target, env.t, aim120)
             uav.ammo -= 1
             uav.fired += 1
 

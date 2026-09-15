@@ -22,7 +22,7 @@ def get_current_file_dir():
 current_dir = get_current_file_dir()
 sys.path.append(os.path.dirname(current_dir))
 
-from Envs.MissileModel1112 import *  # 传统三自由度动力学导弹模型
+from Envs.MissileModel_aim120 import *  # 传统三自由度动力学导弹模型
 from Math_calculates.CartesianOnEarth import NUE2LLH, LLH2NUE
 from Math_calculates.sub_of_angles import *
 from Math_calculates.coord_rotations import *
@@ -139,7 +139,10 @@ class Battle(object):
         self.state_init_mod = self._generate_state_init_mod()
         self.tacview_show = tacview_show
         if tacview_show:
-            self.tacview = Tacview()
+            if tacview_show == 2:
+                self.tacview = Tacview_s()
+            else:
+                self.tacview = Tacview()
             self.tacview.handshake()
             self.visualize_cage()           
     

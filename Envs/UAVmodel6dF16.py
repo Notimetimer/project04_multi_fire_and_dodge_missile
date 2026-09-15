@@ -15,7 +15,7 @@ from Controller.F16PIDController2_1 import *
 from Math_calculates.CartesianOnEarth import NUE2LLH, LLH2NUE
 from Math_calculates.sub_of_angles import *
 from Math_calculates.coord_rotations import *
-from Envs.MissileModel1112 import aim120
+from Envs.MissileModel_aim120 import aim120
 from Envs.MissileModel_aim9x import aim9x
 
 # 箔条模型

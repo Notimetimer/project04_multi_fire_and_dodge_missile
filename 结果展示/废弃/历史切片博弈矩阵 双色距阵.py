@@ -91,7 +91,7 @@ if __name__ == "__main__":
     parser.add_argument("--mission-name", type=str, default='RL_combat_PFSP_简单熵_区分左右_无淘汰机制_有模仿学习') # 测试路径
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")  # torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     logs_root_dir = os.path.join(project_root, "logs/combat")
     latest_log_dir = get_latest_log_dir(logs_root_dir, args.mission_name)

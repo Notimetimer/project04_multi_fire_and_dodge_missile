@@ -1,5 +1,7 @@
 import socket
 import threading
+import os
+import datetime
 class Tacview(object):
     def __init__(self):
         # 初始化线程锁与渲染状态，避免在断开后继续发送
@@ -100,3 +102,61 @@ class Tacview(object):
                     pass
                 self.server_socket = None
             self.address = None
+
+
+class Tacview_s(object):
+    """静默写入 ACMI 文件，不连接 Tacview 软件。
+    文件保存到项目根目录下的 acmi_records，文件名以当前年月日时分秒命名。
+    """
+    def __init__(self):
+        # 定位项目根目录（tacview_visualize2.py 在 project_root/Visualize/ 下）
+        self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.record_dir = os.path.join(self.project_root, "acmi_records")
+        self.filename = None
+        self.file = None
+        self.rendering = False
+        self.lock = threading.Lock()
+
+    def handshake(self):
+        os.makedirs(self.record_dir, exist_ok=True)
+        now = datetime.datetime.now()
+        self.filename = os.path.join(self.record_dir, now.strftime("%Y%m%d_%H%M%S") + ".acmi")
+        self.file = open(self.filename, "w", encoding="utf-8")
+        self.rendering = True
+
+        header = ("FileType=text/acmi/tacview\n"
+                  "FileVersion=2.1\n"
+                  "0,ReferenceTime=2020-04-01T00:00:00Z\n"
+                  "#0.00\n")
+        with self.lock:
+            self.file.write(header)
+            self.file.flush()
+        print(f"Tacview_s: 开始写入 {self.filename}")
+
+    def send_data_to_client(self, data):
+        with self.lock:
+            if not getattr(self, "rendering", False):
+                return
+            f = self.file
+        if f is None:
+            return
+        try:
+            f.write(data)
+            f.flush()
+        except Exception:
+            try:
+                self.end_render()
+            except Exception:
+                pass
+
+    def end_render(self):
+        """停止写入并关闭文件。"""
+        with self.lock:
+            self.rendering = False
+            if getattr(self, "file", None) is not None:
+                try:
+                    self.file.flush()
+                    self.file.close()
+                except Exception:
+                    pass
+                self.file = None

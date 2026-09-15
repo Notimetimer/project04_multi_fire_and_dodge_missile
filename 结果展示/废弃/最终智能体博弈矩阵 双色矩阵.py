@@ -100,7 +100,7 @@ if __name__ == "__main__":
     if len(mission_names) != len(team_labels):
         raise ValueError(f"输入错误：任务目录数量({len(mission_names)}) 与 标签数量({len(team_labels)}) 不一致！")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")  # torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logs_root_dir = os.path.join(project_root, "结果展示/logs")
     
     # 1. 准备各算法的 Top 50 精英队

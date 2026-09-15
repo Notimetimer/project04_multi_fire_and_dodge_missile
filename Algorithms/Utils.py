@@ -4,6 +4,7 @@ import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
+from math import *
 
 # 计算并记录 actor / critic 的梯度范数（L2）
 def model_grad_norm(model):
@@ -16,14 +17,8 @@ def model_grad_norm(model):
             found = True
     return float(total_sq ** 0.5) if found else float('nan')
 
-
-def moving_average(a, window_size):
-    cumulative_sum = np.cumsum(np.insert(a, 0, 0))
-    middle = (cumulative_sum[window_size:] - cumulative_sum[:-window_size]) / window_size
-    r = np.arange(1, window_size - 1, 2)
-    begin = np.cumsum(a[:window_size - 1])[::2] / r
-    end = (np.cumsum(a[:-window_size:-1])[::2] / r)[::-1]
-    return np.concatenate((begin, middle, end))
+from _context import *
+from Algorithms.rl_utils import moving_average, old_moving_average
 
 
 def check_weights_bias_nan(model, model_name="model", place=None):
@@ -209,3 +204,332 @@ class SquashedNormal:
         # 这在实践中通常足够，若需精确熵可用采样估计
         ent = self.normal.entropy().sum(-1)
         return ent
+
+
+# 线性空间下随机概率分布
+class LinearDiscretizedDistribution:
+    """
+    线性空间离散化分布 (高斯核分布)。
+    通过计算 mu 与预设 n 个采样点之间的负平方距离，构建 Categorical 分布。
+    适用于 [-1, 1] 或 [-pi/2, pi/2] 等不需要处理周期性边界的连续区间。
+    """
+    def __init__(self, mu, std, low=-1.0, high=1.0, n=31, eps=1e-8):
+        """
+        Args:
+            mu:    (batch_size, 1) 神经网络输出的均值。
+            std:   (batch_size, 1) 或 标量。等效标准差。
+            low:   区间的下限。
+            high:  区间的上限。
+            n:     离散采样点的数量。
+        """
+        self.device = mu.device
+        self.n = n
+        self.low = low
+        self.high = high
+        self.eps = eps
+
+        # 1. 均值限制。虽然高斯分布均值可以超限，但为了采样点覆盖，建议限制在 [low, high]
+        self.mu = mu 
+        
+        # 2. 转换 std 为集中度参数 (等效于 1 / (2 * sigma^2))
+        self.std = torch.as_tensor(std, device=self.device).clamp(min=1e-3)
+        self.tau_inv = 1.0 / (2.0 * self.std.pow(2) + eps)
+
+        # 3. 在指定范围内预设 n 个等距采样点 (support points)
+        # shape: (n,)
+        self.v_points = torch.linspace(low, high, n, device=self.device)
+
+        # 4. 计算 Logits: - (v - mu)^2 / (2 * sigma^2)
+        # 利用广播机制计算 (batch_size, n)
+        # (batch_size, 1) - (n,) -> (batch_size, n)
+        dist_sq = (self.v_points - self.mu).pow(2)
+        self.logits = -dist_sq * self.tau_inv
+        
+        self.probs = F.softmax(self.logits, dim=-1)
+        self.dist = torch.distributions.Categorical(probs=self.probs)
+
+    def sample(self):
+        """
+        采样：返回采样点的索引。
+        若需要返回物理值，请配合 self.v_points[idx] 使用。
+        """
+        a = self.dist.sample()
+        return a, self.logits
+
+    def log_prob(self, a):
+        """计算动作索引 a 的对数概率"""
+        return self.dist.log_prob(a)
+
+    def entropy(self):
+        """返回离散熵"""
+        return self.dist.entropy()
+
+    @property
+    def mean_idx(self):
+        """返回概率最大的采样点索引"""
+        return torch.argmax(self.probs, dim=-1)
+    
+    @property
+    def sampled_value(self):
+        """
+        辅助方法：如果你的动作空间需要物理值输出，可以直接调用此属性。
+        """
+        idx = self.dist.sample()
+        return self.v_points[idx]
+
+# 圆周空间下随机概率分布
+class CircularDiscretizedDistribution:
+    """
+    圆周空间离散化分布 (星形分布)。
+    通过输入向量 (x, y) 与预设的 n 个方向向量做点积，构建 Categorical 分布。
+    接口对齐 SquashedNormal。
+    强制归一化输入向量，使得 std (等效 sigma) 成为控制分布宽度的唯一变量。
+    """
+    def __init__(self, vec_h, std, n=12, eps=1e-8):
+        """
+        Args:
+            vec_h: (batch_size, 2) 神经网络输出。我们只取其方向。
+            std:   (batch_size, 1) 或 标量。等效标准差 (单位: 弧度)。
+                   std 越大，分布越扁平；std 越小，分布越尖锐。
+            n:     采样精度。
+        """
+        self.device = vec_h.device
+        self.n = n
+        self.eps = eps
+        
+        # 1. 强制归一化神经网络的输出向量，消除模长对熵的影响
+        # 此时 vec_h 仅代表“意图方向”
+        self.direction = F.normalize(vec_h, p=2, dim=-1, eps=eps)
+
+        # 2. 将输入的 std 转化为集中度参数 kappa (1/sigma^2)
+        # 为了数值稳定性，限制 std 的最小值
+        self.std = torch.as_tensor(std, device=self.device).clamp(min=1e-3)
+        self.kappa = 1.0 / (self.std.pow(2) + eps)
+
+        # 3. 预设 n 个离散方向向量
+        angles = torch.linspace(0, 2 * np.pi, n + 1, device=self.device)[:-1]
+        self.v_matrix = torch.stack([torch.cos(angles), torch.sin(angles)], dim=-1)
+
+        # 4. 计算 Logits: kappa * (direction · v)
+        # 这里的 1/sigma^2 起到了原本 Boltzmann 温度倒数的作用
+        self.logits = torch.matmul(self.direction, self.v_matrix.t()) * self.kappa
+        
+        self.probs = F.softmax(self.logits, dim=-1)
+        self.dist = torch.distributions.Categorical(probs=self.probs)
+
+    def sample(self):
+        """
+        采样：从离散分布中抽取索引。
+        Returns:
+            a: 抽取的动作索引 (0 到 n-1)
+            logits: 该样本对应的全部 logits (用于兼容接口或辅助计算)
+        """
+        a = self.dist.sample()
+        return a, self.logits
+
+    def log_prob(self, a, logits_unused=None):
+        """
+        计算动作 a 的对数概率。
+        Args:
+            a: 动作索引 (batch_size,)
+            logits_unused: 仅为了兼容 SquashedNormal 接口
+        """
+        # 直接使用 Categorical 的 log_prob
+        return self.dist.log_prob(a)
+
+    def entropy(self):
+        # 注意：这是离散熵。当 n 很大时，它会趋近于连续分布的熵减去 log(n)
+        return self.dist.entropy()
+
+    @property
+    def mean_idx(self):
+        """
+        返回概率最大的方向索引 (等效于高斯分布的均值)
+        """
+        return torch.argmax(self.probs, dim=-1)
+
+
+class LinearDiscretizedDistribution_NL:
+    """
+    线性空间离散化分布 (不规则采样版本)。
+    直接传入物理角度列表作为支撑点，高斯核计算 logits。
+    适用于采样点不均匀分布的线性区间。
+    """
+    def __init__(self, mu, std, points=[pi/4, pi/8, 0.0, -pi/8, -pi/2], eps=1e-8):
+        """
+        Args:
+            mu:     (batch_size, 1) 神经网络输出的均值 (tanh 后的值，范围 [-1,1])。
+            std:    (batch_size, 1) 等效标准差。
+            points: 物理角度列表，长度即为档位数。
+        """
+        self.device = mu.device
+        self.points = torch.tensor(points, dtype=torch.float32, device=self.device)
+        self.n = len(points)
+        self.eps = eps
+
+        self.mu = mu
+        self.std = torch.as_tensor(std, device=self.device).clamp(min=1e-3)
+        self.tau_inv = 1.0 / (2.0 * self.std.pow(2) + eps)
+
+        # logits: -(v - mu)^2 / (2*sigma^2), shape (batch, n)
+        dist_sq = (self.points - self.mu).pow(2)
+        self.logits = -dist_sq * self.tau_inv
+
+        self.probs = F.softmax(self.logits, dim=-1)
+        self.dist = torch.distributions.Categorical(probs=self.probs)
+
+    def sample(self):
+        a = self.dist.sample()
+        return a, self.logits
+
+    def log_prob(self, a):
+        return self.dist.log_prob(a)
+
+    def entropy(self):
+        return self.dist.entropy()
+
+    @property
+    def mean_idx(self):
+        return torch.argmax(self.probs, dim=-1)
+
+
+class CircularDiscretizedDistribution_NL:
+    """
+    圆周空间离散化分布 (不规则采样版本)。
+    通过物理真实的采样角度构建星形分布，确保 std 的物理意义在全空间一致。
+    """
+    def __init__(self, vec_h, std, angles=[0, pi/3, pi/2, pi, -pi/2, -pi/3], eps=1e-8):
+        """
+        Args:
+            vec_h:  (batch_size, 2) 神经网络输出。强制归一化以提取意图方向。
+            std:    (batch_size, 1) 或 标量。等效物理标准差 (单位: 弧度)。
+            angles: list, ndarray 或 Tensor。物理采样点的角度序列 (单位: 弧度)。
+            eps:    数值稳定性小量。
+        """
+        self.device = vec_h.device
+        self.eps = eps
+        
+        # 1. 处理传入的物理角度
+        # 确保 angles 是 Tensor 且在正确的设备上
+        self.angles = torch.as_tensor(angles, device=self.device, dtype=torch.float32)
+        self.n = self.angles.size(0)
+        
+        # 2. 强制归一化输入向量，提取意图方向 (mu)
+        self.direction = F.normalize(vec_h, p=2, dim=-1, eps=eps)
+
+        # 3. 将物理 std 转化为集中度参数 kappa (1/sigma^2)
+        self.std = torch.as_tensor(std, device=self.device).clamp(min=1e-3)
+        self.kappa = 1.0 / (self.std.pow(2) + eps)
+
+        # 4. 构建物理真实的基准向量矩阵 (v_matrix)
+        # 每一个行向量对应一个物理动作的方向
+        self.v_matrix = torch.stack([
+            torch.cos(self.angles), 
+            torch.sin(self.angles)
+        ], dim=-1) # (n, 2)
+
+        # 5. 计算 Logits: kappa * (direction · v)
+        # 点积结果即为 cos(delta_theta)，kappa 控制分布的尖锐程度
+        self.logits = torch.matmul(self.direction, self.v_matrix.t()) * self.kappa
+        
+        # 6. 生成离散概率分布
+        self.probs = F.softmax(self.logits, dim=-1)
+        self.dist = torch.distributions.Categorical(probs=self.probs)
+
+    def sample(self):
+        """
+        采样：从离散分布中抽取索引。
+        Returns:
+            a: 抽取的动作索引 (0 到 n-1)
+            logits: 该样本对应的全部 logits (用于兼容接口或辅助计算)
+        """
+        a = self.dist.sample()
+        return a, self.logits
+
+    def log_prob(self, a, logits_unused=None):
+        """
+        计算动作 a 的对数概率。
+        Args:
+            a: 动作索引 (batch_size,)
+            logits_unused: 仅为了兼容 SquashedNormal 接口
+        """
+        # 直接使用 Categorical 的 log_prob
+        return self.dist.log_prob(a)
+
+    def entropy(self):
+        # 注意：这是离散熵。当 n 很大时，它会趋近于连续分布的熵减去 log(n)
+        return self.dist.entropy()
+
+    @property
+    def mean_idx(self):
+        """
+        返回概率最大的方向索引 (等效于高斯分布的均值)
+        """
+        return torch.argmax(self.probs, dim=-1)
+    
+
+# 圆周空间下随机概率分布
+class CircularContDist4OnPolciy:
+    def __init__(self, mu_vec, std, eps=1e-8):
+        # mu_vec: (B, 2) 单位向量
+        self.eps = float(eps)
+        self.device = mu_vec.device
+        self.mu_vec = mu_vec.view(-1, 2)
+        self.std = std.to(self.device).view(-1, 1)
+
+        # kappa from equivalent std
+        self.kappa = 1.0 / (self.std.pow(2) + self.eps)
+
+    def log_prob(self, action_vec):
+        # action_vec: (B, 2) 经验池中的动作向量
+        action_vec = action_vec.view(-1, 2).to(self.device)
+        
+        # 使用点积代替 cos(theta - mu)
+        dot_product = torch.sum(action_vec * self.mu_vec, dim=-1, keepdim=True)
+        
+        if hasattr(torch.special, 'i0e'):
+            # log I0 = log(i0e(kappa)) + kappa
+            log_i0 = torch.log(torch.special.i0e(self.kappa).clamp(min=self.eps)) + self.kappa
+        else:
+            log_i0 = torch.log(torch.special.i0(self.kappa).clamp(min=self.eps))
+
+        log_norm = torch.log(torch.tensor(2.0 * np.pi, device=self.device)) + log_i0
+        return (self.kappa * dot_product) - log_norm
+
+    def sample(self):
+        # 采样依然基于 Von Mises 标量，随后转为向量存储
+        mu_rad = torch.atan2(self.mu_vec[:, 1], self.mu_vec[:, 0]).detach().cpu().numpy()
+        kappa_np = self.kappa.detach().cpu().numpy().reshape(-1)
+        
+        samples = np.array([np.random.vonmises(m, k) for m, k in zip(mu_rad, kappa_np)])
+        # 转回向量 (B, 2)
+        samples_vec = np.stack([np.cos(samples), np.sin(samples)], axis=1)
+        return torch.as_tensor(samples_vec, dtype=torch.float, device=self.device)
+
+    def entropy(self):
+        """使用指数缩放贝塞尔函数计算熵，提高数值稳定性"""
+        if hasattr(torch.special, 'i1e'):
+            # 使用缩放版本: In(k) = Ine(k) * exp(k)
+            i0e = torch.special.i0e(self.kappa).clamp(min=self.eps)
+            i1e = torch.special.i1e(self.kappa)
+            
+            # ratio = I1/I0 = I1e/I0e
+            ratio = i1e / i0e
+            
+            # log(I0) = log(i0e) + kappa
+            log_i0 = torch.log(i0e) + self.kappa
+            
+            # H = -kappa * (I1/I0) + log(2π) + log(I0)
+            # 带入缩放项后整理得：
+            ent = self.kappa * (1.0 - ratio) + torch.log(torch.tensor(2.0 * np.pi, device=self.device)) + torch.log(i0e)
+            return ent
+        else:
+            # 回退到标准版本（易溢出）
+            i0 = torch.special.i0(self.kappa).clamp(min=self.eps)
+            i1 = torch.special.i1(self.kappa)
+            return -self.kappa * (i1 / i0) + torch.log(torch.tensor(2.0 * np.pi, device=self.device)) + torch.log(i0)
+
+    def mean(self):
+        # 返回 (batch, 2) 的均值向量
+        return self.mu_vec
+

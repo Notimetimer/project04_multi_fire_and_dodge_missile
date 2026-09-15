@@ -50,7 +50,7 @@ if __name__ == "__main__":
         print("one-hot -> labels:\n", recovered)
 
     # 示例
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")  # torch.device("cuda" if torch.cuda.is_available() else "cpu")
     labels = torch.tensor([[0], [1], [2], [3]], device=device)  # shape: (batch, 1)
     n = 4  # 类别数
 
