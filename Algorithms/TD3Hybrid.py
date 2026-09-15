@@ -211,7 +211,7 @@ class HybridActorWrapper(PPOHybridActorWrapper):
         if actor_outputs['bern'] is not None:
             bern_logits = actor_outputs['bern']
             # 将 logits 转换为 [prob_0, prob_1] 的形式以便使用 gumbel_softmax
-            logits_2d = torch.stack([-bern_logits, bern_logits], dim=-1)
+            logits_2d = torch.stack([torch.zeros_like(bern_logits), bern_logits], dim=-1)
             gumbel_out = F.gumbel_softmax(logits_2d, tau=1.0, hard=True)
             bern_action = gumbel_out[..., 1] # 取出代表 1(True) 的那一列
 
@@ -374,7 +374,7 @@ class TD3Hybrid:
         for param_target, param in zip(target_net.parameters(), net.parameters()):
             param_target.data.copy_(param_target.data * (1.0 - self.tau) + param.data * self.tau)
 
-    def update(self, batch, freeze_actor=False):
+    def update(self, batch, freeze_actor=False, actor_max_update_norm=0.05):
         """
         接收 ReplayBuffer 返回的字典 batch，按标准 TD3 的三条独立计算流更新：
         - 流A（每次都执行）：target_actor 产生 next_action(确定性+截断噪声)，
@@ -413,7 +413,7 @@ class TD3Hybrid:
                 cat_onehots.append(F.one_hot(cat_idx[:, i], num_classes=dim).float())
             actions_for_q['cat'] = torch.cat(cat_onehots, dim=-1)
             
-        if 'bern' in raw_actions:
+        if self.actor.action_dims.get('bern', 0) > 0 and 'bern' in raw_actions:
             actions_for_q['bern'] = torch.from_numpy(raw_actions['bern']).to(device)
 
         # --- B. TD3 Critic 目标计算 ---
@@ -495,7 +495,7 @@ class TD3Hybrid:
             # 伯努利动作：Gumbel-Softmax + 熵（fire_mask 位置才算有效熵）
             if actor_outputs['bern'] is not None:
                 bern_logits = actor_outputs['bern']
-                logits_2d = torch.stack([-bern_logits, bern_logits], dim=-1)
+                logits_2d = torch.stack([torch.zeros_like(bern_logits), bern_logits], dim=-1)
                 gumbel_out = F.gumbel_softmax(logits_2d, tau=1.0, hard=True)
                 actor_actions['bern'] = gumbel_out[..., 1]
                 ent_bern = Bernoulli(logits=bern_logits).entropy()
@@ -517,10 +517,19 @@ class TD3Hybrid:
                            + self.k_cat * entropies['cat']
                            + self.k_bern * entropies['bern']) * active_masks).sum() / (active_sum + mask_eps)
 
+            actor_params = [p for p in self.actor.parameters() if p.requires_grad]
+            actor_before = [p.detach().clone() for p in actor_params]
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
-            actor_grad = nn.utils.clip_grad_norm_(self.actor.parameters(), self.actor_max_grad)
+            actor_grad = nn.utils.clip_grad_norm_(actor_params, self.actor_max_grad)
             self.actor_optimizer.step()
+            if actor_max_update_norm is not None:
+                with torch.no_grad():
+                    update_norm = torch.sqrt(sum((p - old).pow(2).sum() for p, old in zip(actor_params, actor_before)))
+                    if update_norm > actor_max_update_norm:
+                        scale = actor_max_update_norm / (update_norm + 1e-12)
+                        for p, old in zip(actor_params, actor_before):
+                            p.copy_(old + scale * (p - old))
 
             # 软更新：仅在 actor 完成一次参数更新后执行，频率为 critic 的 1/policy_delay
             # 三个目标网络一起跟随：target_actor / target_critic_1 / target_critic_2

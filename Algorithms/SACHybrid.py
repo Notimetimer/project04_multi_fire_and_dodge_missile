@@ -143,6 +143,7 @@ class HybridActorWrapper(PPOHybridActorWrapper):
         log_probs_cont = torch.zeros(states.size(0), 1).to(self.device)
         log_probs_cat = torch.zeros(states.size(0), 1).to(self.device)
         log_probs_bern = torch.zeros(states.size(0), 1).to(self.device)
+        bern_entropy = torch.zeros(states.size(0), 1).to(self.device)
 
         # --- Cont (连续动作，使用 rsample) ---
         if actor_outputs['cont'] is not None:
@@ -186,7 +187,7 @@ class HybridActorWrapper(PPOHybridActorWrapper):
         if actor_outputs['bern'] is not None:
             bern_logits = actor_outputs['bern']
             # 将 logits 转换为 [prob_0, prob_1] 的形式以便使用 gumbel_softmax
-            logits_2d = torch.stack([-bern_logits, bern_logits], dim=-1)
+            logits_2d = torch.stack([torch.zeros_like(bern_logits), bern_logits], dim=-1)
             gumbel_out = F.gumbel_softmax(logits_2d, tau=1.0, hard=True)
             bern_action = gumbel_out[..., 1] # 取出代表 1(True) 的那一列
 
@@ -201,6 +202,10 @@ class HybridActorWrapper(PPOHybridActorWrapper):
             fire_mask = actor_outputs.get('fire_mask', None)
             if fire_mask is not None:
                 log_p_bern = log_p_bern * fire_mask  # shape: (batch, bern_dim)，masked 位置乘 0
+                valid_count = fire_mask.sum(-1, keepdim=True).clamp_min(1.0)
+                bern_entropy = (Bernoulli(logits=bern_logits).entropy() * fire_mask).sum(-1, keepdim=True) / valid_count
+            else:
+                bern_entropy = Bernoulli(logits=bern_logits).entropy().mean(-1, keepdim=True)
 
             log_p_bern_sum = log_p_bern.view(states.size(0), -1).sum(-1, keepdim=True)
             log_probs_bern += log_p_bern_sum
@@ -210,6 +215,7 @@ class HybridActorWrapper(PPOHybridActorWrapper):
             'cont': log_probs_cont,
             'cat': log_probs_cat,
             'bern': log_probs_bern,
+            'bern_entropy': bern_entropy,
             'total': log_probs_total,
         }
         return actions_differentiable, log_probs
@@ -334,7 +340,7 @@ class SACHybrid:
         for param_target, param in zip(target_net.parameters(), net.parameters()):
             param_target.data.copy_(param_target.data * (1.0 - self.tau) + param.data * self.tau)
 
-    def update(self, batch, target_entropy=2.0, alpha_clip=(0.001, 0.1), freeze_actor=False):
+    def update(self, batch, target_entropy=2.0, alpha_clip=(0.001, 0.1), freeze_actor=False, actor_max_update_norm=0.05):
         """
         接收 ReplayBuffer 返回的字典 batch
         target_entropy : 目标熵（正数，由外部传入）。None 则不更新 alpha。
@@ -368,7 +374,7 @@ class SACHybrid:
                 cat_onehots.append(F.one_hot(cat_idx[:, i], num_classes=dim).float())
             actions_for_q['cat'] = torch.cat(cat_onehots, dim=-1)
             
-        if 'bern' in raw_actions:
+        if self.actor.action_dims.get('bern', 0) > 0 and 'bern' in raw_actions:
             actions_for_q['bern'] = torch.from_numpy(raw_actions['bern']).to(device)
 
         # --- B. SAC 计算逻辑 (逻辑保持不变，但变量名已对齐) ---
@@ -419,7 +425,7 @@ class SACHybrid:
             q2_target = self.target_critic_2(next_states, next_actions_diff)
             alpha = self.log_alpha.exp()
             k_bern = self.k_entropy.get('bern', 0.003)
-            entropy_reg = alpha * (next_log_probs['cont'] + next_log_probs['cat']) + k_bern * next_log_probs['bern']
+            entropy_reg = alpha * (next_log_probs['cont'] + next_log_probs['cat']) - k_bern * next_log_probs['bern_entropy']
             min_q_target = torch.min(q1_target, q2_target) - entropy_reg
             
             # TD 目标
@@ -454,13 +460,22 @@ class SACHybrid:
             # 机动部分 (cont+cat) 使用自适应 alpha；开火部分 (bern) 使用固定初始熵系数
             k_bern = self.k_entropy.get('bern', 0.05)
             actor_loss = ((alpha * (curr_log_probs['cont'] + curr_log_probs['cat'])
-                          + k_bern * curr_log_probs['bern']
+                          - k_bern * curr_log_probs['bern_entropy']
                           - min_q_pi) * active_masks).sum() / (active_sum + mask_eps)
             
+            actor_params = [p for p in self.actor.parameters() if p.requires_grad]
+            actor_before = [p.detach().clone() for p in actor_params]
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
-            actor_grad = nn.utils.clip_grad_norm_(self.actor.parameters(), self.actor_max_grad)
+            actor_grad = nn.utils.clip_grad_norm_(actor_params, self.actor_max_grad)
             self.actor_optimizer.step()
+            if actor_max_update_norm is not None:
+                with torch.no_grad():
+                    update_norm = torch.sqrt(sum((p - old).pow(2).sum() for p, old in zip(actor_params, actor_before)))
+                    if update_norm > actor_max_update_norm:
+                        scale = actor_max_update_norm / (update_norm + 1e-12)
+                        for p, old in zip(actor_params, actor_before):
+                            p.copy_(old + scale * (p - old))
 
             # 3. 更新 Alpha (熵系数)
             if target_entropy is not None:
@@ -483,7 +498,7 @@ class SACHybrid:
                 alpha_loss = torch.tensor(0.0)
         else:
             # freeze_actor=True：用零值占位，不触碰 actor/alpha 参数
-            curr_log_probs = {'cont': torch.zeros(1), 'cat': torch.zeros(1), 'bern': torch.zeros(1), 'total': torch.zeros(1)}
+            curr_log_probs = {'cont': torch.zeros(1), 'cat': torch.zeros(1), 'bern': torch.zeros(1), 'bern_entropy': torch.zeros(1), 'total': torch.zeros(1)}
             actor_loss = torch.tensor(0.0)
             actor_grad = torch.tensor(0.0)
             alpha_loss = torch.tensor(0.0)
@@ -495,9 +510,9 @@ class SACHybrid:
         # --- 监控指标（兼容主训练脚本的 logger 字段） ---
         self.last_actor_loss = actor_loss.item()
         self.last_critic_loss = critic_loss.item()
-        self.last_entropy = -curr_log_probs['total'].mean().item()
         self.last_entropy_mobility = -(curr_log_probs['cont'] + curr_log_probs['cat']).mean().item()
-        self.last_entropy_bern = -curr_log_probs['bern'].mean().item()
+        self.last_entropy_bern = curr_log_probs['bern_entropy'].mean().item()
+        self.last_entropy = self.last_entropy_mobility + self.last_entropy_bern
         self.actor_loss = self.last_actor_loss
         self.critic_loss = self.last_critic_loss
         self.entropy_mean = self.last_entropy
