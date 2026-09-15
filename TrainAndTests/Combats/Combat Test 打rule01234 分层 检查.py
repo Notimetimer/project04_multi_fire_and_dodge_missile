@@ -49,23 +49,8 @@ if __name__ == "__main__":
 
     # 优先使用dir_name，如果没有则使用experiment_name
     dir_name = None
-    dir_name = "SLWSPFSP0.15_flymask_v0h0-run-20260908-223429"
-    
-    "SLWSPFSPNoIL_flymask_v0h0-run-20260906-171344"
-    
-    "SLWSPFSP0.3无引导奖励-run-20260726-091904"
-
-    
-    "SLWSA3C0.3-run-20260630-220403"
-    
-    "SLWSPFSP0.3-run-20260618-221044"
-
-    
     # 次要
-    experiment_name = None    
-    'PFSP_分阶段_混规则对手_挑战_并行_训练满熵项'
-
-
+    experiment_name = None
     parser = argparse.ArgumentParser("RL/IL Combat Test")
     parser.add_argument("--agent-id", type=int, default=None, help="Specific agent ID to test. If None, loads the latest.")
     parser.add_argument("--mission-name", type=str, default=experiment_name, help="Mission name to find the log directory.")
