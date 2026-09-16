@@ -23,6 +23,7 @@ current_dir = get_current_file_dir()
 sys.path.append(os.path.dirname(current_dir))
 
 from Envs.MissileModel_aim120 import *  # 传统三自由度动力学导弹模型
+from Envs.MissileModel_aim9x import aim9x  # 近距格斗弹模型
 from Math_calculates.CartesianOnEarth import NUE2LLH, LLH2NUE
 from Math_calculates.sub_of_angles import *
 from Math_calculates.coord_rotations import *
@@ -46,7 +47,7 @@ except NameError:
     pass
 
 g = 9.81
-dt_maneuver = 0.2  # 0.02 0.8 0.2
+dt_maneuver = 0.2
 dt_move = 0.02
 # report_move_time_rate = int(round(dt_maneuver / dt_move))
 
@@ -175,7 +176,9 @@ class Battle(object):
         return self.Rmissiles + self.Bmissiles
 
 
-    def reset(self, red_birth_state=None, blue_birth_state=None, red_init_ammo=4, blue_init_ammo=4, seed=None, options=None, ego_side='b'):  # 重置位置和状态
+    def reset(self, red_birth_state=None, blue_birth_state=None, 
+              red_init_num=2, blue_init_num=2,
+              red_init_ammo=4, blue_init_ammo=4, seed=None, options=None, ego_side='b'):  # 重置位置和状态
         self.R_cage = self.R_cage0
         if self.vertices is not None:
             self.horizontal_center = np.mean(self.vertices, axis=0)
@@ -183,7 +186,8 @@ class Battle(object):
             self.horizontal_center = horizontal_center
 
         self.ego_side = ego_side
-        # debug
+        
+        self.last_record_t = -10
         
         # [新增] 如果需要支持随机种子控制，可以在这里设置
         if seed is not None:
@@ -204,8 +208,8 @@ class Battle(object):
         self.dt_maneuver = dt_maneuver  # simulation interval，1 second
         self.t = 0
         # 初始化无人机
-        self.Rnum = 3 # test
-        self.Bnum = 5 # 2
+        self.Rnum = red_init_num
+        self.Bnum = blue_init_num
         self.RUAVsTable = {}
         self.BUAVsTable = {}
         self.UAVsTable = {}
@@ -287,7 +291,10 @@ class Battle(object):
             UAV.got_hit = False
             UAV.radar_on = 1
             UAV.radar_center = np.array([0, 0]) # 雷达中心相对方位的归一化值，先水平后垂直
-            UAV.escape_once = 0
+            UAV.escape_once = 0 # 逃脱导弹攻击
+            UAV.got_a_miss = 0 # 发射的导弹脱靶
+            UAV.got_a_kill = 0 # 发射的导弹命中目标
+            UAV.can_let_go = 0 # 发射的导弹锁定目标
             
             if is_red:
                 self.RUAVsTable[UAV.id] = UAV
@@ -307,36 +314,43 @@ class Battle(object):
         self.RMissileTable = {}
         self.BMissileTable = {}
         self.MissileTable = {}
-        
-    def update_missile_state(self):
-        alive_r_missiles = [m for m in self.Rmissiles if not m.dead]
-        alive_b_missiles = [m for m in self.Bmissiles if not m.dead]
-        self.alive_r_missiles = alive_r_missiles
-        self.alive_b_missiles = alive_b_missiles
-        self.alive_missiles = alive_r_missiles + alive_b_missiles
-
-    def update_uav_state(self):
+    
+    # 更新所有实体状态
+    def update_entity_states(self,):
+        # 更新飞机存活状态
         alive_r_uavs = [u for u in self.RUAVs if not u.dead]
         alive_b_uavs = [u for u in self.BUAVs if not u.dead]
         self.alive_r_uavs = alive_r_uavs
         self.alive_b_uavs = alive_b_uavs
         self.alive_uavs = alive_r_uavs + alive_b_uavs
-        
-    # 根据id查找实体
+        # 更新导弹存活状态
+        alive_r_missiles = [m for m in self.Rmissiles if not m.dead]
+        alive_b_missiles = [m for m in self.Bmissiles if not m.dead]
+        self.alive_r_missiles = alive_r_missiles
+        self.alive_b_missiles = alive_b_missiles
+        self.alive_missiles = alive_r_missiles + alive_b_missiles
+        # 统计未发射导弹数
+        self.unused_r_missile_num = 0
+        self.unused_b_missile_num = 0
+        for uav in self.RUAVs:
+            self.unused_r_missile_num += 0 if uav.dead else uav.ammo
+        for uav in self.BUAVs:
+            self.unused_b_missile_num += 0 if uav.dead else uav.ammo
+
+    # 根据飞机id查找飞机类实例
     def find_uav_with_id(self, id):
         uav = self.UAVsTable[id]
         return uav
-    
+    # 根据导弹id查找导弹类实例
     def find_missile_with_id(self, id):
         missile = self.MissileTable[id]
         return missile
-
+    
     def index2id(self, ego_id, target_index, relation='enm'):
         """
         将神经网络视角的 index 转换为环境中的真实实体 id
         """
         ego = self.find_uav_with_id(ego_id)
-        
         if relation == 'enm':
             # 查敌机：直接取对侧的 id 列表
             enm_ids = self.BUAV_ids if ego.side == 'r' else self.RUAV_ids
@@ -377,7 +391,7 @@ class Battle(object):
             except:
                 pass
         
-
+    # 发射中距弹
     def launch_120(self, source_id, target_id):
         """
         source_id: 发射导弹的无人机 id
@@ -386,13 +400,13 @@ class Battle(object):
         uav = self.find_uav_with_id(source_id)
         target = self.find_uav_with_id(target_id)
         side = uav.side
-
         # 发射导弹
         if uav.ammo>0 and not uav.dead:
             new_missile = uav.launch_120(target, self.t, aim120)
             uav.ammo -= 1
             new_missile.side = side
-            new_missile.guider_id = source_id
+            new_missile.launcher_id = source_id
+            new_missile.target_id = target_id
             if side == 'r':
                 self.Rmissiles.append(new_missile)
                 self.r_missile_count += 1
@@ -403,24 +417,23 @@ class Battle(object):
                 self.b_missile_count += 1
                 new_missile.id = 301 + self.b_missile_count
                 self.BMissileTable[new_missile.id] = new_missile
-            
-            
             self.MissileTable = {**self.RMissileTable, **self.BMissileTable}
-
             return new_missile
         return None
-
+    
+    # 发射近距弹
     def launch_9x(self, source_id, target_id):
         uav = self.find_uav_with_id(source_id)
         target = self.find_uav_with_id(target_id)
         side = uav.side
-
         # 发射导弹
-        if uav.ammo>0 and not uav.dead:
-            new_missile = uav.launch_9x(target, self.t, aim120)
-            uav.ammo -= 1
+        if uav.ammo_9x>0 and not uav.dead:
+            new_missile = uav.launch_9x(target, self.t, aim9x)
+            if new_missile is None:
+                return None
             new_missile.side = side
-            new_missile.guider_id = source_id
+            new_missile.launcher_id = source_id
+            new_missile.target_id = target_id
             if side == 'r':
                 self.Rmissiles.append(new_missile)
                 self.r_missile_count += 1
@@ -431,14 +444,11 @@ class Battle(object):
                 self.b_missile_count += 1
                 new_missile.id = 301 + self.b_missile_count
                 self.BMissileTable[new_missile.id] = new_missile
-            
-            
             self.MissileTable = {**self.RMissileTable, **self.BMissileTable}
-
             return new_missile
         return None
 
-    # todo 输入动作打包为大小不确定的量
+    # TODO 输入动作打包为大小不确定的量
     def step(self, flight_cmds):
         "flight_cmds 为一个list, 用id顺序排列所有飞机"
         # "actions_of_ids: {id: action}"
@@ -451,7 +461,10 @@ class Battle(object):
 
         # 在整个 maneuver step 开始时只重置一次 escape_once（不要在内层子步或导弹循环中再次重置）
         for UAV in self.UAVs:
-            UAV.escape_once = 0
+            UAV.escape_once = 0 # 逃脱导弹攻击
+            UAV.got_a_miss = 0 # 发射的导弹脱靶
+            UAV.got_a_kill = 0 # 发射的导弹命中目标
+            UAV.can_let_go = 0 # 发射的导弹锁定目标
 
         # 导弹发射不在这里执行，这里只处理运动解算，且发射在step之前
         # 运动按照dt_move更新，结果合并到dt_maneuver中
@@ -530,8 +543,6 @@ class Battle(object):
 
         # 导弹发射不在这里执行，这里只处理运动解算，且发射在step之前
         # 运动按照dt_move更新，结果合并到dt_maneuver中
-
-
         for j1 in range(int(report_move_time_rate)):
             # 飞机移动
             for UAV, action in zip(self.UAVs, flight_cmds):
@@ -631,7 +642,7 @@ class Battle(object):
                     UAV.move(target_delta_height, target_delta_heading, target_speed, relevant_height=True, e2e=0, rudder=rudder)
 
             # 导弹移动
-            self.update_missile_state() # 先把存活的导弹找出来
+            self.update_entity_states() # 先把存活的导弹找出来
             for missile in self.alive_missiles[:]:  # 使用切片创建副本以允许删除
                 target = self.find_uav_with_id(missile.target_id)
                 # todo 干扰或更换目标逻辑，写在这里，箔条设置为从属于UAV的属性 
@@ -640,9 +651,9 @@ class Battle(object):
                 if target is None:  # 目标不存在, 不更换目标而是击毁导弹
                     missile.dead = True
                     continue
-                elif target.dead:  # test 目标死亡, 不更换目标而是击毁导弹
-                    missile.dead = True # todo 多对多环境中改成missile.target = None, 并在missile类里改成丢失目标飞直线，并且无法触发hit
-                    continue
+                # elif target.dead:  # test 目标死亡, 不更换目标而是击毁导弹
+                #     missile.dead = True # todo 多对多环境中改成missile.target = None, 并在missile类里改成丢失目标飞直线，并且无法触发hit
+                #     continue
                 else:
                     missile.target = target
                 # if not missile.dead:
@@ -674,6 +685,12 @@ class Battle(object):
                     missile.dead = True
                 if missile.t > missile.t_max:  # 超时自爆
                     missile.dead = True
+                if (not missile.dead) and \
+                    (missile.last_guidance_stage == 2 and missile.guidance_stage == 3):
+                    # 谁扔的刀锁到人了
+                    shooter = self.find_uav_with_id(missile.launcher_id)
+                    shooter.can_let_go = 1
+
                 if missile.t >= 0 + self.dt_move and not target.dead:  # 只允许目标被命中一次, 在同一个判定时间区间内可能命中多次
                     hit, point_m, point_t = hit_target(last_pmt_, last_vmt_, last_ptt_, last_vtt_,
                                                        dt=self.dt_move, kill_range=missile.kill_range)
@@ -689,12 +706,17 @@ class Battle(object):
                         target.got_hit = True
                         target.radar_on = 0
                         self.UAV_shot[self.UAV_ids.index(target.id)] = True
+                        # 谁扔的刀扎到人了
+                        shooter = self.find_uav_with_id(missile.launcher_id)
+                        shooter.got_a_kill = 1
 
                 if missile.dead == True and not target.dead:
-                    target.escape_once = 1
                     # 目标逃脱
-                # else:
-                #     target.escape_once = 0
+                    target.escape_once = 1
+                    # 谁扔的刀把
+                    shooter = self.find_uav_with_id(missile.launcher_id)
+                    shooter.got_a_miss = 1
+
 
             # 飞机接收毁伤判别信息
             for i, UAV in enumerate(self.UAVs):
@@ -720,7 +742,7 @@ class Battle(object):
                 # self.running = False
 
         # 更新UAV信息
-        self.update_uav_state()  # 更新飞机存活信息
+        self.update_entity_states()  # 更新飞机存活信息
 
         return 0, 0, 0, 0, 0  # 废弃不再使用了
 
@@ -993,12 +1015,11 @@ class Battle(object):
                 float(q_epsilon), # 14
             ]))
 
-
         #------------------------
         # 导弹信息向量，协同制导我还没想清楚要如何做，先按不做的来
         #------------------------
         alive_ally_missiles = self.alive_r_missiles if ego_side=='r' else self.alive_b_missiles
-        alive_ego_missiles = [m for m in alive_ally_missiles if m.guider_id == ego.id]
+        alive_ego_missiles = [m for m in alive_ally_missiles if m.launcher_id == ego.id]
         ally_missile_info = []
         # 看不到队友发射的导弹，只看到自己的，协同制导时改变处理方式
         for missile in alive_ego_missiles:
@@ -1332,8 +1353,8 @@ class Battle(object):
                                     f"{0.0:.6f}|{missile.theta * 180 / pi:.6f}|{missile.psi * 180 / pi:.6f},"
                                     f"Name={missile.WeaponType},Color={color}\n"
                                     )
-                    # 导弹雷达波束显示
-                    if getattr(missile, 'radar_on', 0):
+                    # 导弹雷达波束显示（9x为红外弹，radar_on只表示视场，不画波束）
+                    if getattr(missile, 'radar_on', 0) and not isinstance(missile, aim9x):
                         # 导弹锁定哪个目标的判别还没有，先不画锁定
                         data_to_send += (
                             f"{missile.id+1000},T={loc_m[0]:.6f}|{loc_m[1]:.6f}|{loc_m[2]:.6f}|"
@@ -1341,7 +1362,7 @@ class Battle(object):
                             f"Type=Beam, Color={color},Visible=0.3,Radius=0.0,RadarMode=1,RadarRange={missile.detect_range:.1f}, RadarHorizontalBeamwidth=120, RadarVerticalBeamwidth=120\n"
                         )
                     else:
-                        # 导弹存活但雷达关闭，移除可能残留的雷达波束可视
+                        # 导弹存活但雷达关闭/红外弹，移除可能残留的雷达波束可视
                         data_to_send += f"#{send_t:.2f}\n-{missile.id+1000}\n"
 
             self.tacview.send_data_to_client(data_to_send)

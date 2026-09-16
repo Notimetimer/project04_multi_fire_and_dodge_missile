@@ -71,10 +71,13 @@ def hit_target(pmt_1, vmt_1, ptt_1, vtt_1, dt=0.02, kill_range=85):
     # 调大杀伤半径后直接根据两点距离取最小判别
     d1 = norm(M1-T1)
     d2 = norm(M2-T2)
+    d1_5 = norm((M1+M2)/2-(T1+T2)/2)
     if d1 <= kill_range:
         return 1, M1, T1
     elif d2 <= kill_range:
         return 1, M2, T2
+    elif d1_5 <= kill_range:
+        return 1, (M1+M2)/2, (T1+T2)/2
     else:
         return 0, M1, T1
     
@@ -173,6 +176,7 @@ class aim120:
         self.t_max = self.stage1_start + 110  # 120 电池工作时间
         self.t_go = 120
         self.trajectory = np.empty((0, 7))  # 导弹轨迹, 结构为时间、位置（3）、速度（3）
+        self.last_guidance_stage = 2 # 用于捕获上升沿
         self.guidance_stage = 2  # 2为中制导，3为末制导
         self.in_angle = 0
         self.in_distance = 0
@@ -504,6 +508,8 @@ class aim120:
 
     # 制导律选择
     def guidance(self, v_missile_, v_target_, p_missile_, p_target_, datalink):
+        # 更新前记录
+        self.last_guidance_stage = self.guidance_stage
         ptt_ = p_target_
         pmt_ = p_missile_
         line_t_ = ptt_ - pmt_

@@ -27,5 +27,6 @@
         "reportUndefinedVariable": "none"
     },
     // 如果 AntiGravity 使用了特定的分析引擎开关
-    "pyrefly.analysis.enable": false
+    "pyrefly.analysis.enable": false,
+    "python.REPL.enableREPLSmartSend": false
 }

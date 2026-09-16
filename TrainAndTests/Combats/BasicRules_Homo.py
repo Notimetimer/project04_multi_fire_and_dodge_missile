@@ -13,8 +13,9 @@ sys.path.append(project_root)
 from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import *
 from Math_calculates.sub_of_angles import *
 import re
+import csv
 
-use_tacview = 2  # 静默写入 acmi_records
+use_tacview = 1 # 动态显示  # 2  # 静默写入 acmi_records
 action_cycle_multiplier = 10
 
 def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
@@ -131,8 +132,8 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
 
     # 1. 计算初始的开火意图
     fire_120 = False
-    case1 = distance < 0.7*70e3 and (sin_theta >= sin(30*pi/180) or alt >= 9e3) # 105, 30
-    case2 = distance < 0.7*60e3 # 75e3
+    case1 = distance < 60e3 and (sin_theta >= sin(30*pi/180) or alt >= 9e3) # 105, 30
+    case2 = distance < 55e3 # 75e3
     if (case1 or case2) and ATA < 60 * pi/180 and abs(delta_psi) < 30*pi/180:
         if t_fired >= 40 and not on_guiding and not (distance>12e3 and abs(AA_hor) < 30*pi/180):
             fire_120 = True
@@ -401,7 +402,7 @@ if __name__=='__main__':
             DEFAULT_RED_BIRTH_STATE, DEFAULT_BLUE_BIRTH_STATE = creat_initial_state()
 
             env.reset(red_birth_state=DEFAULT_RED_BIRTH_STATE, blue_birth_state=DEFAULT_BLUE_BIRTH_STATE,
-                    red_init_ammo=4, blue_init_ammo=4)
+                    red_init_ammo=4, blue_init_ammo=4) # 4
             r_action_label=0
             b_action_label=0
             last_decision_state = None
@@ -533,7 +534,8 @@ if __name__=='__main__':
                     #     print("flight_cmds", flight_cmds[id])
 
                 env.step(flight_cmds.values()) # Environment updates every dt_maneuver
-                done, _, _, _ = env.combat_terminate_and_reward('r', None, action_cycle_multiplier)
+                for _id in env.UAV_ids: # 每架飞机都调用一遍，保证各自的周期事件都被积累
+                    done, _ = env.combat_terminate_and_reward(id=_id, action_shoots=None, action_cycle_multiplier=action_cycle_multiplier)
 
                 # b_reward = b_reward_event + b_reward_constraint + b_reward_shaping
 
@@ -548,6 +550,21 @@ if __name__=='__main__':
 
             env.clear_render(t_bias=t_bias)
             t_bias += env.t
+
+            # 保存本回合各机的事件日志，每架飞机一个csv
+            event_log_dir = os.path.join(project_root, 'acmi_records')
+            os.makedirs(event_log_dir, exist_ok=True)
+            for uav in env.UAVs:
+                events = getattr(uav, 'cycle_events', [])
+                if not events:
+                    continue
+                csv_path = os.path.join(event_log_dir, f'uav_{uav.id}_events.csv')
+                write_header = not os.path.exists(csv_path)
+                with open(csv_path, 'a', newline='', encoding='utf-8-sig') as f:
+                    writer = csv.writer(f)
+                    if write_header:
+                        writer.writerow(['time', 'id', 'event'])
+                    writer.writerows(events)
 
 
         training_end_time = time.time()  # 记录结束时间

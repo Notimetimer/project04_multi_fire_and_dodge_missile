@@ -142,7 +142,7 @@ class aim9x:
         self.stage2_start = self.stage1_start + self.stage1_time  # s
         self.stage2_end = self.stage1_start + self.stage1_time + self.stage2_time  # s
         # 杀伤半径
-        self.kill_range = 30 # 85 # 20  # 为了提高训练效率，这个半径可以被放大，从而避免变步长
+        self.kill_range = 40 # 85 # 20  # 为了提高训练效率，这个半径可以被放大，从而避免变步长
         # 最大过载
         self.max_g0 = 50
         self.max_g1 = 35
@@ -165,6 +165,7 @@ class aim9x:
         self.t_max = self.stage1_start + 65  # 电池工作时间
         self.t_go = 120
         self.trajectory = np.empty((0, 7))  # 导弹轨迹, 结构为时间、位置（3）、速度（3）
+        self.last_guidance_stage = 2 # 用于捕获上升沿
         self.guidance_stage = 2  # 2为中制导，3为末制导
         self.in_angle = 0
         self.in_distance = 0
@@ -357,6 +358,8 @@ class aim9x:
 
     # 制导律选择
     def guidance(self, v_missile_, v_target_, p_missile_, p_target_, datalink):
+        # 更新前记录
+        self.last_guidance_stage = self.guidance_stage
         if self.lock_on:
             self.A_pole_moment = int(self.guidance_stage == 2)
             self.guidance_stage = 3

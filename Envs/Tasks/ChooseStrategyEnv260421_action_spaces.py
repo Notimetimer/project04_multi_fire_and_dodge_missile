@@ -73,9 +73,12 @@ class ChooseStrategyEnv(Battle):
         # [新增] 初始化 last_obs 属性，用于记录上一帧状态以计算瞬时奖励
         self.last_obs = None
 
-    def reset(self, red_birth_state=None, blue_birth_state=None, red_init_ammo=4, blue_init_ammo=4, pomdp=1, ego_side='b'):
+    def reset(self, red_birth_state=None, blue_birth_state=None, red_init_num=2, blue_init_num=2,
+              red_init_ammo=4, blue_init_ammo=4, pomdp=1, ego_side='b'):
         # 1. 调用父类 Battle 的 reset 方法，执行所有通用初始化
-        super().reset(red_birth_state, blue_birth_state, red_init_ammo, blue_init_ammo, ego_side=ego_side)
+        super().reset(red_birth_state=red_birth_state, blue_birth_state=blue_birth_state,
+                      red_init_num=red_init_num, blue_init_num=blue_init_num,
+                      red_init_ammo=red_init_ammo, blue_init_ammo=blue_init_ammo, ego_side=ego_side)
         # # 初始化红蓝远离速度
         # self.last_dist_dot = None
         # self.last_dhor = None
@@ -83,6 +86,13 @@ class ChooseStrategyEnv(Battle):
         # [新增] 初始化 last_dead 属性，防止死亡惩罚重复计算
         for ego in self.UAVsTable.values():
             ego.last_dead = False
+            # 周期事件缓存：瞬时标志 -> 整周期标志 -> 周期边界统一结算
+            ego.whole_cycle_escape_once = 0
+            ego.whole_cycle_got_a_miss = 0
+            ego.whole_cycle_got_a_kill = 0
+            ego.whole_cycle_can_let_go = 0
+            ego.cycle_events = []          # [(t, id, 事件内容)]
+            ego.last_cycle_t = -1e9        # 本机上次结算周期边界的时间戳
 
         # [确认存在/修改] 确保每个 Episode 开始时重置 last_obs
         self.last_obs = None 
@@ -263,7 +273,7 @@ class ChooseStrategyEnv(Battle):
         # 1. 我死了
         case1 = ego.dead
         # 2. 没有弹药
-        case2 = (ego.ammo == 0)
+        case2 = (ego.ammo_9x == 0)
 
         # 绝对禁止开火情况
         if case1 or case2 :
@@ -469,7 +479,7 @@ class ChooseStrategyEnv(Battle):
 
 
     # 综合动作空间（考虑队友和综合情况）
-    def maneuver_complex(self, id, action):
+    def go_back(self, id, full_obs_at_the_moment):
         pass
                             
     # 近距杀方法，多对多也能用（加了print）
@@ -505,3 +515,32 @@ class ChooseStrategyEnv(Battle):
                         ruav.dead = True
                         ruav.got_hit = True
                         print('近距单杀')
+
+    # 近距格斗弹自动发射，多对多也能用（规则控制，不需要RL）
+    def close_range_shoot(self, fire_range=8e3, fire_angle=pi/3, cooldown=5):
+        for uav in self.UAVs:
+            if uav.dead:
+                continue
+            # 9x 弹药与开火冷却检查（冷却只在 uav.launch_9x 内部查，这里提前拦截防崩）
+            if uav.ammo_9x <= 0 or self.t - uav.last_9x_launch_time < cooldown:
+                continue
+            enemies = self.BUAVs if uav.red else self.RUAVs
+            # 找最近的存活敌机
+            target, min_dist = None, fire_range
+            for enm in enemies:
+                if enm.dead:
+                    continue
+                dist = norm(enm.pos_ - uav.pos_)
+                if dist < min_dist:
+                    target, min_dist = enm, dist
+            if target is None:
+                continue
+            # 角度条件：目标位于本机速度方向的离轴锥角内
+            L_ = target.pos_ - uav.pos_
+            cos_ATA = np.dot(uav.vel_, L_) / (uav.speed * min_dist + 1e-8)
+            if cos_ATA < cos(fire_angle):
+                continue
+            # 调用唯一注册入口，严禁直接修改self.Rmissiles或self.Bmissiles
+            new_missile = self.launch_9x(uav.id, target.id)
+            if new_missile is not None:
+                print(f'{uav.side}侧{uav.id}近距格斗弹发射')
