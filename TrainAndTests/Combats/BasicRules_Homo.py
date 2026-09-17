@@ -568,7 +568,7 @@ if __name__=='__main__':
                 with open(csv_path, 'a', newline='', encoding='utf-8-sig') as f:
                     writer = csv.writer(f)
                     if write_header:
-                        writer.writerow(['time', 'id', 'event'])
+                        writer.writerow(['time', 'id', 'dense_reward', 'end_reward', 'event_reward', 'event'])
                     writer.writerows(events)
 
 

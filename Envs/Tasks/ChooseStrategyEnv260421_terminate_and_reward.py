@@ -49,6 +49,13 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
         MISS_WEIGHT = 5             # 脱靶
         ESCAPE_ONCE_WEIGHT = 5      # 逃脱一次
         FOX3 = -5                   # 发射一枚导弹的基础惩罚
+        
+        # 各个分项总奖励
+        reward_dict = {
+            "event": 0,
+            "end": 0,
+            "shaping": 0
+        }
         # --- [新增] 态势记录 ---
         # 计算是否到达记录周期
         cycle_time = self.dt_maneuver * action_cycle_multiplier
@@ -138,29 +145,45 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 outcome = None # 继续
                 done = 0
 
-        # 事件结算：周期边界 或 终局（防止最后一个不完整周期里的事件丢失）
+        # 事件结算 + 奖励：周期边界 或 终局（防止最后一个不完整周期里的事件丢失）
         # 每架飞机在各自的调用里只结算自己，last_cycle_t 防止同一时刻重复结算
-        cycle_event_reward = 0
         if event_reward_available or (done and getattr(ego, 'last_cycle_t', -1e9) != self.t):
             ego.last_cycle_t = self.t
+            t_now = (int(self.t/60), int(self.t%60))
+            # 密集奖励
+            reward_dict["shaping"] = 0
+
+            # 结果奖励
+            if outcome is not None:
+                reward_dict["end"] = outcome * END_REWARD_WEIGHT
+            
+            
+            
+            events_this_cycle = []
             # 本周期内刚死（last_dead只在此处更新，上一周期结束时已死的不重复记录）
             if ego.dead and not ego.last_dead:
-                ego.cycle_events.append(((int(self.t/60), int(self.t%60)), ego.id, '被击杀'))
-                cycle_event_reward += DIE_WEIGHT
+                events_this_cycle.append('被击杀')
+                reward_dict["event"] += DIE_WEIGHT
             ego.last_dead = bool(ego.dead)
             # 整周期内出现过的瞬时事件
             if getattr(ego, 'whole_cycle_can_let_go', 0):
-                ego.cycle_events.append(((int(self.t/60), int(self.t%60)), ego.id, '导弹锁定目标'))
-                cycle_event_reward += MSL_LOCK_WEIGHT
+                events_this_cycle.append('导弹锁定目标')
+                reward_dict["event"] += MSL_LOCK_WEIGHT
             if getattr(ego, 'whole_cycle_got_a_kill', 0):
-                ego.cycle_events.append(((int(self.t/60), int(self.t%60)), ego.id, '导弹命中目标'))
-                cycle_event_reward += KILL_WEIGHT
+                events_this_cycle.append('导弹命中目标')
+                reward_dict["event"] += KILL_WEIGHT
             if getattr(ego, 'whole_cycle_got_a_miss', 0):
-                ego.cycle_events.append(((int(self.t/60), int(self.t%60)), ego.id, '导弹脱靶'))
-                cycle_event_reward += MISS_WEIGHT
+                events_this_cycle.append('导弹脱靶')
+                reward_dict["event"] += MISS_WEIGHT
             if getattr(ego, 'whole_cycle_escape_once', 0):
-                ego.cycle_events.append(((int(self.t/60), int(self.t%60)), ego.id, '逃脱导弹攻击'))
-                cycle_event_reward += ESCAPE_ONCE_WEIGHT
+                events_this_cycle.append('逃脱导弹攻击')
+                reward_dict["event"] += ESCAPE_ONCE_WEIGHT
+            if outcome == 1:
+                events_this_cycle.append('获胜')
+            if outcome == -1:
+                events_this_cycle.append('落败')
+            if outcome == 0:
+                events_this_cycle.append('平局')
             ego.whole_cycle_escape_once = 0
             ego.whole_cycle_got_a_miss = 0
             ego.whole_cycle_got_a_kill = 0
@@ -168,24 +191,13 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             # 有发射导弹
             if ego.ammo < ego.last_ammo_whole_cycle:
                 current_target_id = ego.launched_aim120s[-1].target_id
-                ego.cycle_events.append(((int(self.t/60), int(self.t%60)), ego.id, f'向{current_target_id}开火'))
-                cycle_event_reward += FOX3
+                events_this_cycle.append(f'向{current_target_id}开火')
+                reward_dict["event"] += FOX3
                 ego.last_ammo_whole_cycle = ego.ammo
 
-        # 获取奖励
-        # 各个分项总奖励
-        reward_dict = {
-            "event": 0,
-            "end": 0,
-            "shaping": 0
-        }
-        # 事件奖励受时间戳保护（每架飞机在自己到达周期边界/终局的那次调用里结算）
-        reward_dict["event"] = cycle_event_reward
+            # 每个结算时间点只写一行：无事件时事件栏为空，三类奖励如实记0
+            ego.cycle_events.append((t_now, ego.id,
+                                     reward_dict["shaping"], reward_dict["end"], reward_dict["event"],
+                                     ';'.join(events_this_cycle)))
 
-        # 密集奖励
-        
-        # 结果奖励
-        if outcome is not None:
-            reward_dict["end"] = outcome * END_REWARD_WEIGHT
-        
         return done, reward_dict

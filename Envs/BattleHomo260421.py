@@ -1089,6 +1089,12 @@ class Battle(object):
             "weapon_infos": np.array(ally_missile_info),
             "RWR_infos": np.array(RWR_infos),
         }
+        one_state_fully_dict = {
+            "ego_main":{
+                
+            }
+
+        }
 
         ego.current_state = one_state
         return one_state
