@@ -153,12 +153,13 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             # 密集奖励
             reward_dict["shaping"] = 0
 
+            
+            reward_dict["shaping"] *= (1-ego.dead) # 死了没有密集奖励
+
             # 结果奖励
             if outcome is not None:
                 reward_dict["end"] = outcome * END_REWARD_WEIGHT
-            
-            
-            
+            # 事件奖励+调试输出
             events_this_cycle = []
             # 本周期内刚死（last_dead只在此处更新，上一周期结束时已死的不重复记录）
             if ego.dead and not ego.last_dead:
