@@ -431,8 +431,14 @@ if __name__=='__main__':
             fire_action_all = {}
             radar_action_all = {}
 
-            # 每帧观测记录，回合结束统一存 .pt
-            obs_records = []
+            # 每架飞机逐帧观测记录，回合结束分别保存为 3 个 .pkl
+            agent_obs_records = {
+                _id: {
+                    'agent_input': [],
+                    'mask_input': [],
+                    'rule_input': []
+                } for _id in env.UAV_ids
+            }
 
             # 环境运行一轮的情况
             steps_of_this_eps = -1 # 没办法了
@@ -450,22 +456,14 @@ if __name__=='__main__':
                 rule_inputs_ = {}
 
                 for id in env.UAV_ids:
-                    agent_input, mask_input, rule_input  = env.get_obs(id, pomdp=0)
+                    agent_input, mask_input, rule_input = env.get_obs(id, pomdp=0)
                     agent_inputs_[id] = agent_input
                     mask_inputs_[id] = mask_input
                     rule_inputs_[id] = rule_input
 
-                # 每帧记录三种观测（时间戳 + 各机内容）
-                obs_records.append({
-                    't': env.t,
-                    'uavs': {
-                        _id: {
-                            'agent_input': agent_inputs_[_id],
-                            'mask_input': mask_inputs_[_id],
-                            'rule_input': rule_inputs_[_id],
-                        } for _id in env.UAV_ids
-                    }
-                })
+                    agent_obs_records[id]['agent_input'].append(agent_input)
+                    agent_obs_records[id]['mask_input'].append(mask_input)
+                    agent_obs_records[id]['rule_input'].append(rule_input)
 
                 # 记忆逻辑改到环境端进行，算法端不再处理原始数据的记忆
 
@@ -591,13 +589,15 @@ if __name__=='__main__':
                         writer.writerow(['time', 'id', 'dense_reward', 'end_reward', 'event_reward', 'event'])
                     writer.writerows(events)
 
-            # 保存本回合逐帧观测为 .pkl
-            obs_save_path = os.path.join(
-                event_log_dir,
-                f'obs_records_{time.strftime("%Y%m%d_%H%M%S")}_ep{i_episode}.pkl')
-            with open(obs_save_path, 'wb') as f:
-                pickle.dump(obs_records, f)
-            print(f'逐帧观测已保存: {obs_save_path}')
+            # 保存本回合各 agent 的 3 种观测为 .pkl
+            for _id in env.UAV_ids:
+                for obs_key in ['agent_input', 'mask_input', 'rule_input']:
+                    obs_save_path = os.path.join(
+                        event_log_dir,
+                        f'round{i_episode}_agent{_id}_{obs_key}.pkl')
+                    with open(obs_save_path, 'wb') as f:
+                        pickle.dump(agent_obs_records[_id][obs_key], f)
+                    print(f'逐帧观测已保存: {obs_save_path}')
 
 
         training_end_time = time.time()  # 记录结束时间
