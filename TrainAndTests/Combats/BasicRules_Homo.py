@@ -460,10 +460,10 @@ if __name__=='__main__':
                     agent_inputs_[id] = agent_input
                     mask_inputs_[id] = mask_input
                     rule_inputs_[id] = rule_input
-
-                    agent_obs_records[id]['agent_input'].append(agent_input)
-                    agent_obs_records[id]['mask_input'].append(mask_input)
-                    agent_obs_records[id]['rule_input'].append(rule_input)
+                    if steps_of_this_eps % action_cycle_multiplier == 0:
+                        agent_obs_records[id]['agent_input'].append(agent_input)
+                        agent_obs_records[id]['mask_input'].append(mask_input)
+                        agent_obs_records[id]['rule_input'].append(rule_input)
 
                 # 记忆逻辑改到环境端进行，算法端不再处理原始数据的记忆
 
@@ -570,7 +570,19 @@ if __name__=='__main__':
                 '''显示运行轨迹'''
                 # 可视化
                 env.render(t_bias=t_bias)
-            
+
+            if done:
+                # 这里已经是最后的next_states
+                for id in env.UAV_ids:
+                    agent_input, mask_input, rule_input = env.get_obs(id, pomdp=0)
+                    agent_inputs_[id] = agent_input
+                    mask_inputs_[id] = mask_input
+                    rule_inputs_[id] = rule_input
+                    if steps_of_this_eps % action_cycle_multiplier == 0:
+                        agent_obs_records[id]['agent_input'].append(agent_input)
+                        agent_obs_records[id]['mask_input'].append(mask_input)
+                        agent_obs_records[id]['rule_input'].append(rule_input)
+
             episode_end_time = time.time()  # 记录结束时间
 
             env.clear_render(t_bias=t_bias)
