@@ -15,6 +15,7 @@ from Math_calculates.sub_of_angles import *
 import re
 import csv
 import glob
+import pickle
 
 use_tacview = 2 # 1 动态显示 2 静默写入 acmi_records
 action_cycle_multiplier = 10
@@ -34,36 +35,40 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
     num_mask_enm = len(mask_enm)
 
     # 本机信息
-    speed = rule_inputs["ego_main"][0]
-    alt = rule_inputs["ego_main"][1]
-    sin_theta = rule_inputs["ego_main"][3]
+    speed = rule_inputs["ego_main"]["v_ego"]
+    alt = rule_inputs["ego_main"]["h_ego"]
+    sin_theta = rule_inputs["ego_main"]["sin_theta"]
 
     # 地图信息
-    d_hor, leftright, d2center = rule_inputs["border"]
+    d_hor = rule_inputs["border"]["d_hor2border"]
+    leftright = rule_inputs["border"]["border_LR"]
+    d2center = rule_inputs["border"]["dist_from_center"]
 
     # 队友信息略过
     ally_info_list = rule_inputs["ally_infos"]
 
-    # 敌机信息
-    enm_info_list = np.array(rule_inputs["enm_infos"])
-    enm_distance_list = enm_info_list[:, 8]
-    enm_delta_theta_list = enm_info_list[:, 7]
-    enm_delta_psi_list = np.arctan2(enm_info_list[:, 6], enm_info_list[:, 5])
+    # 敌机信息（list[dict]，按字段名取值）
+    enm_info_list = rule_inputs["enm_infos"]
+    enm_distance_list = np.array([e["enm_dist"] for e in enm_info_list])
+    enm_delta_theta_list = np.array([e["enm_delta_theta"] for e in enm_info_list])
+    enm_delta_psi_list = np.arctan2(
+        np.array([e["sin_enm_delta_psi"] for e in enm_info_list]),
+        np.array([e["cos_enm_delta_psi"] for e in enm_info_list]))
     enm_delta_alt_list = enm_distance_list * np.sin(enm_delta_theta_list) # 相对高度
-    enm_ATA_list = enm_info_list[:, 9]
-    AA_hor_list = enm_info_list[:, 11]
-    enm_locked_list = enm_info_list[:, 3]
+    enm_ATA_list = np.array([e["enm_ATA"] for e in enm_info_list])
+    AA_hor_list = np.array([e["enm_AA"] for e in enm_info_list])
+    enm_locked_list = np.array([e["enm_locked"] for e in enm_info_list])
 
     # 武器信息
     weapon_infos = rule_inputs["weapon_infos"]
-    t_fired = weapon_infos[0] # 导弹发射计时
-    on_guiding = weapon_infos[3] # 中制导状态标志
+    t_fired = weapon_infos["missile_t_fly"] # 导弹发射计时
+    on_guiding = weapon_infos["mid_term"] # 中制导状态标志
 
     # 告警信息
     RWR_infos = rule_inputs["RWR_infos"]
-    RWR_list = np.array(RWR_infos[0]) # 告警灯标志
-    threat_delta_psi_list = np.arctan2(RWR_infos[2], RWR_infos[1])
-    threat_distance_list = np.array(RWR_infos[4]) # 威胁距离
+    RWR_list = np.array(RWR_infos["warning"]) # 告警灯标志
+    threat_delta_psi_list = np.arctan2(RWR_infos["sin_threat_delta_psi"], RWR_infos["cos_threat_delta_psi"])
+    threat_distance_list = np.array(RWR_infos["threat_distance"]) # 威胁距离
     
     if RWR_list.any():
         RWR = True
@@ -426,6 +431,9 @@ if __name__=='__main__':
             fire_action_all = {}
             radar_action_all = {}
 
+            # 每帧观测记录，回合结束统一存 .pt
+            obs_records = []
+
             # 环境运行一轮的情况
             steps_of_this_eps = -1 # 没办法了
             for count in range(round(args.max_episode_len / dt_maneuver)):
@@ -446,6 +454,18 @@ if __name__=='__main__':
                     agent_inputs_[id] = agent_input
                     mask_inputs_[id] = mask_input
                     rule_inputs_[id] = rule_input
+
+                # 每帧记录三种观测（时间戳 + 各机内容）
+                obs_records.append({
+                    't': env.t,
+                    'uavs': {
+                        _id: {
+                            'agent_input': agent_inputs_[_id],
+                            'mask_input': mask_inputs_[_id],
+                            'rule_input': rule_inputs_[_id],
+                        } for _id in env.UAV_ids
+                    }
+                })
 
                 # 记忆逻辑改到环境端进行，算法端不再处理原始数据的记忆
 
@@ -570,6 +590,14 @@ if __name__=='__main__':
                     if write_header:
                         writer.writerow(['time', 'id', 'dense_reward', 'end_reward', 'event_reward', 'event'])
                     writer.writerows(events)
+
+            # 保存本回合逐帧观测为 .pkl
+            obs_save_path = os.path.join(
+                event_log_dir,
+                f'obs_records_{time.strftime("%Y%m%d_%H%M%S")}_ep{i_episode}.pkl')
+            with open(obs_save_path, 'wb') as f:
+                pickle.dump(obs_records, f)
+            print(f'逐帧观测已保存: {obs_save_path}')
 
 
         training_end_time = time.time()  # 记录结束时间

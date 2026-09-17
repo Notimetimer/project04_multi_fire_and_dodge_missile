@@ -9,3 +9,4 @@
 *.pyc
 *.csv
 *.acmi
+/acmi_records

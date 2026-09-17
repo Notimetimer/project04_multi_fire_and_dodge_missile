@@ -138,77 +138,74 @@ class ChooseStrategyEnv(Battle):
                 ["enm_info", "ally_info", "weapon_info", "RWR_info"],
                 ["enm_infos", "ally_infos", "weapon_infos", "RWR_infos"]
             ):
-                temp_dict = {array_key: np.array([self.state_init_mod[key]])}
+                temp_dict = {array_key: [self.state_init_mod[key]]}
                 self.scaled_init_mod[key] = self.scale_state(temp_dict)[array_key][0]
 
+        # 敌机/队友的存活信息不进观测字典，由实体本身判断（与get_state中的排序一致）
+        enm_uavs = self.BUAVs if side == 'r' else self.RUAVs
+        ally_uavs = [u for u in (self.RUAVs if side == 'r' else self.BUAVs) if u.id != id]
+
         # 处理敌人，对死掉的敌人写mask
-        for i, enm in enumerate(full_state["enm_infos"]):
-            enm_alive = enm[0]
+        for i, enm in enumerate(enm_uavs):
             # 死掉的敌人，加mask和填充
-            if not enm_alive:
+            if enm.dead:
                 mask_enm[i] = 0
-                full_obs["enm_infos"][i] = self.scaled_init_mod["enm_info"]
+                full_obs["enm_infos"][i] = copy.deepcopy(self.scaled_init_mod["enm_info"])
 
         # 处理队友，对死掉的队友写mask，
-        for i, ally in enumerate(full_state["ally_infos"]):
-            ally_alive = ally[0]
+        for i, ally in enumerate(ally_uavs):
             # 死掉的队友，加mask和填充
-            if not ally_alive:
+            if ally.dead:
                 mask_ally[i] = 0
-                full_obs["ally_infos"][i] = self.scaled_init_mod["ally_info"]
+                full_obs["ally_infos"][i] = copy.deepcopy(self.scaled_init_mod["ally_info"])
 
         # 处理导弹（残留处理逻辑，手工注意力）
-        if len(full_obs["weapon_infos"]) == 0: # 空数组
-            full_obs["weapon_infos"] = self.scaled_init_mod["weapon_info"]
+        if len(full_obs["weapon_infos"]) == 0: # 空列表
+            full_obs["weapon_infos"] = copy.deepcopy(self.scaled_init_mod["weapon_info"])
         else:
             # 提取最近的发射
             min_launch_time = 120
             closest_weapon_info = None
-            for i, weapon_info in enumerate(full_state["weapon_infos"]):
-                launch_time = weapon_info[0]
+            for weapon_info in full_state["weapon_infos"]:
+                launch_time = weapon_info["missile_t_fly"]
                 if launch_time < min_launch_time:
                     min_launch_time = launch_time
                     closest_weapon_info = weapon_info
-            
+
             if closest_weapon_info is not None:
-                full_obs["weapon_infos"] = self.scale_state({"weapon_infos": np.array([closest_weapon_info])})["weapon_infos"][0]
+                full_obs["weapon_infos"] = self.scale_state({"weapon_infos": [closest_weapon_info]})["weapon_infos"][0]
             else:
-                full_obs["weapon_infos"] = self.scaled_init_mod["weapon_info"]
+                full_obs["weapon_infos"] = copy.deepcopy(self.scaled_init_mod["weapon_info"])
 
         # 处理威胁
         if len(full_obs["RWR_infos"]) == 0:
-            full_obs["RWR_infos"] = self.scaled_init_mod["RWR_info"]
+            full_obs["RWR_infos"] = copy.deepcopy(self.scaled_init_mod["RWR_info"])
         else:
             # 提取最近的威胁
             min_dist = 100e3
             closest_RWR_info = None
-            for i, RWR_info in enumerate(full_state["RWR_infos"]):
-                dist = RWR_info[4]
+            for RWR_info in full_state["RWR_infos"]:
+                dist = RWR_info["threat_distance"]
                 if dist < min_dist:
                     min_dist = dist
                     closest_RWR_info = RWR_info
-            
-            if closest_RWR_info is not None:
-                full_obs["RWR_infos"] = self.scale_state({"RWR_infos": np.array([closest_RWR_info])})["RWR_infos"][0]
-            else:
-                full_obs["RWR_infos"] = self.scaled_init_mod["RWR_info"]
 
-        ally_array = full_obs["ally_infos"]
-        enm_array  = full_obs["enm_infos"]
-        
-        # 拼接fixed
-        # 1. 简单做法
-        # fixed_order = self.key_order.copy()
-        # fixed_order.remove("ally_infos") # 直接调用，不管它的返回值
-        # fixed_order.remove("enm_infos")
-        # 2. 列表推导式
-        fixed_order = [k for k in self.key_order if k not in ["ally_infos", "enm_infos"]]
-        information_output['fixed'] = flatten_obs(full_obs, fixed_order)
+            if closest_RWR_info is not None:
+                full_obs["RWR_infos"] = self.scale_state({"RWR_infos": [closest_RWR_info]})["RWR_infos"][0]
+            else:
+                full_obs["RWR_infos"] = copy.deepcopy(self.scaled_init_mod["RWR_info"])
+
+        # 变长序列在神经网络输入边界展平为 (N, 特征数) 数组
+        ally_array = dicts2array(full_obs["ally_infos"], ALLY_KEYS)
+        enm_array  = dicts2array(full_obs["enm_infos"], ENM_KEYS)
+
+        # 拼接fixed（FIXED_OBS_SPEC 规定了各dict子字段的展平顺序）
+        information_output['fixed'] = flatten_fixed_obs(full_obs)
         information_output['ally'] = ally_array
         information_output['enm'] = enm_array
         mask_output['ally'] = mask_ally
         mask_output['enm'] = mask_enm
-        
+
         return information_output, mask_output, self.unscale_processed_obs(full_obs)
     
     # 不做策略蒸馏，删除反扁平化处理
@@ -217,9 +214,9 @@ class ChooseStrategyEnv(Battle):
     def unscale_processed_obs(self, obs_input):
 
         s = copy.deepcopy(obs_input)
-        # 封装为 2D 数组以适配 scale/unscale_state 中的 [:, idx] 语法
-        s["weapon_infos"] = np.array([s["weapon_infos"]])
-        s["RWR_infos"] = np.array([s["RWR_infos"]])
+        # 单个dict封装为list以适配 unscale_state 的遍历结构
+        s["weapon_infos"] = [s["weapon_infos"]]
+        s["RWR_infos"] = [s["RWR_infos"]]
 
         s1 = self.unscale_state(s)
 
@@ -264,10 +261,10 @@ class ChooseStrategyEnv(Battle):
         ego_state = self.get_state(source_id)
         
         # tabu 自变量
-        enm_locked = ego_state["enm_infos"][enm_index][3]
-        ATA = ego_state["enm_infos"][enm_index][9]
-        distance = ego_state["enm_infos"][enm_index][8]
-        AA_hor = ego_state["enm_infos"][enm_index][11]
+        enm_locked = ego_state["enm_infos"][enm_index]["enm_locked"]
+        ATA = ego_state["enm_infos"][enm_index]["enm_ATA"]
+        distance = ego_state["enm_infos"][enm_index]["enm_dist"]
+        AA_hor = ego_state["enm_infos"][enm_index]["enm_AA"]
 
         # 绝对禁止开火条件
         # 1. 我死了
@@ -323,10 +320,10 @@ class ChooseStrategyEnv(Battle):
         ego_state = self.get_state(source_id)
         
         # tabu 自变量
-        enm_locked = ego_state["enm_infos"][enm_index][3]
-        ATA = ego_state["enm_infos"][enm_index][9]
-        distance = ego_state["enm_infos"][enm_index][8]
-        AA_hor = ego_state["enm_infos"][enm_index][11]
+        enm_locked = ego_state["enm_infos"][enm_index]["enm_locked"]
+        ATA = ego_state["enm_infos"][enm_index]["enm_ATA"]
+        distance = ego_state["enm_infos"][enm_index]["enm_dist"]
+        AA_hor = ego_state["enm_infos"][enm_index]["enm_AA"]
 
         # 绝对禁止开火条件
         # 1. 我死了
@@ -386,15 +383,19 @@ class ChooseStrategyEnv(Battle):
         # 队友的方位没有考虑在动作空间里，暂不做压缩
         
         # 敌机信息
-        cos_delta_psi = enm_info[5]
-        sin_delta_psi = enm_info[6]
-        delta_theta = enm_info[7]
-        distance = enm_info[8]
-        speed = vice_uav_states["ego_main"][0]
-        alt = vice_uav_states["ego_main"][1]
-        d_hor, leftright, d2center = vice_uav_states["border"]
+        cos_delta_psi = enm_info["cos_enm_delta_psi"]
+        sin_delta_psi = enm_info["sin_enm_delta_psi"]
+        delta_theta = enm_info["enm_delta_theta"]
+        distance = enm_info["enm_dist"]
+        speed = vice_uav_states["ego_main"]["v_ego"]
+        alt = vice_uav_states["ego_main"]["h_ego"]
+        d_hor = vice_uav_states["border"]["d_hor2border"]
+        leftright = vice_uav_states["border"]["border_LR"]
+        d2center = vice_uav_states["border"]["dist_from_center"]
         delta_psi = atan2(sin_delta_psi, cos_delta_psi)
-        delta_psi_threat = atan2(vice_uav_states["RWR_infos"][2], vice_uav_states["RWR_infos"][1])
+        delta_psi_threat = atan2(vice_uav_states["RWR_infos"]["sin_threat_delta_psi"], vice_uav_states["RWR_infos"]["cos_threat_delta_psi"])
+
+        warning = vice_uav_states["RWR_infos"]["warning"]
 
         # 动作空间正交化
         action_v, action_h = action
@@ -428,15 +429,15 @@ class ChooseStrategyEnv(Battle):
             theta_desired = np.clip(theta_desired, -pi/4, pi/4) # 防止无效crank
         # 3线
         if action_h == 2:
-            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
+            delta_psi_temp = delta_psi_threat if warning else delta_psi
             delta_psi_cmd = sub_of_radian(delta_psi_temp - pi/2, 0)
         # 9线
         if action_h == 4:
-            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
+            delta_psi_temp = delta_psi_threat if warning else delta_psi
             delta_psi_cmd = sub_of_radian(delta_psi_temp + pi/2, 0)
         # 置尾机动
         if action_h == 3:
-            delta_psi_temp = delta_psi_threat if vice_uav_states["RWR_infos"][0] else delta_psi
+            delta_psi_temp = delta_psi_threat if warning else delta_psi
             delta_psi_cmd = np.clip(sub_of_radian(delta_psi_temp, pi), -pi/2, pi/2)
 
         # 回中心(连续动作空间离散化禁止使用)

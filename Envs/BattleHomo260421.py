@@ -65,6 +65,58 @@ R_birth = 40e3
 
 horizontal_center = np.array([0, 0])
 
+# ==================== 个体观测空间字段命名（规范见 Envs/接口.py） ====================
+EGO_MAIN_KEYS = ['v_ego', 'h_ego', 'cos_theta', 'sin_theta', 'cos_phi', 'sin_phi']
+EGO_CONTROL_KEYS = ['p', 'q', 'r', 'theta_v', 'psi_v', 'alpha_air', 'beta_air', 'Ny']
+RADAR_INFO_KEYS = ['radar_on']
+BORDER_KEYS = ['d_hor2border', 'border_LR', 'dist_from_center']
+ALLY_KEYS = ['radar_on', 'cos_ally_delta_psi', 'sin_ally_delta_psi', 'ally_delta_theta',
+             'ally_dist', 'v_ally', 'cos_ally_rel_heading', 'sin_ally_rel_heading', 'theta_ally']
+ENM_KEYS = ['enm_observable', 'enm_locked', 'locked_by_enm', 'cos_enm_delta_psi',
+            'sin_enm_delta_psi', 'enm_delta_theta', 'enm_dist', 'enm_ATA', 'v_enm', 'enm_AA']
+ENM_SUPPLEMENT_KEYS = ['enm_q_beta', 'enm_q_epsilon']
+WEAPON_KEYS = ['missile_t_fly', 'cos_msl_delta_psi', 'sin_msl_delta_psi', 'mid_term']
+RWR_KEYS = ['warning', 'cos_threat_delta_psi', 'sin_threat_delta_psi', 'threat_theta', 'threat_distance']
+
+# fixed 部分展平时的 (顶层key, 子字段序)，子字段序为 None 表示标量
+FIXED_OBS_SPEC = [
+    # ('ego_alive', None),
+    ('ego_main', EGO_MAIN_KEYS),
+    ('ego_control', EGO_CONTROL_KEYS),
+    ('radar_info', RADAR_INFO_KEYS),
+    ('ego_ammo', None), # None表示标量
+    ('border', BORDER_KEYS),
+    ('weapon_infos', WEAPON_KEYS),
+    ('RWR_infos', RWR_KEYS),
+]
+
+
+def _obs_items(x):
+    """list-of-dicts 或单个 dict 统一为可迭代的 dict 列表"""
+    if x is None:
+        return []
+    return x if isinstance(x, list) else [x]
+
+
+def dicts2array(dicts, keys):
+    """list-of-dicts -> (N, len(keys)) 的2D数组，供神经网络输入边界使用"""
+    if len(dicts) == 0:
+        return np.zeros((0, len(keys)), dtype=np.float32)
+    return np.array([[d[k] for k in keys] for d in dicts], dtype=np.float32)
+
+
+def flatten_fixed_obs(obs):
+    """按 FIXED_OBS_SPEC 顺序把 fixed 部分的 dict/标量 展平为一维数组"""
+    parts = []
+    for key, subkeys in FIXED_OBS_SPEC:
+        v = obs[key]
+        if subkeys is None:
+            parts.append(float(v)) # 标量直接加上
+        else:
+            for d in _obs_items(v):
+                parts.extend(float(d[k]) for k in subkeys)
+    return np.array(parts, dtype=np.float32)
+
 
 def sigmoid(x):
     return 1 / (1 + exp(-x))
@@ -746,51 +798,52 @@ class Battle(object):
         # 更新UAV信息
         self.update_entity_states()  # 更新飞机存活信息
 
-        return 0, 0, 0, 0, 0  # 废弃不再使用了
+        return None
 
     def _generate_state_init_mod(self):
-        # 部分观测填充值模板
+        # 部分观测填充值模板（字典结构，字段命名见 Envs/接口.py）
         state_init_mod = {}
         # 只有敌机、队友、已发射的导弹、来袭导弹需要这套模板
-        state_init_mod["ally_info"] = np.array([
-            1, # alive
-            1, # radar_on
-            -1, # cos(dealta_psi)
-            0, # sin(delta_psi)
-            0, # delta_tehta
-            100e3, # dist
-            300, # speed
-            0, # delta_psi_ally
-            0, # theta_ally
-        ], dtype='float64')
-        state_init_mod["enm_info"] = np.array([
-            1, # alive
-            1, # radar_on
-            2, # observable
-            0, # locked
-            0, # be locked
-            1, # cos(dealta_psi)
-            0, # sin(delta_psi)
-            0, # delta_tehta
-            100e3, # dist
-            0, # ATA
-            300, # speed
-            pi, # AA_hor
-            0, # AA_vert
-        ], dtype='float64')
-        state_init_mod["weapon_info"] = np.array([
-            120, # time
-            1, # sin
-            0, # sin 
-            0, # mid_guide
-        ], dtype='float64')
-        state_init_mod["RWR_info"] = np.array([
-            0, # warning
-            1, # cos
-            0, # sin
-            0, # delta_theta
-            100e3, # dist
-        ], dtype='float64')
+        state_init_mod["ally_info"] = {
+            'radar_on': 1,
+            'cos_ally_delta_psi': -1,
+            'sin_ally_delta_psi': 0,
+            'ally_delta_theta': 0,
+            'ally_dist': 100e3,
+            'v_ally': 300,
+            'cos_ally_rel_heading': 0,
+            'sin_ally_rel_heading': 0,
+            'theta_ally': 0,
+        }
+        state_init_mod["enm_info"] = {
+            'enm_observable': 2,
+            'enm_locked': 0,
+            'locked_by_enm': 0,
+            'cos_enm_delta_psi': 1,
+            'sin_enm_delta_psi': 0,
+            'enm_delta_theta': 0,
+            'enm_dist': 100e3,
+            'enm_ATA': 0,
+            'v_enm': 300,
+            'enm_AA': pi,
+        }
+        state_init_mod["enm_info_supplement"] = {
+            'enm_q_beta': 0,
+            'enm_q_epsilon': 0,
+        }
+        state_init_mod["weapon_info"] = {
+            'missile_t_fly': 120,
+            'cos_msl_delta_psi': 1,
+            'sin_msl_delta_psi': 0,
+            'mid_term': 0,
+        }
+        state_init_mod["RWR_info"] = {
+            'warning': 0,
+            'cos_threat_delta_psi': 1,
+            'sin_threat_delta_psi': 0,
+            'threat_theta': 0,
+            'threat_distance': 100e3,
+        }
         return state_init_mod
 
     # todo 观测信息要考虑到多对多的情况，不再只是两架飞机
@@ -812,24 +865,24 @@ class Battle(object):
         原始环境提供的状态信息，通过列表给出，供检查用，不可以直接输入进神经网络
         需要使用外挂状态输入结构转换（先填充为最大可处理数量的信息，未存在的导弹也要用填充值填充）
         '''
-        # 原先将所有量打包成一个 numpy array，这里改为 dict 结构
+        # 原先将所有量打包成一个 numpy array，这里改为 dict 结构（字段命名见 Envs/接口.py）
         self.key_order = [
             # 我机信息
             "ego_alive",  # 长度为1
-            "ego_main",  # 固定长度
-            "ego_control",  # 固定长度
+            "radar_info", 
+            "ego_main",  # 固定长度dict
+            "ego_control",  # 固定长度dict
             "ego_ammo",  # 剩余弹量
-            # 雷达信息
-            "Radar_info",  # 雷达开关状态，指向相对方位和俯仰（惯性系下）
-            "border", # 边界信息
+            "border", # 边界信息dict
             # 队友信息
-            "ally_infos",  # [存活、雷达开关状态、相对方位、相对俯仰角、相对距离、速度、航向角、俯仰角]*数量
+            "ally_infos",  # list[dict]
             # 敌机信息
-            "enm_infos",  # [存活、雷达开关状态、可见性、是否能锁定、是否锁定我、相对方位、相对俯仰角、相对距离、速度、hot/cold]*数量
+            "enm_infos",  # list[dict]
+            "enm_info_supplement",  # list[dict]，惯性系方位，供记忆/规则用，不进神经网络
             # 导弹信息（不区分发射机，预留接力制导空间）
-            "weapon_infos",  # [飞行时间、相对方位、是否可引导]*数量
+            "weapon_infos",  # list[dict]
             # 告警信息
-            "RWR_infos",  # [距离, 相对方位、相对俯仰]*数量
+            "RWR_infos",  # list[dict]
         ]
 
         ego = self.find_uav_with_id(id)
@@ -868,29 +921,31 @@ class Battle(object):
         
         # 死了关雷达
         if ego.dead: ego.radar_on=0
-        
+
         # 雷达信息
-        radar_info = np.array([ego.radar_on, 0, 0]) # 波束中心功能先空置
+        radar_info = {
+            "radar_on": ego.radar_on
+        }
+        
+        ego_main = {
+            'v_ego': float(v_ego),        # 本机速度 m/s
+            'h_ego': float(h_ego),        # 本机高度 m
+            'cos_theta': float(cos_theta),
+            'sin_theta': float(sin_theta),
+            'cos_phi': float(cos_phi),
+            'sin_phi': float(sin_phi),
+        }
 
-        ego_main = np.array([
-            float(v_ego),  # 0本机速度 m/s
-            float(h_ego),  # 1本机高度 m
-            float(cos_theta),  # 2
-            float(sin_theta),  # 3
-            float(cos_phi),  # 4
-            float(sin_phi),  # 5
-        ])
-
-        ego_control = np.array([
-            float(ego.p),  # 0 p rad/s act1_last
-            float(ego.q),  # 1 q rad/s act2_last
-            float(ego.r),  # 2 r rad/s act3_last
-            float(ego.theta_v),  # 3
-            float(ego.psi_v),  # 4
-            float(ego.alpha_air),  # 5 rad
-            float(ego.beta_air),  # 6 rad
-            float(ego.Ny),      # 7 overload
-        ])
+        ego_control = {
+            'p': float(ego.p),            # p rad/s act1_last
+            'q': float(ego.q),            # q rad/s act2_last
+            'r': float(ego.r),            # r rad/s act3_last
+            'theta_v': float(ego.theta_v),
+            'psi_v': float(ego.psi_v),
+            'alpha_air': float(ego.alpha_air),  # rad
+            'beta_air': float(ego.beta_air),    # rad
+            'Ny': float(ego.Ny),          # overload
+        }
 
         #------------------------
         # 2. 队友信息向量（所有队友，不管死活，都按id排序，如果队友死亡，照传不误）
@@ -924,21 +979,17 @@ class Battle(object):
             
             if ally.dead: ally.radar_on = 0
 
-            one_ally_info = np.array([
-                float(not ally.dead), # 0
-                float(ally.radar_on), # 1
-                float(cos(delta_psi)),  # 2
-                float(sin(delta_psi)),  # 3
-                float(delta_theta),   # 4
-                float(dist),          # 5
-                float(v_ally),        # 6
-                float(delta_psi_ally),# 7
-                float(theta_ally),    # 8
-                # # 惯性系下的位置关系，队友相对位置信息不需要暂不记忆
-                # float(dist), # 9
-                # float(q_beta), # 10
-                # float(q_epsilon), # 11
-            ])
+            one_ally_info = {
+                'radar_on': float(ally.radar_on),
+                'cos_ally_delta_psi': float(cos(delta_psi)),
+                'sin_ally_delta_psi': float(sin(delta_psi)),
+                'ally_delta_theta': float(delta_theta),
+                'ally_dist': float(dist),
+                'v_ally': float(v_ally),
+                'cos_ally_rel_heading': float(cos(delta_psi_ally)),
+                'sin_ally_rel_heading': float(sin(delta_psi_ally)),
+                'theta_ally': float(theta_ally),
+            }
 
             ally_infos.append(one_ally_info)
 
@@ -948,6 +999,7 @@ class Battle(object):
         #------------------------
         ego.lock_on = 0
         enm_infos = []
+        enm_info_supplement = []
         enm_uavs = self.RUAVs if ego_side =='b' else self.BUAVs
         for enm in enm_uavs:
             # 相对方位角
@@ -998,24 +1050,23 @@ class Battle(object):
                 locked_by_enm = 0
 
             if enm.dead: enm.radar_on=0
-            enm_infos.append(np.array([
-                float(not enm.dead), # 0
-                float(enm.radar_on), # 1
-                float(enm_observable), # 2
-                float(enm_locked), # 3
-                float(locked_by_enm), # 4
-                float(cos(delta_psi)), # 5
-                float(sin(delta_psi)), # 6
-                float(delta_theta), # 7
-                float(dist), # 8
-                float(ATA), # 9
-                float(enm_speed), # 10
-                float(AA_hor), # 11
-                float(AA_vert), # 12
-                # 惯性系下的位置关系，进入记忆，而非神经网络get_obs时候需要裁剪掉后面
-                float(q_beta), # 13
-                float(q_epsilon), # 14
-            ]))
+            enm_infos.append({
+                'enm_observable': float(enm_observable),
+                'enm_locked': float(enm_locked),
+                'locked_by_enm': float(locked_by_enm),
+                'cos_enm_delta_psi': float(cos(delta_psi)),
+                'sin_enm_delta_psi': float(sin(delta_psi)),
+                'enm_delta_theta': float(delta_theta),
+                'enm_dist': float(dist),
+                'enm_ATA': float(ATA),
+                'v_enm': float(enm_speed),
+                'enm_AA': float(AA_hor),
+            })
+            # 惯性系下的位置关系，进入记忆/规则，不进神经网络
+            enm_info_supplement.append({
+                'enm_q_beta': float(q_beta),
+                'enm_q_epsilon': float(q_epsilon),
+            })
 
         #------------------------
         # 导弹信息向量，协同制导我还没想清楚要如何做，先按不做的来
@@ -1034,15 +1085,12 @@ class Battle(object):
                 missile_in_mid_term = 1
             else:
                 missile_in_mid_term = 0
-            ally_missile_info.append(np.array([
-                float(missile.t),        # 飞行时间
-                float(cos(delta_psi)),  # 相对方位 cos
-                float(sin(delta_psi)),  # 相对方位 sin
-                float(missile_in_mid_term), # 中制导标志
-                # # get_obs时候需要裁剪掉后面
-                # float(q_beta), # 3
-                # float(q_epsilon), # 4
-            ]))
+            ally_missile_info.append({
+                'missile_t_fly': float(missile.t),        # 飞行时间
+                'cos_msl_delta_psi': float(cos(delta_psi)),
+                'sin_msl_delta_psi': float(sin(delta_psi)),
+                'mid_term': float(missile_in_mid_term),   # 中制导标志
+            })
 
         #------------------------
         # 告警信息向量, 不在环境里面做填充，有多少放多少
@@ -1059,99 +1107,96 @@ class Battle(object):
                 threat_delta_psi = sub_of_radian(threat_q_beta, ego.psi)
                 threat_theta = threat_q_epsilon
                 warning = threat_distance < enm_missile.detect_range  # 假设导弹的探测距离正好就是飞机的告警距离
-                RWR_infos.append(np.array([
-                    float(warning), # 0
-                    float(cos(threat_delta_psi)), # 1
-                    float(sin(threat_delta_psi)), # 2
-                    float(threat_theta), # 3
-                    float(threat_distance), # 4
-                    # # get_obs时候需要裁剪掉后面
-                    # float(threat_q_beta), # 5
-                    # float(threat_q_epsilon), # 6
-                ]))
+                RWR_infos.append({
+                    'warning': float(warning),
+                    'cos_threat_delta_psi': float(cos(threat_delta_psi)),
+                    'sin_threat_delta_psi': float(sin(threat_delta_psi)),
+                    'threat_theta': float(threat_theta),
+                    'threat_distance': float(threat_distance),
+                })
        
         one_state = {
-            "ego_alive": ego_alive,
             "ego_main": ego_main,
             "ego_control": ego_control,
             "ego_ammo": ammo,
-            "Radar_info": radar_info,
-            "border": np.array([
-                float(d_hor),  # 0
-                int(left_or_right),  # 1
-                float(norm([
-                    ego.pos_[0]-self.horizontal_center[0], 
+            "radar_info": radar_info,
+            "border": {
+                'd_hor2border': float(d_hor),
+                'border_LR': int(left_or_right),
+                'dist_from_center': float(norm([
+                    ego.pos_[0]-self.horizontal_center[0],
                     ego.pos_[2]-self.horizontal_center[1]
-                ])),  # 2 距离圈中心距离
-            ]),
-            "ally_infos": np.array(ally_infos),
-            "enm_infos": np.array(enm_infos),
-            "weapon_infos": np.array(ally_missile_info),
-            "RWR_infos": np.array(RWR_infos),
-        }
-        one_state_fully_dict = {
-            "ego_main":{
-                
-            }
-
+                ])),
+            },
+            "ally_infos": ally_infos,
+            "enm_infos": enm_infos,
+            "enm_info_supplement": enm_info_supplement,
+            "weapon_infos": ally_missile_info,
+            "RWR_infos": RWR_infos,
         }
 
         ego.current_state = one_state
         return one_state
     
-    # 尺度缩放
+    # 尺度缩放（按字段名索引）
     def scale_state(self, state_input):
         # 使用 deepcopy 避免修改传入对象
         s = copy.deepcopy(state_input)
         if "ego_main" in s and s["ego_main"] is not None:
-            s["ego_main"][0] /= 340
-            s["ego_main"][1] /= 5e3
+            s["ego_main"]["v_ego"] /= 340
+            s["ego_main"]["h_ego"] /= 5e3
         if "ego_control" in s and s["ego_control"] is not None:
-            s["ego_control"][0] /= (2 * pi)
-            s["ego_control"][1] /= (2 * pi)
-            s["ego_control"][2] /= (2 * pi)
-            s["ego_control"][7] /= 5 
+            s["ego_control"]["p"] /= (2 * pi)
+            s["ego_control"]["q"] /= (2 * pi)
+            s["ego_control"]["r"] /= (2 * pi)
+            s["ego_control"]["Ny"] /= 5
         if "border" in s and s["border"] is not None:
-            s["border"][0] = min(1, s["border"][0] / 50e3)
-            s["border"][2] /= self.R_cage
-        if "ally_infos" in s and len(s["ally_infos"]) > 0:
-            s["ally_infos"][:, 5] /= 50e3
-            s["ally_infos"][:, 6] /= 340
-        if "enm_infos" in s and len(s["enm_infos"]) > 0:
-            s["enm_infos"][:, 8] /= 50e3
-            s["enm_infos"][:, 10] /= 340
-            s["enm_infos"] = s["enm_infos"][:, :13]
-        if "weapon_infos" in s and len(s["weapon_infos"]) > 0:
-            s["weapon_infos"][:, 0] /= 120.0
-        if "RWR_infos" in s and len(s["RWR_infos"]) > 0:
-            s["RWR_infos"][:, 4] /= 50e3
+            s["border"]["d_hor2border"] = min(1, s["border"]["d_hor2border"] / 50e3)
+            s["border"]["dist_from_center"] /= self.R_cage
+        if "ally_infos" in s:
+            for ally in s["ally_infos"]:
+                ally["ally_dist"] /= 50e3
+                ally["v_ally"] /= 340
+        if "enm_infos" in s:
+            for enm in s["enm_infos"]:
+                enm["enm_dist"] /= 50e3
+                enm["v_enm"] /= 340
+        if "weapon_infos" in s:
+            for w in s["weapon_infos"]:
+                w["missile_t_fly"] /= 120.0
+        if "RWR_infos" in s:
+            for rwr in s["RWR_infos"]:
+                rwr["threat_distance"] /= 50e3
         return s
-    
+
     def unscale_state(self, obs_input):
         """把 scale_state 的缩放还原。仅判断 key 是否存在（不再检查长度）。"""
         s = copy.deepcopy(obs_input)
         if "ego_main" in s and s["ego_main"] is not None:
-            s["ego_main"][0] = s["ego_main"][0] * 340
-            s["ego_main"][1] = s["ego_main"][1] * 5e3
+            s["ego_main"]["v_ego"] *= 340
+            s["ego_main"]["h_ego"] *= 5e3
         if "ego_control" in s and s["ego_control"] is not None:
-            s["ego_control"][0] = s["ego_control"][0] * (2 * pi)
-            s["ego_control"][1] = s["ego_control"][1] * (2 * pi)
-            s["ego_control"][2] = s["ego_control"][2] * (2 * pi)
-            s["ego_control"][7] *= 5
+            s["ego_control"]["p"] *= (2 * pi)
+            s["ego_control"]["q"] *= (2 * pi)
+            s["ego_control"]["r"] *= (2 * pi)
+            s["ego_control"]["Ny"] *= 5
         if "border" in s and s["border"] is not None:
-            s["border"][0] = s["border"][0] * 50e3
-            s["border"][2] *= self.R_cage
-        if "ally_infos" in s and len(s["ally_infos"]) > 0:
-            s["ally_infos"][:, 5] *= 50e3
-            s["ally_infos"][:, 6] *= 340
-        if "enm_infos" in s and len(s["enm_infos"]) > 0:
-            s["enm_infos"][:, 8] *= 50e3
-            s["enm_infos"][:, 10] *= 340
-            # s["enm_infos"] = s["enm_infos"][:, :13] # 裁剪惯性系信息
-        if "weapon_infos" in s and len(s["weapon_infos"]) > 0:
-            s["weapon_infos"][:, 0] *= 120
-        if "RWR_infos" in s and len(s["RWR_infos"]) > 0:
-            s["RWR_infos"][:, 4] *= 50e3
+            s["border"]["d_hor2border"] *= 50e3
+            s["border"]["dist_from_center"] *= self.R_cage
+        if "ally_infos" in s:
+            for ally in s["ally_infos"]:
+                ally["ally_dist"] *= 50e3
+                ally["v_ally"] *= 340
+        if "enm_infos" in s:
+            for enm in s["enm_infos"]:
+                enm["enm_dist"] *= 50e3
+                enm["v_enm"] *= 340
+        if "weapon_infos" in s:
+            for w in s["weapon_infos"]:
+                w["missile_t_fly"] *= 120
+        if "RWR_infos" in s:
+            for rwr in s["RWR_infos"]:
+                rwr["threat_distance"] *= 50e3
         return s
     
     def base_obs(self, id, pomdp=0, reward_fn=0):
@@ -1179,55 +1224,54 @@ class Battle(object):
             不太高明的做法（但曾经有用）：
             冻结看不到的敌机信息，而不是用空token代替
             """
-            for i, enm_info in enumerate(state["enm_infos"]): 
+            for i, enm_info in enumerate(state["enm_infos"]):
                 # 1. 获取记忆 (Rolling Memory)
                 if ego.state_memory is None:
                     memory = copy.deepcopy(state)
                 else:
                     memory = copy.deepcopy(ego.state_memory)
                 # 2、观测限制，记忆重放逻辑
-                ATA = enm_info[9]
-                dist = enm_info[8]
-                
-                mem_inertial_beta = enm_info[13]
-                mem_inertial_epsilon = enm_info[14]
-                
+                ATA = enm_info["enm_ATA"]
+                dist = enm_info["enm_dist"]
+
+                mem_inertial_beta = state["enm_info_supplement"][i]["enm_q_beta"]
+                mem_inertial_epsilon = state["enm_info_supplement"][i]["enm_q_epsilon"]
+
                 blind_delta_psi = sub_of_radian(mem_inertial_beta, ego.psi)
                 blind_delta_theta = sub_of_radian(mem_inertial_epsilon, ego.theta)
-                
+
                 # 情况A: 超出探测距离 -> 完全不可见
                 if dist > ego.max_radar_range:
                     # 加载记忆
                     state["enm_infos"][i] = copy.deepcopy(memory["enm_infos"][i])
-                    state["enm_infos"][i][2] = 0 # 可见性评级
-                    state["enm_infos"][i][5] = cos(blind_delta_psi)
-                    state["enm_infos"][i][6] = sin(blind_delta_psi)
-                    state["enm_infos"][i][7] = blind_delta_theta
+                    state["enm_infos"][i]["enm_observable"] = 0 # 可见性评级
+                    state["enm_infos"][i]["cos_enm_delta_psi"] = cos(blind_delta_psi)
+                    state["enm_infos"][i]["sin_enm_delta_psi"] = sin(blind_delta_psi)
+                    state["enm_infos"][i]["enm_delta_theta"] = blind_delta_theta
                 # 情况B: 中距离
                 elif dist > 10e3:
-                    locked_by_enm = state["enm_infos"][i][4]
+                    locked_by_enm = state["enm_infos"][i]["locked_by_enm"]
                     # B1: 角度大 且 未被锁定 -> 完全不可见
                     if ATA > self.RUAV.max_radar_angle_rad and (not locked_by_enm):
                         # 加载记忆
                         state["enm_infos"][i] = copy.deepcopy(memory["enm_infos"][i])
-                        state["enm_infos"][i][2] = 0 # 完全不可见
-                        state["enm_infos"][i][5] = cos(blind_delta_psi)
-                        state["enm_infos"][i][6] = sin(blind_delta_psi)
-                        state["enm_infos"][i][7] = blind_delta_theta
+                        state["enm_infos"][i]["enm_observable"] = 0 # 完全不可见
+                        state["enm_infos"][i]["cos_enm_delta_psi"] = cos(blind_delta_psi)
+                        state["enm_infos"][i]["sin_enm_delta_psi"] = sin(blind_delta_psi)
+                        state["enm_infos"][i]["enm_delta_theta"] = blind_delta_theta
                     # B2: 角度大 但 被锁定 (RWR告警) -> 方位信息可见
                     elif ATA > self.RUAV.max_radar_angle_rad and locked_by_enm:
-                        state["enm_infos"][i][2] = 1 # 部分可见
-                        for idx in (8, 10):
-                            state["enm_infos"][i][idx] = memory["enm_infos"][i][idx]
-                            # 假设敌机正对着我
-                            state["enm_infos"][i][11] = pi
-                            state["enm_infos"][i][12] = 0
+                        state["enm_infos"][i]["enm_observable"] = 1 # 部分可见
+                        for key in ("enm_dist", "v_enm"):
+                            state["enm_infos"][i][key] = memory["enm_infos"][i][key]
+                        # 假设敌机正对着我
+                        state["enm_infos"][i]["enm_AA"] = pi
                     # B3: 角度合适 -> 完全可见
                     else:
-                        state["enm_infos"][i][2] = 2 # 完全可见
+                        state["enm_infos"][i]["enm_observable"] = 2 # 完全可见
                 # 情况C：近距
                 else:
-                    state["enm_infos"][i][2] = 2 # 完全可见  
+                    state["enm_infos"][i]["enm_observable"] = 2 # 完全可见
         else:
             # 不是pomdp，那记忆也没有意义了
             pass
@@ -1240,7 +1284,7 @@ class Battle(object):
             # 告警信息不可能冻结，队友信息也不需要冻结，所以只有敌机信息需要冻结
 
         # 裁剪掉需要裁剪的部分
-        state["enm_infos"][:] = state["enm_infos"][:13] # 裁剪掉惯性系信息
+        del state["enm_info_supplement"] # 惯性系信息不进神经网络观测
         # 剩余部分用作观测函数输出
         
         # 在把 state 传入 scale_state 之前移除时间戳 't'

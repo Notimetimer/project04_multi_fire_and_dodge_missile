@@ -60,20 +60,21 @@ for count in range(500):
         fly_actions = {}
         for id in env.UAV_ids:
             rule_inputs = rule_inputs_[id]
-            speed = rule_inputs["ego_main"][0]
-            alt = rule_inputs["ego_main"][1]
-            sin_theta = rule_inputs["ego_main"][3]
-            enm_info_list = np.array(rule_inputs["enm_infos"])
-            
+            speed = rule_inputs["ego_main"]["v_ego"]
+            alt = rule_inputs["ego_main"]["h_ego"]
+            sin_theta = rule_inputs["ego_main"]["sin_theta"]
+            enm_info_list = rule_inputs["enm_infos"]
+
             selected_index = 0
-            distance = enm_info_list[selected_index, 8]
-            delta_theta = enm_info_list[selected_index, 7]
-            delta_psi = np.arctan2(enm_info_list[selected_index, 6], enm_info_list[selected_index, 5])
-            ATA = enm_info_list[selected_index, 9]
-            AA_hor = enm_info_list[selected_index, 11]
+            enm_info = enm_info_list[selected_index]
+            distance = enm_info["enm_dist"]
+            delta_theta = enm_info["enm_delta_theta"]
+            delta_psi = np.arctan2(enm_info["sin_enm_delta_psi"], enm_info["cos_enm_delta_psi"])
+            ATA = enm_info["enm_ATA"]
+            AA_hor = enm_info["enm_AA"]
             weapon_infos = rule_inputs["weapon_infos"]
-            t_fired = weapon_infos[0]
-            on_guiding = weapon_infos[3]
+            t_fired = weapon_infos["missile_t_fly"]
+            on_guiding = weapon_infos["mid_term"]
             
             print(f"Step {count} UAV {id}: dist={distance/1000:.1f}km, sin_theta={sin_theta:.2f}, ATA={ATA*180/pi:.1f}deg, dPsi={delta_psi*180/pi:.1f}deg, AA={AA_hor*180/pi:.1f}deg, t_fired={t_fired}")
             
