@@ -233,12 +233,13 @@ class Battle(object):
             UAV.launch_states_order = None
             UAV.init_ammo = red_init_ammo if is_red else blue_init_ammo
             UAV.ammo = red_init_ammo if is_red else blue_init_ammo
+            UAV.last_ammo_whole_cycle = UAV.ammo
             UAV.id = (index_in_side + 1) if is_red else (index_in_side + 201)
             UAV.red = is_red
             UAV.blue = not is_red
             UAV.side = 'r' if is_red else 'b'
             UAV.color = np.array([1, 0, 0]) if is_red else np.array([0, 0, 1])
-            
+            UAV.launched_aim120s = []
             birth_state = red_birth_state if is_red else blue_birth_state
             
             # 出生点 (注意：使用 copy 防止修改外部传入的字典数据)
@@ -404,6 +405,7 @@ class Battle(object):
         if uav.ammo>0 and not uav.dead:
             new_missile = uav.launch_120(target, self.t, aim120)
             uav.ammo -= 1
+            uav.launched_aim120s.append(new_missile) # 无人机类自己也记录一份发射列表
             new_missile.side = side
             new_missile.launcher_id = source_id
             new_missile.target_id = target_id
@@ -1288,10 +1290,10 @@ class Battle(object):
                 if not UAV.dead:
                     if UAV.side == 'r':
                         color = 'Red'
-                        pilot = 'red'+str(UAV.id)
+                        pilot = str(UAV.id)#'red'+str(UAV.id)
                     elif UAV.side == 'b':
                         color = 'Blue'
-                        pilot = 'blue'+str(UAV.id)
+                        pilot = str(UAV.id)#'blue'+str(UAV.id)
                     else:
                         color = 'Black'
                         pilot = 'invader'+str(UAV.id)
@@ -1355,12 +1357,29 @@ class Battle(object):
                                     )
                     # 导弹雷达波束显示（9x为红外弹，radar_on只表示视场，不画波束）
                     if getattr(missile, 'radar_on', 0) and not isinstance(missile, aim9x):
-                        # 导弹锁定哪个目标的判别还没有，先不画锁定
-                        data_to_send += (
-                            f"{missile.id+1000},T={loc_m[0]:.6f}|{loc_m[1]:.6f}|{loc_m[2]:.6f}|"
-                            f"0|{missile.theta * 180 / pi:.6f}|{missile.psi * 180 / pi:.6f},"
-                            f"Type=Beam, Color={color},Visible=0.3,Radius=0.0,RadarMode=1,RadarRange={missile.detect_range:.1f}, RadarHorizontalBeamwidth=120, RadarVerticalBeamwidth=120\n"
-                        )
+                        lock_target = None
+                        if getattr(missile, 'lock_on', 0) and missile.target_id in self.UAVsTable:
+                            lock_target = self.find_uav_with_id(missile.target_id)
+                            if lock_target.dead:
+                                lock_target = None
+                        if lock_target is not None:
+                            # 已锁定：指向目标的细光束，与飞机雷达锁定同款画法
+                            delta_pos = lock_target.pos_ - missile.pos_
+                            dist = norm(delta_pos)
+                            q_beta = atan2(delta_pos[2], delta_pos[0])
+                            q_epsilon = atan2(delta_pos[1], sqrt(delta_pos[0]**2 + delta_pos[2]**2))
+                            data_to_send += (
+                                f"{missile.id+1000},T={loc_m[0]:.6f}|{loc_m[1]:.6f}|{loc_m[2]:.6f}|"
+                                f"0|{q_epsilon * 180 / pi:.6f}|{q_beta * 180 / pi:.6f},"
+                                f"Type=Beam, Color={color},Visible=0.7,Radius=0.0,RadarMode=1,RadarRange={dist:.1f}, RadarHorizontalBeamwidth=5, RadarVerticalBeamwidth=5\n"
+                            )
+                        else:
+                            # 未锁定：正常探测波束
+                            data_to_send += (
+                                f"{missile.id+1000},T={loc_m[0]:.6f}|{loc_m[1]:.6f}|{loc_m[2]:.6f}|"
+                                f"0|{missile.theta * 180 / pi:.6f}|{missile.psi * 180 / pi:.6f},"
+                                f"Type=Beam, Color={color},Visible=0.3,Radius=0.0,RadarMode=1,RadarRange={missile.detect_range:.1f}, RadarHorizontalBeamwidth=80, RadarVerticalBeamwidth=80\n"
+                            )
                     else:
                         # 导弹存活但雷达关闭/红外弹，移除可能残留的雷达波束可视
                         data_to_send += f"#{send_t:.2f}\n-{missile.id+1000}\n"

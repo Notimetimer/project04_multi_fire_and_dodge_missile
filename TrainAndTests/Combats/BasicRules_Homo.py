@@ -14,8 +14,9 @@ from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import *
 from Math_calculates.sub_of_angles import *
 import re
 import csv
+import glob
 
-use_tacview = 1 # 动态显示  # 2  # 静默写入 acmi_records
+use_tacview = 2 # 1 动态显示 2 静默写入 acmi_records
 action_cycle_multiplier = 10
 
 def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
@@ -393,6 +394,12 @@ if __name__=='__main__':
         r_guide_list = []
         b_guide_list = []
         
+        # 启动仿真前清空上次遗留的飞机事件csv
+        event_log_dir = os.path.join(project_root, 'acmi_records')
+        os.makedirs(event_log_dir, exist_ok=True)
+        for f in glob.glob(os.path.join(event_log_dir, 'uav_*_events.csv')):
+            os.remove(f)
+
         # 采集不同轨迹的动作
         for i_episode in range(1): # 5
 
@@ -552,8 +559,6 @@ if __name__=='__main__':
             t_bias += env.t
 
             # 保存本回合各机的事件日志，每架飞机一个csv
-            event_log_dir = os.path.join(project_root, 'acmi_records')
-            os.makedirs(event_log_dir, exist_ok=True)
             for uav in env.UAVs:
                 events = getattr(uav, 'cycle_events', [])
                 if not events:
