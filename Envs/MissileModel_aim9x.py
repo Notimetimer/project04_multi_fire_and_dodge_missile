@@ -155,7 +155,7 @@ class aim9x:
         # 最小速度
         self.speed_min = 0.65 * 340  # m/s
         # 最大视角
-        self.sight_angle_max = np.radians(90) # 极限离轴可能接近90度
+        self.sight_angle_max = np.radians(60) # 极限离轴可能接近90度
         # 最大跟踪视角速度
         self.sight_angle_rate_max = np.radians(75) # 0.7  # rad/s
         # 被告警距离

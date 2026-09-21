@@ -80,6 +80,38 @@ enm_info_supplement:[[
 
 
 三、动作空间：
+actor内部区分：
+
+A.关于RWR（RWR响起时强制进入这个）: 
+        A0 尾后机动且下高
+                环境动作 maneuver_for_1_enm: action_v = 2
+                环境动作 maneuver_for_1_enm: action_h = 3
+        A1 三九线机动且下高
+                环境动作 maneuver_for_1_enm: action_v = 2
+                环境动作 maneuver_for_1_enm: action_h = 2 if threat_delta_psi > 0 else 4
+
+B.关于队友: 
+        暂无启动条件
+
+C.关于敌机: 
+        敌机选取，输出目标条件
+                关于敌机的机动
+                action_v:
+                        C1-0 爬升          -->  环境动作 maneuver_for_1_enm: action_v=0
+                        C1-1 指向敌机      -->  环境动作 maneuver_for_1_enm: action_v=1
+                        C1-2 下降          -->  环境动作 maneuver_for_1_enm: action_v=2
+                action_h:
+                        C2-0 指向          -->  环境动作 maneuver_for_1_enm: action_h=0
+                        C2-1 右crank       -->  环境动作 maneuver_for_1_enm: action_h=1
+                        C2-2 尾后          -->  环境动作 maneuver_for_1_enm: action_h=3
+                        C2-3 左crank       -->  环境动作 maneuver_for_1_enm: action_h=5
+                action_fire:
+                        C3-1 开火
+                        C3-0 不开火
+
+D.无敌时刻（敌机全被消灭，且我机没有被雷达照射）：
+        暂无启动条件
+
 
 
 

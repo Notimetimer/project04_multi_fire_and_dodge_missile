@@ -103,9 +103,9 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
         if RWR and threat_distance < escape_distance_list[rules_num]: # 受到威胁
             # 优先俯冲回转至5000m以下
             if alt > 5000:
-                action_v = 4 # -60度俯冲
+                action_v = 2 # -60度俯冲
             else:
-                action_v = 2 # 平飞
+                action_v = 1 # 平飞
 
             # 置尾机动
             action_h = 6 # 水平方向背离
@@ -117,7 +117,7 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
             #     action_h = 4 # 3线
 
         else:
-            action_v = 2 # 平飞
+            action_v = 1 # 平飞
             action_h = 0 # 回中心
             # maneuver_cmds = 7
 
@@ -138,13 +138,13 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
 
     # 1. 计算初始的开火意图
     fire_120 = False
-    case1 = distance < 60e3 and (sin_theta >= sin(30*pi/180) or alt >= 9e3) # 105, 30
-    case2 = distance < 55e3 # 75e3
+    case1 = distance < 80e3 and (sin_theta >= sin(30*pi/180) or alt >= 9e3) # 60e3
+    case2 = distance < 75e3 # 75e3 55e3
     if (case1 or case2) and ATA < 60 * pi/180 and abs(delta_psi) < 30*pi/180:
         if t_fired >= 40 and not on_guiding and not (distance>12e3 and abs(AA_hor) < 30*pi/180):
             fire_120 = True
 
-    action_v = 2 # 追踪
+    action_v = 0 # 爬升 action_v = 1 # 追踪
     action_h = 0 # 追踪
     maneuver_cmds = [action_v, action_h] # 默认执行基础进攻
     base_offensive_action = [action_v, action_h]
@@ -160,18 +160,18 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
         if RWR: # 受到威胁
             # 优先俯冲回转至5000m以下
             if alt > 5000:
-                action_v = 4 # 快速下高
+                action_v = 2 # 快速下高
             else:
-                action_v = 2 # 平飞
+                action_v = 1 # 平飞
             # 置尾机动
             action_h = 3 # 水平方向背离
             
         elif on_guiding: # 如果本回合决定发射导弹
             if delta_psi < 0:
-                action_v = 2 # 平飞
+                action_v = 1 # 平飞
                 action_h = 5 # Rcrank
             else:
-                action_v = 2 # 平飞
+                action_v = 1 # 平飞
                 action_h = 1 # Lcrank
         else:
             [action_v, action_h] = base_offensive_action
@@ -181,19 +181,19 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
     elif rules_num == 2:
         # 规则2: Loft爬升射击序列
         if RWR: # 受到威胁
-            action_v = 4 # 下降高度
+            action_v = 2 # 下降高度
             action_h = 3 # 置尾机动
             maneuver_cmds = [action_v, action_h]
             # maneuver_cmds = 8 # 立刻 split-S
             fire_120 = False # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离，或上一回合是爬升
             if delta_psi < 0:
-                action_v = 2 # 平飞
+                action_v = 1 # 平飞
                 action_h = 5 # Rcrank
                 maneuver_cmds = [action_v, action_h]
                 # maneuver_cmds = 6 # 右crank
             else:
-                action_v = 2 # 平飞
+                action_v = 1 # 平飞
                 action_h = 1 # Lcrank
                 maneuver_cmds = [action_v, action_h]
                 # maneuver_cmds = 5 # 左crank
@@ -213,17 +213,17 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
 
     elif rules_num == 3:
         if RWR: # : # 受到威胁
-            action_v = 4 # 下降高度
+            action_v = 2 # 下降高度
             action_h = 3 # 置尾机动
             maneuver_cmds = [action_v, action_h]
             fire_120 = False # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离，或上一回合是爬升
             if delta_psi < 0:
-                action_v = 3 # 下降
+                action_v = 2 # 下降
                 action_h = 5 # Rcrank
                 maneuver_cmds = [action_v, action_h]
             else:
-                action_v = 3 # 下降
+                action_v = 2 # 下降
                 action_h = 1 # Lcrank
                 maneuver_cmds = [action_v, action_h]
         elif fire_120 and distance > 40e3: # 满足开火条件且在远距离
@@ -241,12 +241,12 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
     elif rules_num == 4:
         # 规则4: 只知道进攻和防御，不知道crank
         if RWR: # 受到威胁
-            action_v = 4 # 下降高度
+            action_v = 2 # 下降高度
             action_h = 3 # 置尾机动
             maneuver_cmds = [action_v, action_h]
             fire_120 = False # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离
-            action_v = 2 # 平飞
+            action_v = 1 # 平飞
             action_h = 0 # 追踪，不crank
             maneuver_cmds = [action_v, action_h]
         elif fire_120 and distance > 40e3: # 满足开火条件且在远距离
@@ -264,27 +264,27 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
     elif rules_num == 5:
         # 规则5: 在rule2基础上，leftright>0时左crank，否则右crank
         if RWR: # 受到威胁
-            action_v = 4 # 下降高度
+            action_v = 2 # 下降高度
             action_h = 3 # 置尾机动
             maneuver_cmds = [action_v, action_h]
             fire_120 = False # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离
             if delta_psi < 0:
-                action_v = 3 # 下降
+                action_v = 2 # 下降
                 action_h = 5 # Rcrank
                 maneuver_cmds = [action_v, action_h]
             else:
-                action_v = 3 # 下降
+                action_v = 2 # 下降
                 action_h = 1 # Lcrank
                 maneuver_cmds = [action_v, action_h]
             # 保留战略纵深
             if d_hor < 50e3:
                 if leftright > 0:
-                    action_v = 2 # 平飞
+                    action_v = 1 # 平飞
                     action_h = 1 # Lcrank
                     maneuver_cmds = [action_v, action_h]
                 if leftright < 0:
-                    action_v = 2 # 平飞
+                    action_v = 1 # 平飞
                     action_h = 5 # Rcrank
                 maneuver_cmds = [action_v, action_h]
         elif fire_120 and distance > 40e3: # 满足开火条件且在远距离
@@ -318,24 +318,6 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
 
     return flight_action, fire_action, radar_action
 
-"""
-action_optionsLR = {
-                    0: "track",
-                    1: "30track",
-                    2: "60track",
-                    3: "-30track",
-                    4: "-60track",
-                    5: "L60crank",
-                    6: "R60crank",
-                    7: "snake",   "notch"
-                    8: "splitS",
-                    9: "3",     "left
-                    10: "9",    "right
-                    11: "fastTurn",
-                    12: "-30turn",
-                    13: "-60turn",
-                }
-"""
 
 if __name__=='__main__':
     print("\n根目录为：", project_root, "\n")
@@ -355,7 +337,7 @@ if __name__=='__main__':
     vertices = [[50e3, 50e3], [-50e3, 50e3], [-50e3, -50e3], [50e3, -50e3]]
     env = ChooseStrategyEnv(args, tacview_show=use_tacview, vertices=vertices)
     # test
-    env.dt_move = 0.1 # 0.04 # 4 # 0.025 0.02
+    env.dt_move = 0.07 # 0.04 # 4 # 0.025 0.02
 
     device = torch.device("cpu")  # torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -399,11 +381,12 @@ if __name__=='__main__':
         r_guide_list = []
         b_guide_list = []
         
-        # 启动仿真前清空上次遗留的飞机事件csv
+        # 启动仿真前清空上次遗留的pkl和csv
         event_log_dir = os.path.join(project_root, 'acmi_records')
         os.makedirs(event_log_dir, exist_ok=True)
-        for f in glob.glob(os.path.join(event_log_dir, 'uav_*_events.csv')):
-            os.remove(f)
+        for pattern in ('*.pkl', '*.csv'):
+            for f in glob.glob(os.path.join(event_log_dir, pattern)):
+                os.remove(f)
 
         # 采集不同轨迹的动作
         for i_episode in range(1): # 5
@@ -413,8 +396,11 @@ if __name__=='__main__':
 
             DEFAULT_RED_BIRTH_STATE, DEFAULT_BLUE_BIRTH_STATE = creat_initial_state()
 
-            env.reset(red_birth_state=DEFAULT_RED_BIRTH_STATE, blue_birth_state=DEFAULT_BLUE_BIRTH_STATE,
-                    red_init_ammo=4, blue_init_ammo=4) # 4
+            env.reset(
+                red_birth_state=DEFAULT_RED_BIRTH_STATE, blue_birth_state=DEFAULT_BLUE_BIRTH_STATE,
+                red_init_num=2, blue_init_num=2,
+                red_init_ammo=4, blue_init_ammo=4
+                ) # 4
             r_action_label=0
             b_action_label=0
             last_decision_state = None
@@ -431,7 +417,7 @@ if __name__=='__main__':
             fire_action_all = {}
             radar_action_all = {}
 
-            # 每架飞机逐帧观测记录，回合结束分别保存为 3 个 .pkl
+            # 每架飞机逐帧观测记录，mask调试信息合并到事件csv
             agent_obs_records = {
                 _id: {
                     'agent_input': [],
@@ -559,6 +545,15 @@ if __name__=='__main__':
                     #     print("flight_cmds", flight_cmds[id])
 
                 env.step(flight_cmds.values()) # Environment updates every dt_maneuver
+
+                # DEBUG
+                if steps_of_this_eps % action_cycle_multiplier == 0:
+                    for id in env.UAV_ids:
+                        # debug
+                        UAV = env.find_uav_with_id(id)
+                        if UAV.dead:
+                            print("检查导弹的目标")
+
                 for _id in env.UAV_ids: # 每架飞机都调用一遍，保证各自的周期事件都被积累
                     done, _ = env.combat_terminate_and_reward(id=_id, action_shoots=None, action_cycle_multiplier=action_cycle_multiplier)
 
@@ -588,22 +583,30 @@ if __name__=='__main__':
             env.clear_render(t_bias=t_bias)
             t_bias += env.t
 
-            # 保存本回合各机的事件日志，每架飞机一个csv
+            # 保存本回合各机的事件日志和mask调试信息，每架飞机一个csv
             for uav in env.UAVs:
                 events = getattr(uav, 'cycle_events', [])
                 if not events:
                     continue
+                masks = agent_obs_records[uav.id]['mask_input']
+                event_rows = []
+                for index, event in enumerate(events):
+                    mask = masks[index] if index < len(masks) else {}
+                    mask_ally = np.asarray(mask.get('ally', [])).tolist()
+                    mask_enm = np.asarray(mask.get('enm', [])).tolist()
+                    event_rows.append((*event, mask_ally, mask_enm))
                 csv_path = os.path.join(event_log_dir, f'uav_{uav.id}_events.csv')
                 write_header = not os.path.exists(csv_path)
                 with open(csv_path, 'a', newline='', encoding='utf-8-sig') as f:
                     writer = csv.writer(f)
                     if write_header:
-                        writer.writerow(['time', 'id', 'dense_reward', 'end_reward', 'event_reward', 'event'])
-                    writer.writerows(events)
+                        writer.writerow(['time', 'id', 'dense_reward', 'end_reward', 'event_reward', 'event',
+                                         'mask_ally', 'mask_enm'])
+                    writer.writerows(event_rows)
 
-            # 保存本回合各 agent 的 3 种观测为 .pkl
+            # 保存本回合各 agent 的观测为 .pkl
             for _id in env.UAV_ids:
-                for obs_key in ['agent_input', 'mask_input', 'rule_input']:
+                for obs_key in ['agent_input', 'rule_input']:
                     obs_save_path = os.path.join(
                         event_log_dir,
                         f'round{i_episode}_agent{_id}_{obs_key}.pkl')

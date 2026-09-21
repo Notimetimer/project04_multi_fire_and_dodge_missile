@@ -145,6 +145,27 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 outcome = None # 继续
                 done = 0
 
+        
+        # 回填开火记录的命中/脱靶结果 ---
+        # 每次调用都扫描本侧全部已发射导弹（不论死活）；hit 优先于 dead（命中导弹同时 dead=1）
+        fire_hit_records = getattr(ego, 'fire_hit_records', None)
+        if fire_hit_records:
+            msl_table = {m.id: m for m in ego.launched_aim120s}
+            for rec in fire_hit_records:
+                if rec['hit_record'] is not None:
+                    continue
+                m = msl_table.get(rec['msl_id'])
+                if m is None:
+                    continue
+                if m.hit:
+                    rec['hit_record'] = 1
+                elif m.dead:
+                    rec['hit_record'] = 0
+        # 终局强制结算：done=1 时仍未分辨命中/脱靶的记录整行删除
+        if done and fire_hit_records:
+            ego.fire_hit_records = [rec for rec in fire_hit_records if rec['hit_record'] is not None]
+
+
         # 事件结算 + 奖励：周期边界 或 终局（防止最后一个不完整周期里的事件丢失）
         # 每架飞机在各自的调用里只结算自己，last_cycle_t 防止同一时刻重复结算
         if event_reward_available or (done and getattr(ego, 'last_cycle_t', -1e9) != self.t):
@@ -195,6 +216,21 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 events_this_cycle.append(f'向{current_target_id}开火')
                 reward_dict["event"] += FOX3
                 ego.last_ammo_whole_cycle = ego.ammo
+
+                 # [新增] 开火记录：快照当前观测，登记最新发射的导弹，等待命中/脱靶回填
+                if not hasattr(ego, 'fire_hit_records'):
+                    ego.fire_hit_records = []
+                if len(ego.launched_aim120s) > 0:
+                    newest_msl = ego.launched_aim120s[-1]
+                    # 死亡清仓惩罚等 shoot>=1 但本步并无新弹发射的情形，避免重复登记同一枚导弹
+                    # if all(rec['msl_id'] != newest_msl.id for rec in ego.fire_hit_records):
+                        # TODO 即时获取一次瞬时观测，需要适配环境
+                        # ego_obs, ego_check_obs = self.obs_1v1(ego.side, pomdp=1)
+                        # ego.fire_hit_records.append({
+                        #     "msl_id": newest_msl.id,
+                        #     "fire_obs": copy.deepcopy(ego_obs),
+                        #     "hit_record": None,
+                        # })
 
             # 每个结算时间点只写一行：无事件时事件栏为空，三类奖励如实记0
             ego.cycle_events.append((t_now, ego.id,

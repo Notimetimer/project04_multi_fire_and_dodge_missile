@@ -341,6 +341,7 @@ class Battle(object):
             lon_uav, lat_uav, h_uav = NUE2LLH(UAV.pos_[0], UAV.pos_[1], UAV.pos_[2], lon_o=o00[0], lat_o=o00[1], h_o=0)
             UAV.reset(lon0=lon_uav, lat0=lat_uav, h0=h_uav, v0=UAV.speed, psi0=UAV.psi, phi0=UAV.gamma,
                       theta0=UAV.theta, o00=o00)
+            UAV.fire_hit_records = []  # 记录所有导弹的命中情况
             UAV.got_hit = False
             UAV.radar_on = 1
             UAV.radar_center = np.array([0, 0]) # 雷达中心相对方位的归一化值，先水平后垂直
@@ -389,6 +390,28 @@ class Battle(object):
             self.unused_r_missile_num += 0 if uav.dead else uav.ammo
         for uav in self.BUAVs:
             self.unused_b_missile_num += 0 if uav.dead else uav.ammo
+        
+        # 导弹重新搜索目标
+        for missile in self.alive_missiles:
+            if not missile.radar_on:
+                continue
+            speed = norm(missile.vel_)
+            if speed == 0:
+                continue
+            replacement_id = None
+            replacement_distance = float('inf')
+            enemy_uavs = alive_b_uavs if missile.side == 'r' else alive_r_uavs
+            for uav in enemy_uavs:
+                line_of_sight = uav.pos_ - missile.pos_
+                distance = norm(line_of_sight)
+                if distance == 0 or distance > missile.detect_range:
+                    continue
+                sight_cos = np.dot(missile.vel_, line_of_sight) / (speed * distance)
+                if sight_cos > np.cos(missile.sight_angle_max) and distance < replacement_distance:
+                    replacement_id = uav.id
+                    replacement_distance = distance
+            if replacement_id is not None:
+                missile.target_id = replacement_id
 
     # 根据飞机id查找飞机类实例
     def find_uav_with_id(self, id):

@@ -124,12 +124,14 @@ class ChooseStrategyEnv(Battle):
         
         ego_side_num = self.Rnum if side =='r' else self.Bnum
         enm_side_num = self.Bnum if side =='r' else self.Rnum
-
+        
+        # 队友mask跳过了自己
         mask_ally = np.ones(ego_side_num-1)
+        # 敌人mask包含了全部敌人
         mask_enm = np.ones(enm_side_num)
         
         information_output = {'fixed':[], 'ally':[], 'enm':[]}
-        mask_output = {'ally':None, 'enm':None}
+        mask_output = {'ego':1, 'ally':None, 'enm':None}
 
         # 只缓存一次 scaled_init_mod 以兼顾性能和合法性（组装为dict进行缩放）
         if not hasattr(self, 'scaled_init_mod'):
@@ -137,7 +139,7 @@ class ChooseStrategyEnv(Battle):
             for key, array_key in zip(
                 ["enm_info", "ally_info", "weapon_info", "RWR_info"],
                 ["enm_infos", "ally_infos", "weapon_infos", "RWR_infos"]
-            ):
+                ):
                 temp_dict = {array_key: [self.state_init_mod[key]]}
                 self.scaled_init_mod[key] = self.scale_state(temp_dict)[array_key][0]
 
@@ -145,9 +147,15 @@ class ChooseStrategyEnv(Battle):
         enm_uavs = self.BUAVs if side == 'r' else self.RUAVs
         ally_uavs = [u for u in (self.RUAVs if side == 'r' else self.BUAVs) if u.id != id]
 
+        # 处理自己，如果死了，那就mask=0
+        if ego.dead:
+            mask_output["ego"] = 0
+        else:
+            mask_output["ego"] = 1
+
         # 处理敌人，对死掉的敌人写mask
         for i, enm in enumerate(enm_uavs):
-            # 死掉的敌人，加mask和填充
+            # 死掉的敌人，加mask和填充，仅仅看不到敌人不会用默认值填充
             if enm.dead:
                 mask_enm[i] = 0
                 full_obs["enm_infos"][i] = copy.deepcopy(self.scaled_init_mod["enm_info"])
@@ -405,15 +413,19 @@ class ChooseStrategyEnv(Battle):
         # 垂直方向指令
         theta = ego.theta
         if action_v == 0: # 比目标高50°
-            theta_desired = np.clip(theta+delta_theta+np.radians(50), -pi/2, pi/2)
+            theta_desired = np.clip(theta+delta_theta+np.radians(30), -pi/2, pi/2)
         if action_v == 1: # 比目标高20°
-            theta_desired = np.clip(theta+delta_theta+np.radians(20), -pi/2, pi/2)
-        if action_v == 2: # 纯追踪
             theta_desired = np.clip(theta+delta_theta+np.radians(1), -pi/2, pi/2)
-        if action_v == 3: # 比目标低30°
-            theta_desired = np.clip(theta+delta_theta+np.radians(-30), -pi/2, pi/2)
-        if action_v == 4: # 急速下降
-            theta_desired = np.radians(-75)
+        if action_v == 2:
+            theta_desired = np.clip(theta+delta_theta+np.radians(-45), -pi/2, pi/2)
+
+        #     theta_desired = np.clip(theta+delta_theta+np.radians(20), -pi/2, pi/2)
+        # if action_v == 2: # 纯追踪
+        #     theta_desired = np.clip(theta+delta_theta+np.radians(1), -pi/2, pi/2)
+        # if action_v == 3: # 比目标低30°
+        #     theta_desired = np.clip(theta+delta_theta+np.radians(-30), -pi/2, pi/2)
+        # if action_v == 4: # 急速下降
+        #     theta_desired = np.radians(-75)
         
         # 水平方向指令：
         # 追踪
@@ -421,11 +433,11 @@ class ChooseStrategyEnv(Battle):
             delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
         # 左crank
         if action_h == 1:
-            delta_psi_cmd = sub_of_radian(delta_psi - 61 * pi/180, 0)
+            delta_psi_cmd = sub_of_radian(delta_psi - 55 * pi/180, 0)
             theta_desired = np.clip(theta_desired, -pi/4, pi/4) # 防止无效crank
         # 右crank
         if action_h == 5:
-            delta_psi_cmd = sub_of_radian(delta_psi + 61 * pi/180, 0)
+            delta_psi_cmd = sub_of_radian(delta_psi + 55 * pi/180, 0)
             theta_desired = np.clip(theta_desired, -pi/4, pi/4) # 防止无效crank
         # 3线
         if action_h == 2:
@@ -518,7 +530,7 @@ class ChooseStrategyEnv(Battle):
                         print('近距单杀')
 
     # 近距格斗弹自动发射，多对多也能用（规则控制，不需要RL）
-    def close_range_shoot(self, fire_range=8e3, fire_angle=pi/3, cooldown=5):
+    def close_range_shoot(self, fire_range=10e3, fire_angle=pi/3, cooldown=10):
         for uav in self.UAVs:
             if uav.dead:
                 continue
