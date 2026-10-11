@@ -1,0 +1,160 @@
+﻿    def update(self, transition_dict, adv_normed=False, 
+                clip_vf=False, clip_range=0.2, shuffled=1, 
+                mini_batch_size=None, alpha_logit_reg=0.05,
+                v_trace=None, target_p1=0.65, target_p1_b=0.8, 
+                k_nonlinear=0.89, mask_on=0, actor_frozen=0, bern_max_logits=4.0, alpha_distill=0, teacher_actor=None,
+                AFiltered=0, conf_thres=0.7, bern_included=0): 
+        if hasattr(self.actor.net, 'log_std_cont'):
+            self.actor.net.log_std_cont.requires_grad = True
+
+        def to_tensor(x, dtype):
+            if isinstance(x, np.ndarray):
+                return torch.tensor(x, dtype=dtype).to(self.device)
+            else:
+                return torch.tensor(np.array(x), dtype=dtype).to(self.device)
+
+        states = to_tensor(transition_dict['states'], torch.float)
+        dones = to_tensor(transition_dict['dones'], torch.float).view(-1, 1)
+        rewards = to_tensor(transition_dict['rewards'], torch.float).view(-1, 1)
+
+        if 'active_masks' in transition_dict:
+            active_masks = to_tensor(transition_dict['active_masks'], torch.float).view(-1, 1)
+        else:
+            active_masks = torch.ones_like(dones)
+
+        critic_inputs = states
+        actions_from_buffer = transition_dict['actions']
+        actions_on_device = {}
+        all_keys = actions_from_buffer[0].keys()
+        for key in all_keys:
+            vals = [d[key] for d in actions_from_buffer if key in d]
+            if len(vals) == 0: continue
+            dtype = torch.long if key in ['branch', 'target', 'a', 'c1', 'c2'] else torch.float
+            actions_on_device[key] = torch.tensor(np.array(vals), dtype=dtype).to(self.device)
+
+        obs_list = transition_dict['obs']
+        batch_agent_inputs = [x[0] for x in obs_list]
+        rule_inputs = [x[1] for x in obs_list]
+        mask_inputs = [x[2] for x in obs_list]
+        
+        agent_inputs = {
+            'fixed': torch.tensor(np.array([inp['fixed'] for inp in batch_agent_inputs]), dtype=torch.float32).to(self.device),
+            'enm': torch.tensor(np.array([inp['enm'] for inp in batch_agent_inputs]), dtype=torch.float32).to(self.device),
+            'ally': torch.tensor(np.array([inp['ally'] for inp in batch_agent_inputs]), dtype=torch.float32).to(self.device)
+        }
+        
+        if 'advantages' in transition_dict and 'td_targets' in transition_dict:
+            advantage = to_tensor(transition_dict['advantages'], torch.float).view(-1, 1)
+            td_target = to_tensor(transition_dict['td_targets'], torch.float).view(-1, 1)
+        else:
+            truncs = to_tensor(transition_dict['truncs'], torch.float).view(-1, 1) if 'truncs' in transition_dict else None
+            with torch.no_grad():
+                if 'next_values' in transition_dict:
+                    next_vals = to_tensor(transition_dict['next_values'], torch.float).view(-1, 1)
+                else:
+                    next_states = to_tensor(transition_dict['next_states'], torch.float)
+                    next_vals = self.critic(next_states)
+                td_target = rewards + self.gamma * next_vals * (1 - dones)
+                td_delta = td_target - self.critic(critic_inputs)
+                advantage = compute_advantage(self.gamma, self.lmbda, td_delta.cpu(), dones.cpu(), truncs.cpu() if truncs is not None else None).to(self.device)
+        
+        with torch.no_grad():
+            old_log_probs, _, _, _ ,_ = self.actor.evaluate_actions(agent_inputs, rule_inputs, mask_inputs, actions_on_device)
+            v_pred_old = self.critic(critic_inputs)
+            
+        if adv_normed:
+            active_adv = advantage[active_masks.squeeze(-1).bool()]
+            if active_adv.numel() > 1:
+                advantage = (advantage - active_adv.mean()) / (active_adv.std(unbiased=False) + 1e-8)
+        else:
+            active_adv = advantage[active_masks.squeeze(-1).bool()]
+            if active_adv.numel() > 0:
+                advantage = advantage - active_adv.mean()
+
+        actor_loss_list, critic_loss_list, entropy_list, ratio_list = [], [], [], []
+        kl_list, clip_frac_list = [], []
+        ppo_samples_total, ppo_valid_samples_total = 0, 0
+        mask_eps = 1e-5
+        num_samples = len(obs_list)
+        if mini_batch_size is None: mini_batch_size = num_samples
+
+        for _ in range(self.epochs):
+            idx = torch.randperm(num_samples, device=self.device) if shuffled else torch.arange(num_samples, device=self.device)
+            for start in range(0, num_samples, mini_batch_size):
+                end = min(start + mini_batch_size, num_samples)
+                batch_idx = idx[start:end]
+                
+                mb_agent_inputs = {k: v[batch_idx] for k, v in agent_inputs.items()}
+                batch_idx_cpu = batch_idx.cpu().tolist()
+                mb_rule_inputs = [rule_inputs[i] for i in batch_idx_cpu]
+                mb_mask_inputs = [mask_inputs[i] for i in batch_idx_cpu]
+                
+                mb_critic_inputs = critic_inputs[batch_idx]
+                mb_advantage = advantage[batch_idx]
+                mb_td_target = td_target[batch_idx]
+                mb_old_log_probs = old_log_probs[batch_idx]
+                mb_active_masks = active_masks[batch_idx]
+                mb_actions = {k: v[batch_idx] for k, v in actions_on_device.items()}
+
+                log_probs, entropy, entropy_details, actor_outputs, _ = self.actor.evaluate_actions(mb_agent_inputs, mb_rule_inputs, mb_mask_inputs, mb_actions)
+                log_ratio = log_probs - mb_old_log_probs
+                ratio = torch.exp(log_ratio)
+                
+                with torch.no_grad():
+                    active_sum = mb_active_masks.sum()
+                    approx_kl = (((ratio - 1) - log_ratio) * mb_active_masks).sum() / (active_sum + mask_eps)
+                    kl_list.append(approx_kl.item())
+                    clip_fracs = (((ratio - 1.0).abs() > self.eps).float() * mb_active_masks).sum() / (active_sum + mask_eps)
+                    clip_frac_list.append(clip_fracs.item())
+                
+                if v_trace is not None: ratio = torch.clamp(ratio, max=v_trace)
+                    
+                surr1 = ratio * mb_advantage
+                surr2 = torch.clamp(ratio, 1 - self.eps, 1 + self.eps) * mb_advantage
+                actor_loss = -(torch.min(surr1, surr2) * mb_active_masks).sum() / (active_sum + mask_eps)
+                
+                v_pred = self.critic(mb_critic_inputs)
+                if clip_vf:
+                    v_pred_clipped = v_pred_old[batch_idx] + torch.clamp(v_pred - v_pred_old[batch_idx], -clip_range, clip_range)
+                    critic_loss = torch.max(F.mse_loss(v_pred, mb_td_target, reduction='none'), F.mse_loss(v_pred_clipped, mb_td_target, reduction='none'))
+                else:
+                    critic_loss = F.mse_loss(v_pred, mb_td_target, reduction='none')
+                critic_loss = (critic_loss * mb_active_masks).sum() / (active_sum + mask_eps)
+                entropy = (entropy * mb_active_masks).sum() / (active_sum + mask_eps)
+                
+                self.actor_optimizer.zero_grad()
+                self.critic_optimizer.zero_grad()
+                loss = actor_loss - self.beta_entropy * entropy + critic_loss
+                loss.backward()
+                
+                torch.nn.utils.clip_grad_norm_(self.actor.net.parameters(), 0.5)
+                torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 0.5)
+                self.actor_optimizer.step()
+                self.critic_optimizer.step()
+                
+                actor_loss_list.append(actor_loss.item())
+                critic_loss_list.append(critic_loss.item())
+                entropy_list.append(entropy.item())
+                ratio_list.append(ratio.mean().item())
+                ppo_samples_total += len(batch_idx)
+                ppo_valid_samples_total += active_sum.item()
+
+        return {
+            'actor_loss': np.mean(actor_loss_list) if actor_loss_list else 0.0,
+            'critic_loss': np.mean(critic_loss_list) if critic_loss_list else 0.0,
+            'entropy': np.mean(entropy_list) if entropy_list else 0.0,
+            'kl': np.mean(kl_list) if kl_list else 0.0,
+            'clip_frac': np.mean(clip_frac_list) if clip_frac_list else 0.0,
+            'ratio': np.mean(ratio_list) if ratio_list else 0.0,
+            'grad_norm_ratio': 1.0,
+            'entropy_cat': 0.0,
+            'entropy_bern': 0.0,
+            'entropy_cont': 0.0,
+            'max_fire_prob': 0.0,
+            'min_fire_prob': 0.0,
+            'target_entropy_cat': 0.0,
+            'target_entropy_bern': 0.0,
+            'target_entropy_cont': 0.0,
+            'samples': ppo_samples_total,
+            'valid_samples': ppo_valid_samples_total,
+        }

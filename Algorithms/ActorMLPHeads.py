@@ -5,12 +5,16 @@ from torch.distributions import Bernoulli, Categorical
 import torch.nn.functional as F
 
 
-BRANCH_A = 0
+BRANCH_evade = 0
 BRANCH_B = 1
-BRANCH_C = 2
-BRANCH_D = 3
+BRANCH_attack = 2
+BRANCH_idle = 3
 HORIZONTAL_ACTIONS = (0, 1, 3, 5)
+# 分支语义名：evade=规避(有告警), B=未定义, attack=攻击(有敌机), idle=待命/无动作
+BRANCH_NAMES = ('evade', 'B', 'attack', 'idle')
 
+
+# FIXME 多次重复调用forward方法，没有必要这样，应该改回一次调用的方式
 
 class ActorMLPHeads(nn.Module):
     def __init__(self, hidden_dims=(256, 256), fixed_dim=28, enm_shape=(2, 10), ally_shape=(1, 9)):
@@ -27,14 +31,23 @@ class ActorMLPHeads(nn.Module):
             layers.extend((nn.Linear(previous_dim, hidden_dim), nn.ReLU()))
             previous_dim = hidden_dim
         self.backbone = nn.Sequential(*layers)
+        # 分支选择头
         self.branch_head = nn.Linear(previous_dim, 4)
+
+        # 分支选择后的维度为什么要+4？
         branch_condition_dim = previous_dim + 4
-        self.a_head = nn.Linear(branch_condition_dim, 2)
+        # 规避头
+        self.evad_head = nn.Linear(branch_condition_dim, 2)
+        # 目标选取头
         self.target_head = nn.Linear(branch_condition_dim, self.enm_num)
+        # 
         c_condition_dim = branch_condition_dim + self.enm_num
-        self.c1_head = nn.Linear(c_condition_dim, 3)
-        self.c2_head = nn.Linear(c_condition_dim, len(HORIZONTAL_ACTIONS))
-        self.c3_head = nn.Linear(c_condition_dim, 1)
+        # 水平头
+        self.hor_head = nn.Linear(c_condition_dim, len(HORIZONTAL_ACTIONS))
+        # 火箭头
+        self.fire_head = nn.Linear(c_condition_dim, 1)
+        # 垂直头
+        self.vert_head = nn.Linear(c_condition_dim, 3)
 
     def forward(self, x, branch=None, target=None):
         features = self.backbone(x)
@@ -42,21 +55,24 @@ class ActorMLPHeads(nn.Module):
             'features': features,
             'branch_logits': self.branch_head(features),
         }
+        # branch=None时，只返回分支选择头
         if branch is None:
             return outputs
-
+        # 分支选择头
         branch_one_hot = F.one_hot(branch, num_classes=4).to(features.dtype)
         branch_features = torch.cat((features, branch_one_hot), dim=-1)
-        outputs['a_logits'] = self.a_head(branch_features)
+        outputs['evad_logits'] = self.evad_head(branch_features)
+        # 目标选择头
         outputs['target_logits'] = self.target_head(branch_features)
 
         if target is None:
             return outputs
+        # 目标选择头
         target_one_hot = F.one_hot(target, num_classes=self.enm_num).to(features.dtype)
         c_features = torch.cat((branch_features, target_one_hot), dim=-1)
-        outputs['c1_logits'] = self.c1_head(c_features)
-        outputs['c2_logits'] = self.c2_head(c_features)
-        outputs['c3_logits'] = self.c3_head(c_features).squeeze(-1)
+        outputs['vert_logits'] = self.vert_head(c_features)
+        outputs['hor_logits'] = self.hor_head(c_features)
+        outputs['fire_logits'] = self.fire_head(c_features).squeeze(-1)
         return outputs
 
 
@@ -80,7 +96,30 @@ class ActorMLPWrapper(nn.Module):
     def device(self):
         return next(self.parameters()).device
 
+    def _unpack_inputs(self, agent_inputs, rule_inputs=None, mask_inputs=None):
+        if isinstance(agent_inputs, (list, tuple)) and len(agent_inputs) > 0 and isinstance(agent_inputs[0], (list, tuple)) and len(agent_inputs[0]) == 3:
+            rule_inputs = [x[1] for x in agent_inputs]
+            mask_inputs = [x[2] for x in agent_inputs]
+            agent_inputs = [x[0] for x in agent_inputs]
+        elif isinstance(agent_inputs, (list, tuple)) and len(agent_inputs) == 3 and not isinstance(agent_inputs[0], (dict, torch.Tensor, np.ndarray)) and isinstance(agent_inputs[1], dict) and isinstance(agent_inputs[2], dict):
+            agent_inputs, rule_inputs, mask_inputs = agent_inputs
+        return agent_inputs, rule_inputs, mask_inputs
+
     def flatten_agent_inputs(self, agent_inputs):
+        if isinstance(agent_inputs, (list, tuple)):
+            if len(agent_inputs) == 0:
+                raise ValueError('agent_inputs cannot be empty')
+            if isinstance(agent_inputs[0], (list, tuple)) and len(agent_inputs[0]) == 3:
+                agent_inputs = [x[0] for x in agent_inputs]
+            if isinstance(agent_inputs[0], dict):
+                agent_inputs = {
+                    'fixed': np.array([inp['fixed'] for inp in agent_inputs]),
+                    'enm': np.array([inp['enm'] for inp in agent_inputs]),
+                    'ally': np.array([inp['ally'] for inp in agent_inputs])
+                }
+            elif isinstance(agent_inputs[0], torch.Tensor):
+                agent_inputs = torch.stack(agent_inputs)
+
         if isinstance(agent_inputs, torch.Tensor):
             tensor = agent_inputs.to(device=self.device, dtype=torch.float32)
             if tensor.ndim == 1:
@@ -88,8 +127,9 @@ class ActorMLPWrapper(nn.Module):
             if tensor.shape[-1] != self.input_dim:
                 raise ValueError(f'Expected flattened input dimension {self.input_dim}, got {tensor.shape[-1]}')
             return tensor
+
         if not isinstance(agent_inputs, dict):
-            raise TypeError('agent_inputs must be a dict or a flattened torch.Tensor')
+            raise TypeError('agent_inputs must be a dict, a list of dicts, or a flattened torch.Tensor')
 
         parts = []
         batch_size = None
@@ -143,13 +183,13 @@ class ActorMLPWrapper(nn.Module):
             warning = self._warning(rule_input)
             ego_alive = bool(mask_input.get('ego', 1))
             if not ego_alive:
-                branch_masks[index, BRANCH_D] = True
+                branch_masks[index, BRANCH_idle] = True
             elif warning:
-                branch_masks[index, BRANCH_A] = True
+                branch_masks[index, BRANCH_evade] = True
             elif enemy_mask.any():
-                branch_masks[index, BRANCH_C] = True
+                branch_masks[index, BRANCH_attack] = True
             else:
-                branch_masks[index, BRANCH_D] = True
+                branch_masks[index, BRANCH_idle] = True
             threat_delta_psi[index] = self._threat_delta_psi(rule_input)
         return branch_masks, target_masks, threat_delta_psi
 
@@ -163,7 +203,8 @@ class ActorMLPWrapper(nn.Module):
     def _choose(distribution, explore):
         return distribution.sample() if explore else distribution.probs.argmax(dim=-1)
 
-    def forward(self, agent_inputs, rule_inputs, mask_inputs):
+    def forward(self, agent_inputs, rule_inputs=None, mask_inputs=None):
+        agent_inputs, rule_inputs, mask_inputs = self._unpack_inputs(agent_inputs, rule_inputs, mask_inputs)
         flat_inputs = self.flatten_agent_inputs(agent_inputs)
         branch_mask, target_mask, threat_delta_psi = self.build_rule_masks(
             rule_inputs, mask_inputs, flat_inputs.shape[0])
@@ -177,43 +218,43 @@ class ActorMLPWrapper(nn.Module):
         })
         return outputs
 
-    def get_action(self, agent_inputs, rule_inputs, mask_inputs, explore=True):
+    def get_action(self, agent_inputs, rule_inputs=None, mask_inputs=None, explore=True):
+        agent_inputs, rule_inputs, mask_inputs = self._unpack_inputs(agent_inputs, rule_inputs, mask_inputs)
         outputs = self.forward(agent_inputs, rule_inputs, mask_inputs)
         branch_dist = Categorical(logits=outputs['branch_logits'])
         branch = self._choose(branch_dist, explore)
-        fallback_target = outputs['target_mask'].to(torch.int64).argmax(dim=-1)
         conditioned = self.net(outputs['flat_inputs'], branch=branch)
         target_logits = self._masked_logits(
             conditioned['target_logits'],
-            outputs['target_mask'] | (branch != BRANCH_C).unsqueeze(-1))
+            outputs['target_mask'] | (branch != BRANCH_attack).unsqueeze(-1))
         target_dist = Categorical(logits=target_logits)
         target = self._choose(target_dist, explore)
         conditioned = self.net(outputs['flat_inputs'], branch=branch, target=target)
 
-        a_dist = Categorical(logits=conditioned['a_logits'])
-        c1_dist = Categorical(logits=conditioned['c1_logits'])
-        c2_dist = Categorical(logits=conditioned['c2_logits'])
-        c3_dist = Bernoulli(logits=conditioned['c3_logits'])
-        a_action = self._choose(a_dist, explore)
-        c1_action = self._choose(c1_dist, explore)
-        c2_action = self._choose(c2_dist, explore)
-        c3_action = c3_dist.sample().to(torch.long) if explore else (c3_dist.probs >= 0.5).to(torch.long)
+        evad_dist = Categorical(logits=conditioned['evad_logits'])
+        vert_dist = Categorical(logits=conditioned['vert_logits'])
+        hor_dist = Categorical(logits=conditioned['hor_logits'])
+        fire_dist = Bernoulli(logits=conditioned['fire_logits'])
+        evad_action = self._choose(evad_dist, explore)
+        vert_action = self._choose(vert_dist, explore)
+        hor_action = self._choose(hor_dist, explore)
+        fire_action = fire_dist.sample().to(torch.long) if explore else (fire_dist.probs >= 0.5).to(torch.long)
         raw_actions = {
-            'branch': branch,
-            'a': a_action,
+            'branch': branch,  # 调试信息
+            'evade': evad_action,
             'target': target,
-            'c1': c1_action,
-            'c2': c2_action,
-            'c3': c3_action,
+            'vert': vert_action,
+            'hor': hor_action,
+            'fire': fire_action,
         }
         env_actions = self.to_env_actions(raw_actions, outputs['threat_delta_psi'])
         diagnostics = {
-            'branch_probs': branch_dist.probs,
+            'branch_probs': branch_dist.probs,  # 调试信息
             'target_probs': target_dist.probs,
-            'a_probs': a_dist.probs,
-            'c1_probs': c1_dist.probs,
-            'c2_probs': c2_dist.probs,
-            'c3_probs': c3_dist.probs,
+            'evad_probs': evad_dist.probs,
+            'vert_probs': vert_dist.probs,
+            'hor_probs': hor_dist.probs,
+            'fire_probs': fire_dist.probs,
         }
         return env_actions, raw_actions, diagnostics
 
@@ -223,54 +264,78 @@ class ActorMLPWrapper(nn.Module):
         for index in range(batch_size):
             branch = int(actions['branch'][index].item())
             target = int(actions['target'][index].item())
-            if branch == BRANCH_A:
-                if int(actions['a'][index].item()) == 0:
+            if branch == BRANCH_evade:
+                if int(actions['evade'][index].item()) == 0:
                     maneuver = [2, 3]
                 else:
                     maneuver = [2, 2 if threat_delta_psi[index].item() > 0 else 4]
                 fire = False
-            elif branch == BRANCH_C:
-                maneuver = [int(actions['c1'][index].item()), HORIZONTAL_ACTIONS[int(actions['c2'][index].item())]]
-                fire = bool(actions['c3'][index].item())
+            elif branch == BRANCH_attack:
+                maneuver = [int(actions['vert'][index].item()), HORIZONTAL_ACTIONS[int(actions['hor'][index].item())]]
+                fire = bool(actions['fire'][index].item())
             else:
                 maneuver = [1, 0]
                 fire = False
             results.append({
-                'branch': ('A', 'B', 'C', 'D')[branch],
+                'branch': BRANCH_NAMES[branch],  # 调试信息
                 'flight_action': {'do': maneuver, 'at': target},
                 'fire_action': {'do': fire, 'at': target},
-                'radar_action': 1 if branch == BRANCH_C else 0,
+                'radar_action': 1 if branch == BRANCH_attack else 0,
             })
         return results[0] if batch_size == 1 else results
 
-    def evaluate_actions(self, agent_inputs, rule_inputs, mask_inputs, actions):
+    def evaluate_actions(self, agent_inputs, rule_inputs=None, mask_inputs=None, actions=None):
+        if actions is None and mask_inputs is None and rule_inputs is not None:
+            actions = rule_inputs
+            rule_inputs = None
+
+        agent_inputs, rule_inputs, mask_inputs = self._unpack_inputs(agent_inputs, rule_inputs, mask_inputs)
         outputs = self.forward(agent_inputs, rule_inputs, mask_inputs)
-        branch = actions['branch'].to(device=self.device, dtype=torch.long).reshape(-1)
-        target = actions['target'].to(device=self.device, dtype=torch.long).reshape(-1)
-        a_action = actions['a'].to(device=self.device, dtype=torch.long).reshape(-1)
-        c1_action = actions['c1'].to(device=self.device, dtype=torch.long).reshape(-1)
-        c2_action = actions['c2'].to(device=self.device, dtype=torch.long).reshape(-1)
-        c3_action = actions['c3'].to(device=self.device, dtype=torch.float32).reshape(-1)
+
+        if isinstance(actions, (list, tuple)):
+            actions_dict = {}
+            for k in ['branch', 'target', 'evade', 'vert', 'hor', 'fire']:
+                if k in actions[0]:
+                    actions_dict[k] = [d[k] for d in actions if k in d]
+            actions = actions_dict
+
+        def _to_tensor(val, dtype):
+            if isinstance(val, torch.Tensor):
+                return val.to(device=self.device, dtype=dtype).reshape(-1)
+            return torch.as_tensor(np.array(val), dtype=dtype, device=self.device).reshape(-1)
+
+        branch = _to_tensor(actions['branch'], torch.long)
+        target = _to_tensor(actions['target'], torch.long)
+        evad_action = _to_tensor(actions['evade'], torch.long)
+        vert_action = _to_tensor(actions['vert'], torch.long)
+        hor_action = _to_tensor(actions['hor'], torch.long)
+        fire_action = _to_tensor(actions['fire'], torch.float32)
 
         conditioned = self.net(outputs['flat_inputs'], branch=branch, target=target)
         target_logits = self._masked_logits(
             conditioned['target_logits'],
-            outputs['target_mask'] | (branch != BRANCH_C).unsqueeze(-1))
+            outputs['target_mask'] | (branch != BRANCH_attack).unsqueeze(-1))
         branch_dist = Categorical(logits=outputs['branch_logits'])
         target_dist = Categorical(logits=target_logits)
-        a_dist = Categorical(logits=conditioned['a_logits'])
-        c1_dist = Categorical(logits=conditioned['c1_logits'])
-        c2_dist = Categorical(logits=conditioned['c2_logits'])
-        c3_dist = Bernoulli(logits=conditioned['c3_logits'])
+        evad_dist = Categorical(logits=conditioned['evad_logits'])
+        vert_dist = Categorical(logits=conditioned['vert_logits'])
+        hor_dist = Categorical(logits=conditioned['hor_logits'])
+        fire_dist = Bernoulli(logits=conditioned['fire_logits'])
 
-        is_a = (branch == BRANCH_A).to(torch.float32)
-        is_c = (branch == BRANCH_C).to(torch.float32)
+        is_a = (branch == BRANCH_evade).to(torch.float32)
+        is_c = (branch == BRANCH_attack).to(torch.float32)
         log_prob = branch_dist.log_prob(branch)
-        log_prob = log_prob + is_a * a_dist.log_prob(a_action)
+        log_prob = log_prob + is_a * evad_dist.log_prob(evad_action)
         log_prob = log_prob + is_c * (
-            target_dist.log_prob(target) + c1_dist.log_prob(c1_action)
-            + c2_dist.log_prob(c2_action) + c3_dist.log_prob(c3_action))
-        entropy = branch_dist.entropy() + is_a * a_dist.entropy()
+            target_dist.log_prob(target) + vert_dist.log_prob(vert_action)
+            + hor_dist.log_prob(hor_action) + fire_dist.log_prob(fire_action))
+        entropy = branch_dist.entropy() + is_a * evad_dist.entropy()
         entropy = entropy + is_c * (
-            target_dist.entropy() + c1_dist.entropy() + c2_dist.entropy() + c3_dist.entropy())
-        return log_prob.unsqueeze(-1), entropy.unsqueeze(-1), outputs
+            target_dist.entropy() + vert_dist.entropy() + hor_dist.entropy() + fire_dist.entropy())
+        
+        entropy_details = {'cat': None, 'bern': None, 'cont': None}
+        outputs['cat'] = None
+        outputs['bern'] = None
+        outputs['cont'] = None
+        return log_prob.unsqueeze(-1), entropy.unsqueeze(-1), entropy_details, outputs, None
+

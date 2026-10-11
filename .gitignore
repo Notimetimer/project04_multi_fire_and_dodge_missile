@@ -10,3 +10,6 @@
 *.csv
 *.acmi
 /acmi_records
+/logs/combat
+/runs
+actor.onnx
