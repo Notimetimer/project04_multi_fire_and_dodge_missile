@@ -1,7 +1,5 @@
 '''
-先过程奖励后结果奖励
 
-动作空间更改，crank从30度和60度的区分改为左右的区分
 '''
 
 import numpy as np
@@ -31,24 +29,6 @@ from Envs.BattleHomo260421 import *
 
 # 通过继承构建观测空间、奖励函数和终止条件
 # 通过类的组合获取各子策略的观测量裁剪
-
-# 区分左右的动作划分
-action_optionsLR = {
-                    0: "track",
-                    1: "30track",
-                    2: "60track",
-                    3: "-30track",
-                    4: "-60track",
-                    5: "L60crank",
-                    6: "R60crank",
-                    7: "Conquer",
-                    8: "splitS",
-                    9: "3",
-                    10: "9",
-                    11: "fastTurn",
-                    12: "-30turn",
-                    13: "-60turn",
-                }
 
 class ChooseStrategyEnv(Battle):
     def __init__(self, args, tacview_show=0, vertices=None):
@@ -108,12 +88,13 @@ class ChooseStrategyEnv(Battle):
     1、简单起见，告警信息机械筛选距离最近的，武器信息也用机械筛选时间最近的
     2、只有敌机和队友用变长度序列交给两组注意力机制处理
     3、输出不再是一维数组，仍然是字典包list
-    4、get_obs 的输出仍然是字典，但不使用base_obs中的一长串keys，而是适配神经网络结构。
+    
+    
     keys:  fixed, ally[list], enm[list], ally_mask(定长度序列), enm_mask(定长度序列)
-    1) 观测变量可以给出空列表[]，填充Padding交给算法端的包装器去做
+    1) 观测变量保持维度一致，并提供mask信息表示是否为填充值
     2) 掩码必须显式给出，交给注意力机制去忽略
-    3) 算法包装器需要null_token,不在环境端做
-    4) 两个mask也必须存入经验池。
+    3) 算法包装器需要null_token,不在环境端做处理
+    4) mask也必须存入经验池。        
     """
     def get_obs(self, id, pomdp=0, reward_fn=0):
         full_obs = self.base_obs(id, pomdp, reward_fn)
@@ -125,9 +106,10 @@ class ChooseStrategyEnv(Battle):
         ego_side_num = self.Rnum if side =='r' else self.Bnum
         enm_side_num = self.Bnum if side =='r' else self.Rnum
         
-        # 队友mask跳过了自己
-        mask_ally = np.ones(ego_side_num-1)
-        # 敌人mask包含了全部敌人
+        # 队友mask没有自己（null_token 由 actor 端在全 mask 时强制 [1,0,...0] 处理，环境端不再预留槽位）
+        ally_num = ego_side_num - 1
+        mask_ally = np.ones(ally_num)
+        # 敌人mask包含了全部敌人（同上，不再预留 null_token 槽位）
         mask_enm = np.ones(enm_side_num)
         
         information_output = {'fixed':[], 'ally':[], 'enm':[]}
@@ -167,7 +149,21 @@ class ChooseStrategyEnv(Battle):
                 mask_ally[i] = 0
                 full_obs["ally_infos"][i] = copy.deepcopy(self.scaled_init_mod["ally_info"])
 
-        # 处理导弹（残留处理逻辑，手工注意力）
+        # # 追加敌机 null_token 槽位（固定维度 enm_side_num+1，与开火动作的 null_token 对齐）
+        # full_obs["enm_infos"].append(copy.deepcopy(self.scaled_init_mod["enm_info"]))
+        # # 仅统计真实敌机槽位（不含 null_token），避免 enm_side_num=0 时把空槽位的 1 误算进去
+        # if sum(mask_enm[:enm_side_num]) > 0:
+        #     mask_enm[enm_side_num] = 0
+        # else:
+        #     mask_enm[enm_side_num] = 1
+        # # 追加队友 null_token 槽位（固定维度 ego_side_num），可见性规则与敌机 null_token 一致
+        # full_obs["ally_infos"].append(copy.deepcopy(self.scaled_init_mod["ally_info"]))
+        # if sum(mask_ally[:ally_num]) > 0:
+        #     mask_ally[ally_num] = 0
+        # else:
+        #     mask_ally[ally_num] = 1
+
+        # 处理武器（取最新发射的武器）
         if len(full_obs["weapon_infos"]) == 0: # 空列表
             full_obs["weapon_infos"] = copy.deepcopy(self.scaled_init_mod["weapon_info"])
         else:
@@ -185,7 +181,7 @@ class ChooseStrategyEnv(Battle):
             else:
                 full_obs["weapon_infos"] = copy.deepcopy(self.scaled_init_mod["weapon_info"])
 
-        # 处理威胁
+        # 处理威胁（取最近的威胁）
         if len(full_obs["RWR_infos"]) == 0:
             full_obs["RWR_infos"] = copy.deepcopy(self.scaled_init_mod["RWR_info"])
         else:
@@ -214,7 +210,8 @@ class ChooseStrategyEnv(Battle):
         mask_output['ally'] = mask_ally
         mask_output['enm'] = mask_enm
 
-        return information_output, mask_output, self.unscale_processed_obs(full_obs)
+        full_obs_unscaled = self.unscale_processed_obs(full_obs)
+        return information_output, mask_output, full_obs_unscaled
     
     # 不做策略蒸馏，删除反扁平化处理
     
@@ -223,13 +220,16 @@ class ChooseStrategyEnv(Battle):
 
         s = copy.deepcopy(obs_input)
         # 单个dict封装为list以适配 unscale_state 的遍历结构
-        s["weapon_infos"] = [s["weapon_infos"]]
-        s["RWR_infos"] = [s["RWR_infos"]]
+        if "weapon_infos" in s:
+            s["weapon_infos"] = [s["weapon_infos"]]
+        if "RWR_infos" in s:
+            s["RWR_infos"] = [s["RWR_infos"]]
 
         s1 = self.unscale_state(s)
-
-        s1["weapon_infos"]=s1["weapon_infos"][0]
-        s1["RWR_infos"]=s1["RWR_infos"][0]
+        if "weapon_infos" in s1:
+            s1["weapon_infos"]=s1["weapon_infos"][0]
+        if "RWR_infos" in s1:
+            s1["RWR_infos"]=s1["RWR_infos"][0]
         return s1
     
     # 雷达动作(只有开关)
@@ -256,11 +256,13 @@ class ChooseStrategyEnv(Battle):
         
         # 输入动作与动力运动学状态
         max_enm_index = enm_num + 1 # 预留多一个槽位给null_token
-        if enm_index >= max_enm_index:
-            can_fire = 0 # 禁止向虚token开火
-            return None
-        else:
-            can_fire = 1
+        # 环境端不静默吞掉虚目标/越界索引，直接抛错暴露 source_id 与 enm_index，便于定位 actor 输出问题
+        if enm_index >= enm_num:
+            raise ValueError(
+                f"[fire_9x] source_id={source_id} 收到越界/虚目标索引 enm_index={enm_index}, "
+                f"enm_num={enm_num} (合法范围 0~{enm_num - 1})"
+            )
+        can_fire = 1
 
         new_missile_id = None
         ego = self.find_uav_with_id(source_id)
@@ -315,11 +317,13 @@ class ChooseStrategyEnv(Battle):
         
         # 输入动作与动力运动学状态
         max_enm_index = enm_num + 1 # 预留多一个槽位给null_token
-        if enm_index >= max_enm_index:
-            can_fire = 0 # 禁止向需token开火
-            return None
-        else:
-            can_fire = 1
+        # 环境端不静默吞掉虚目标/越界索引，直接抛错暴露 source_id 与 enm_index，便于定位 actor 输出问题
+        if enm_index >= enm_num:
+            raise ValueError(
+                f"[fire_120] source_id={source_id} 收到越界/虚目标索引 enm_index={enm_index}, "
+                f"enm_num={enm_num} (合法范围 0~{enm_num - 1})"
+            )
+        can_fire = 1
 
         new_missile_id = None
         ego = self.find_uav_with_id(source_id)
@@ -379,13 +383,15 @@ class ChooseStrategyEnv(Battle):
 
         # 输入动作与动力运动学状态
         max_enm_index = enm_num + 1 # 预留多一个槽位给null_token
-        if enm_index >= max_enm_index:
-            vice_uav_states["enm_infos"] = self.state_init_mod["enm_info"]
-            ego.current_target_id = None
-        else:
-            # 执行动作前筛选目标
-            vice_uav_states["enm_infos"] = vice_uav_states["enm_infos"][enm_index]
-            ego.current_target_id = self.index2id(ego.id, enm_index, relation='enm') # 根据index找到id
+        # 环境端不静默吞掉虚目标/越界索引，直接抛错暴露 id 与 enm_index
+        if enm_index >= enm_num:
+            raise ValueError(
+                f"[maneuver_for_1_enm] id={id} 收到越界/虚目标索引 enm_index={enm_index}, "
+                f"enm_num={enm_num} (合法范围 0~{enm_num - 1})"
+            )
+        # 执行动作前筛选目标
+        vice_uav_states["enm_infos"] = vice_uav_states["enm_infos"][enm_index]
+        ego.current_target_id = self.index2id(ego.id, enm_index, relation='enm') # 根据index找到id
         enm_info = vice_uav_states["enm_infos"]
 
         # 队友的方位没有考虑在动作空间里，暂不做压缩

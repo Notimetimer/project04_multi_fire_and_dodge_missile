@@ -314,7 +314,7 @@ def worker_process(rank, pipe, args, state_dim, hidden_dim, action_dims_dict, de
                     # Get rewards for blue
                     if blue_ids:
                         for i, id in enumerate(blue_ids):
-                            is_done, reward_dict = env.combat_terminate_and_reward(id, [])
+                            is_done, reward_dict = env.combat_terminate_and_reward(id)
                             rew = sum(reward_dict.values())
                             blue_trans['rewards'].append(rew)
                             blue_trans['dones'].append(is_done)

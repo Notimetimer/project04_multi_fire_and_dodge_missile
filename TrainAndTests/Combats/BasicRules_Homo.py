@@ -17,7 +17,7 @@ import csv
 import glob
 import pickle
 
-use_tacview = 2 # 1 动态显示 2 静默写入 acmi_records
+use_tacview = 0 # 1 动态显示 2 静默写入 acmi_records
 action_cycle_multiplier = 10
 
 def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
@@ -71,10 +71,10 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
     threat_distance_list = np.array(RWR_infos["threat_distance"]) # 威胁距离
     
     if RWR_list.any():
-        RWR = True
+        RWR = 1
         threat_distance = np.min(threat_distance_list[RWR_list > 0])
     else:
-        RWR = False
+        RWR = 0
         threat_distance = 999e3
 
     # 不同策略开始逃跑的触发距离
@@ -99,7 +99,9 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
                 current_min_distance = enm_distance_list[i]
     
     if selected_enm_index is None:
-        selected_index = num_mask_enm + 1
+        # 没有存活敌机时，无法指向真实目标。用 0 号槽位（已死亡/默认填充）作为占位，
+        # 保证 maneuver_for_1_enm 能合法读取（读到中性默认值），fire_action.do=0 不会开火
+        selected_index = 0
         if RWR and threat_distance < escape_distance_list[rules_num]: # 受到威胁
             # 优先俯冲回转至5000m以下
             if alt > 5000:
@@ -123,7 +125,7 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
 
         flight_action = {'do': [action_v, action_h], 'at': selected_index}  
         # flight_action = {'do': maneuver_cmds, 'at': selected_index}
-        fire_action = {'do': False, 'at': selected_index}
+        fire_action = {'do': 0, 'at': selected_index}
         radar_action = 1
         return flight_action, fire_action, radar_action
 
@@ -137,13 +139,21 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
     AA_hor = AA_hor_list[selected_index]
 
     # 1. 计算初始的开火意图
-    fire_120 = False
+    fire_120 = 0
     case1 = distance < 80e3 and (sin_theta >= sin(30*pi/180) or alt >= 9e3) # 60e3
     case2 = distance < 75e3 # 75e3 55e3
     if (case1 or case2) and ATA < 60 * pi/180 and abs(delta_psi) < 30*pi/180:
         if t_fired >= 40 and not on_guiding and not (distance>12e3 and abs(AA_hor) < 30*pi/180):
-            fire_120 = True
+            fire_120 = 1
 
+    # 被冷却时间、双方dead限制，驳回开火指令
+    ego_alive = mask_inputs["ego"]
+    ego_has_ammo = rule_inputs["ego_ammo"]
+    enm_alive = mask_inputs["enm"][selected_index]
+    if not (ego_alive and ego_has_ammo and enm_alive):
+        fire_120 = 0
+    
+    
     action_v = 0 # 爬升 action_v = 1 # 追踪
     action_h = 0 # 追踪
     maneuver_cmds = [action_v, action_h] # 默认执行基础进攻
@@ -185,7 +195,7 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
             action_h = 3 # 置尾机动
             maneuver_cmds = [action_v, action_h]
             # maneuver_cmds = 8 # 立刻 split-S
-            fire_120 = False # 防御时不发射
+            fire_120 = 0 # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离，或上一回合是爬升
             if delta_psi < 0:
                 action_v = 1 # 平飞
@@ -203,10 +213,10 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
                 action_v = 0 # 爬升
                 action_h = 0 # 追踪
                 # maneuver_cmds = 2 # 则本回合执行爬升
-                fire_120 = False
+                fire_120 = 0
                 maneuver_cmds = [action_v, action_h]
             else:
-                fire_120 = True
+                fire_120 = 1
         else:
             maneuver_cmds = base_offensive_action
         fire_missile_affirmative = fire_120
@@ -216,7 +226,7 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
             action_v = 2 # 下降高度
             action_h = 3 # 置尾机动
             maneuver_cmds = [action_v, action_h]
-            fire_120 = False # 防御时不发射
+            fire_120 = 0 # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离，或上一回合是爬升
             if delta_psi < 0:
                 action_v = 2 # 下降
@@ -230,10 +240,10 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
             if sin_theta < sin(30*pi/180) and alt < 9500:  # last_action != 2: # 如果上一动作为非爬升
                 action_v = 0 # 爬升
                 action_h = 0 # 追踪
-                fire_120 = False
+                fire_120 = 0
                 maneuver_cmds = [action_v, action_h]
             else:
-                fire_120 = True
+                fire_120 = 1
         else:
             maneuver_cmds = base_offensive_action
         fire_missile_affirmative = fire_120
@@ -244,7 +254,7 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
             action_v = 2 # 下降高度
             action_h = 3 # 置尾机动
             maneuver_cmds = [action_v, action_h]
-            fire_120 = False # 防御时不发射
+            fire_120 = 0 # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离
             action_v = 1 # 平飞
             action_h = 0 # 追踪，不crank
@@ -253,10 +263,10 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
             if sin_theta < sin(30*pi/180) and alt < 9500:
                 action_v = 0 # 爬升
                 action_h = 0 # 追踪
-                fire_120 = False
+                fire_120 = 0
                 maneuver_cmds = [action_v, action_h]
             else:
-                fire_120 = True
+                fire_120 = 1
         else:
             maneuver_cmds = base_offensive_action
         fire_missile_affirmative = fire_120
@@ -267,7 +277,7 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
             action_v = 2 # 下降高度
             action_h = 3 # 置尾机动
             maneuver_cmds = [action_v, action_h]
-            fire_120 = False # 防御时不发射
+            fire_120 = 0 # 防御时不发射
         elif on_guiding: # 满足开火条件但在中近距离
             if delta_psi < 0:
                 action_v = 2 # 下降
@@ -291,10 +301,10 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
             if sin_theta < sin(30*pi/180) and alt < 9500:
                 action_v = 0 # 爬升
                 action_h = 0 # 追踪
-                fire_120 = False
+                fire_120 = 0
                 maneuver_cmds = [action_v, action_h]
             else:
-                fire_120 = True
+                fire_120 = 1
         else:
             maneuver_cmds = base_offensive_action
         fire_missile_affirmative = fire_120
@@ -383,7 +393,7 @@ if __name__=='__main__':
         
         # 启动仿真前清空上次遗留的pkl和csv
         event_log_dir = os.path.join(project_root, 'acmi_records')
-        os.makedirs(event_log_dir, exist_ok=True)
+        os.makedirs(event_log_dir, exist_ok=1)
         for pattern in ('*.pkl', '*.csv'):
             for f in glob.glob(os.path.join(event_log_dir, pattern)):
                 os.remove(f)
@@ -398,8 +408,10 @@ if __name__=='__main__':
 
             env.reset(
                 red_birth_state=DEFAULT_RED_BIRTH_STATE, blue_birth_state=DEFAULT_BLUE_BIRTH_STATE,
-                red_init_num=2, blue_init_num=2,
-                red_init_ammo=4, blue_init_ammo=4
+                red_init_num=2,
+                blue_init_num=2,
+                red_init_ammo=4,
+                blue_init_ammo=4,
                 ) # 4
             r_action_label=0
             b_action_label=0
@@ -407,7 +419,7 @@ if __name__=='__main__':
             
             b_reward = None
 
-            done = False
+            done = 0
 
             env.dt_maneuver = dt_maneuver
             
@@ -433,7 +445,7 @@ if __name__=='__main__':
                 # 回合结束判断
                 current_t = count * dt_maneuver
                 steps_of_this_eps += 1
-                if env.running == False or done:
+                if env.running == 0 or done:
                     # print('回合结束，时间为：', env.t, 's')
                     break
                 # 获取观测信息
@@ -491,10 +503,6 @@ if __name__=='__main__':
                             target_index = fire_action['at']
                             env.fire_120(id, target_index, tabu=0)
                             
-                        # for i, fire in enumerate(fire_action['do']):
-                        #     if fire:
-                        #         target_index = fire_action['at'][i]
-                        #         env.fire_120(id, target_index, tabu=0)
                         
                         # 必须确认雷达开关状态
                         env.radar_action(id, radar_action)
@@ -546,16 +554,16 @@ if __name__=='__main__':
 
                 env.step(flight_cmds.values()) # Environment updates every dt_maneuver
 
-                # DEBUG
-                if steps_of_this_eps % action_cycle_multiplier == 0:
-                    for id in env.UAV_ids:
-                        # debug
-                        UAV = env.find_uav_with_id(id)
-                        if UAV.dead:
-                            print("检查导弹的目标")
+                # # DEBUG
+                # if steps_of_this_eps % action_cycle_multiplier == 0:
+                #     for id in env.UAV_ids:
+                #         # debug
+                #         UAV = env.find_uav_with_id(id)
+                #         if UAV.dead:
+                #             print("检查导弹的目标")
 
                 for _id in env.UAV_ids: # 每架飞机都调用一遍，保证各自的周期事件都被积累
-                    done, _ = env.combat_terminate_and_reward(id=_id, action_shoots=None, action_cycle_multiplier=action_cycle_multiplier)
+                    done, _ = env.combat_terminate_and_reward(id=_id, action_cycle_multiplier=action_cycle_multiplier)
 
                 # b_reward = b_reward_event + b_reward_constraint + b_reward_shaping
 

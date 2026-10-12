@@ -37,7 +37,7 @@ def softplus(x):
     return np.log(1+np.exp(x))
 
 class ChooseStrategyEnv(BaseChooseStrategyEnv):
-    def combat_terminate_and_reward(self, id, action_shoots, action_cycle_multiplier=10):
+    def combat_terminate_and_reward(self, id, action_cycle_multiplier=10):
         self.update_entity_states() # 更新所有飞机和导弹存活情况
         # 奖励权重预置
         DENSE_REWARD_WEIGHT = 0.5   # 密集奖励参考值
@@ -48,7 +48,7 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
         MSL_LOCK_WEIGHT = 5         # 导弹锁定
         MISS_WEIGHT = -5            # 脱靶
         ESCAPE_ONCE_WEIGHT = 5      # 逃脱一次
-        FOX3 = -5                   # 发射一枚导弹的基础惩罚
+        FOX3 = -5                   # 开火惩罚
         
         # 各个分项总奖励
         reward_dict = {
@@ -206,11 +206,13 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 events_this_cycle.append('落败')
             if outcome == 0:
                 events_this_cycle.append('平局')
+            
             ego.whole_cycle_escape_once = 0
             ego.whole_cycle_got_a_miss = 0
             ego.whole_cycle_got_a_kill = 0
             ego.whole_cycle_can_let_go = 0
-            # 有发射导弹
+            
+            # 开火惩罚，通过弹药下降沿判断
             if ego.ammo < ego.last_ammo_whole_cycle:
                 current_target_id = ego.launched_aim120s[-1].target_id
                 events_this_cycle.append(f'向{current_target_id}开火')

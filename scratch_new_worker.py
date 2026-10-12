@@ -88,7 +88,7 @@ def worker_process(worker_id, pipe, args, device_worker, num_workers, shared_dic
                 # Get rewards for blue
                 if active_blue:
                     for i, id in enumerate(active_blue):
-                        rew, is_done, _ = env.combat_terminate_and_reward(id, [])
+                        rew, is_done, _ = env.combat_terminate_and_reward(id)
                         blue_trans['rewards'].append(rew)
                         blue_trans['dones'].append(is_done)
                         ep_return += rew

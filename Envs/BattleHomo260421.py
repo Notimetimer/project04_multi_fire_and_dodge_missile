@@ -262,6 +262,17 @@ class Battle(object):
         # 初始化无人机
         self.Rnum = red_init_num
         self.Bnum = blue_init_num
+        
+        # 原始可见性矩阵（0=不可见, 1=仅方位可见, 2=完全可见），必须用 int 才能区分 1 和 2
+        self.prim_r2b_visable = np.ones((self.Rnum, self.Bnum), dtype=np.int8)
+        self.prim_b2r_visable = np.ones((self.Bnum, self.Rnum), dtype=np.int8)
+        # 组合视野可见性矩阵（队内共享后，取值同上）
+        self.r2b_visable = np.ones((self.Rnum, self.Bnum), dtype=np.int8)
+        self.b2r_visable = np.ones((self.Bnum, self.Rnum), dtype=np.int8)
+        # id -> 队内位置索引（逆向索引可由 {v:k for k,v in d.items()} 得到，不再单独维护）
+        self.r_id2indexinside={}
+        self.b_id2indexinside={}
+        
         self.RUAVsTable = {}
         self.BUAVsTable = {}
         self.UAVsTable = {}
@@ -275,6 +286,12 @@ class Battle(object):
         for i in range(self.Rnum + self.Bnum):
             is_red = i < self.Rnum
             index_in_side = i if is_red else i - self.Rnum
+            
+            # 初始化组合视野过程中id对位置的映射
+            if is_red:
+                self.r_id2indexinside[(index_in_side + 1)] = index_in_side
+            else:
+                self.b_id2indexinside[(index_in_side + 201)] = index_in_side
             
             UAV = UAVModel(dt=self.dt_move)
             UAV.state_memory = None
@@ -388,9 +405,10 @@ class Battle(object):
         self.unused_b_missile_num = 0
         for uav in self.RUAVs:
             self.unused_r_missile_num += 0 if uav.dead else uav.ammo
+            self.get_primitive_obs(uav.id)
         for uav in self.BUAVs:
             self.unused_b_missile_num += 0 if uav.dead else uav.ammo
-        
+            self.get_primitive_obs(uav.id)
         # 导弹重新搜索目标
         for missile in self.alive_missiles:
             if not missile.radar_on:
@@ -412,7 +430,25 @@ class Battle(object):
                     replacement_distance = distance
             if replacement_id is not None:
                 missile.target_id = replacement_id
-
+        
+        # 队内共享视野
+        for i, uav in enumerate(self.BUAVs):
+            if np.sum(self.prim_r2b_visable[:, i]) >= 2:
+                # 不管是单架飞机有全信息还是多星测角定位，都有完全信息
+                self.r2b_visable[:, i] = 2
+            else:
+                # 按照原始定位来
+                self.r2b_visable[:, i] = self.prim_r2b_visable[:, i]
+            
+        for i, uav in enumerate(self.RUAVs):
+            if np.sum(self.prim_b2r_visable[:, i]) >= 2:
+                # 不管是单架飞机有全信息还是多星测角定位，都有完全信息
+                self.b2r_visable[:, i] = 2
+            else:
+                # 按照原始定位来
+                self.b2r_visable[:, i] = self.prim_b2r_visable[:, i]
+        
+        
     # 根据飞机id查找飞机类实例
     def find_uav_with_id(self, id):
         uav = self.UAVsTable[id]
@@ -1222,6 +1258,50 @@ class Battle(object):
                 rwr["threat_distance"] *= 50e3
         return s
     
+    def get_primitive_obs(self, id):
+        # 判断是否具有原始观测
+        ego = self.find_uav_with_id(id)
+        if ego.side == 'r':
+            ego_id2indexinside = self.r_id2indexinside
+            enm_id2indexinside = self.b_id2indexinside
+            our_prim_visable = self.prim_r2b_visable
+        else:
+            ego_id2indexinside = self.b_id2indexinside
+            enm_id2indexinside = self.r_id2indexinside
+            our_prim_visable = self.prim_b2r_visable
+            
+        # 我在原始可见性矩阵中在第几行
+        ego_indexinside = ego_id2indexinside[id]
+        
+        state = self.get_state(id)
+        # 对每个敌机分别处理可见性问题
+        for i, enm_info in enumerate(state["enm_infos"]):
+            # 观测限制，记忆重放逻辑
+            ATA = enm_info["enm_ATA"]
+            dist = enm_info["enm_dist"]
+            # 情况A: 超出探测距离 -> 完全不可见
+            if dist > ego.max_radar_range:
+                our_prim_visable[ego_indexinside, i] = 0  # 看不见
+            # 情况B: 中距离
+            elif dist > 10e3:
+                locked_by_enm = state["enm_infos"][i]["locked_by_enm"]
+                # B1: 角度大 且 未被锁定 -> 完全不可见
+                if ATA > ego.max_radar_angle_rad and (not locked_by_enm):
+                    our_prim_visable[ego_indexinside, i] = 0  # 看不见
+                # B2: 角度大 但 被锁定 (RWR告警) -> 方位信息可见
+                elif ATA > ego.max_radar_angle_rad and locked_by_enm:
+                    our_prim_visable[ego_indexinside, i] = 1  # 看得到角度
+                # B3: 角度合适 -> 完全可见
+                else:
+                    our_prim_visable[ego_indexinside, i] = 2  # 完全能看见
+            # 情况C：近距
+            else:
+                our_prim_visable[ego_indexinside, i] = 2 # 完全能看见
+            # D: 拒绝泉水指挥官
+            if ego.dead:
+                our_prim_visable[ego_indexinside, i] = 0  # 死了看不见
+                
+    
     def base_obs(self, id, pomdp=0, reward_fn=0):
         # 处理部分可观测、默认值问题、并尺度缩放
         ego = self.find_uav_with_id(id)
@@ -1242,59 +1322,39 @@ class Battle(object):
         # 开局瞬间会给完全信息观测，GRU也改为残差形式，不再需要默认值了
         
         if pomdp and (not reward_fn): 
-            # 对每个敌机分别处理可见性问题
-            """
-            不太高明的做法（但曾经有用）：
-            冻结看不到的敌机信息，而不是用空token代替
-            """
+            # 根据组合视野可见性矩阵决定记忆使用策略，不再重复计算 ATA 和 dist
+            # 可见性等级：0=完全不可见(全用记忆), 1=仅方位可见(距离/速度用记忆), 2=完全可见(不用记忆)
+            if ego.side == 'r':
+                vis_row = self.r2b_visable[self.r_id2indexinside[id], :]
+            else:
+                vis_row = self.b2r_visable[self.b_id2indexinside[id], :]
+
+            # 记忆只加载一次，避免每个敌机都 deepcopy
+            memory = copy.deepcopy(ego.state_memory) if ego.state_memory is not None else copy.deepcopy(state)
+
             for i, enm_info in enumerate(state["enm_infos"]):
-                # 1. 获取记忆 (Rolling Memory)
-                if ego.state_memory is None:
-                    memory = copy.deepcopy(state)
-                else:
-                    memory = copy.deepcopy(ego.state_memory)
-                # 2、观测限制，记忆重放逻辑
-                ATA = enm_info["enm_ATA"]
-                dist = enm_info["enm_dist"]
+                vis_level = int(vis_row[i])
 
-                mem_inertial_beta = state["enm_info_supplement"][i]["enm_q_beta"]
-                mem_inertial_epsilon = state["enm_info_supplement"][i]["enm_q_epsilon"]
-
-                blind_delta_psi = sub_of_radian(mem_inertial_beta, ego.psi)
-                blind_delta_theta = sub_of_radian(mem_inertial_epsilon, ego.theta)
-
-                # 情况A: 超出探测距离 -> 完全不可见
-                if dist > ego.max_radar_range:
-                    # 加载记忆
+                if vis_level == 0:
+                    # 完全不可见 -> 全部用记忆，并用惯性系位置推算当前相对方位
                     state["enm_infos"][i] = copy.deepcopy(memory["enm_infos"][i])
-                    state["enm_infos"][i]["enm_observable"] = 0 # 可见性评级
-                    state["enm_infos"][i]["cos_enm_delta_psi"] = cos(blind_delta_psi)
-                    state["enm_infos"][i]["sin_enm_delta_psi"] = sin(blind_delta_psi)
-                    state["enm_infos"][i]["enm_delta_theta"] = blind_delta_theta
-                # 情况B: 中距离
-                elif dist > 10e3:
-                    locked_by_enm = state["enm_infos"][i]["locked_by_enm"]
-                    # B1: 角度大 且 未被锁定 -> 完全不可见
-                    if ATA > self.RUAV.max_radar_angle_rad and (not locked_by_enm):
-                        # 加载记忆
-                        state["enm_infos"][i] = copy.deepcopy(memory["enm_infos"][i])
-                        state["enm_infos"][i]["enm_observable"] = 0 # 完全不可见
-                        state["enm_infos"][i]["cos_enm_delta_psi"] = cos(blind_delta_psi)
-                        state["enm_infos"][i]["sin_enm_delta_psi"] = sin(blind_delta_psi)
-                        state["enm_infos"][i]["enm_delta_theta"] = blind_delta_theta
-                    # B2: 角度大 但 被锁定 (RWR告警) -> 方位信息可见
-                    elif ATA > self.RUAV.max_radar_angle_rad and locked_by_enm:
-                        state["enm_infos"][i]["enm_observable"] = 1 # 部分可见
-                        for key in ("enm_dist", "v_enm"):
-                            state["enm_infos"][i][key] = memory["enm_infos"][i][key]
-                        # 假设敌机正对着我
-                        state["enm_infos"][i]["enm_AA"] = pi
-                    # B3: 角度合适 -> 完全可见
-                    else:
-                        state["enm_infos"][i]["enm_observable"] = 2 # 完全可见
-                # 情况C：近距
-                else:
-                    state["enm_infos"][i]["enm_observable"] = 2 # 完全可见
+                    state["enm_infos"][i]["enm_observable"] = 0
+                    mem_inertial_beta = state["enm_info_supplement"][i]["enm_q_beta"]
+                    mem_inertial_epsilon = state["enm_info_supplement"][i]["enm_q_epsilon"]
+                    state["enm_infos"][i]["cos_enm_delta_psi"] = cos(sub_of_radian(mem_inertial_beta, ego.psi))
+                    state["enm_infos"][i]["sin_enm_delta_psi"] = sin(sub_of_radian(mem_inertial_beta, ego.psi))
+                    state["enm_infos"][i]["enm_delta_theta"] = sub_of_radian(mem_inertial_epsilon, ego.theta)
+
+                elif vis_level == 1:
+                    # 仅方位可见（RWR告警）-> 距离和速度用记忆，假设敌机正对着我
+                    state["enm_infos"][i]["enm_observable"] = 1
+                    state["enm_infos"][i]["enm_dist"] = memory["enm_infos"][i]["enm_dist"]
+                    state["enm_infos"][i]["v_enm"] = memory["enm_infos"][i]["v_enm"]
+                    state["enm_infos"][i]["enm_AA"] = pi
+
+                else:  # vis_level == 2
+                    # 完全可见 -> 不用记忆
+                    state["enm_infos"][i]["enm_observable"] = 2
         else:
             # 不是pomdp，那记忆也没有意义了
             pass
