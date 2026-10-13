@@ -1,4 +1,5 @@
 import os
+from math import *
 import numpy as np
 import torch
 from torch import nn
@@ -11,9 +12,10 @@ HOR_DIM = 7                       # 水平动作维度
 _MASK_VAL = 1e8                   # 掩码填充值（-inf 量级，保证 softmax 后概率为 0）
 
 # 规避模式（warning=True）下，仅允许水平动作索引 {2,3,4}，其余维度置为 -1e8
+# hor顺序： 前，右前，右，后，左，左前，巡逻
 _EVADE_HOR_MASK = torch.tensor([-1, -1, 0, 0, 0, -1, -1], dtype=torch.float32) * _MASK_VAL
-# 安全模式（no_warning_or_enm=True）下，仅允许水平动作索引 {6}，其余维度置为 -1e8
-_SAFE_HOR_MASK = torch.tensor([-1, -1, -1, -1, -1, -1, 0], dtype=torch.float32) * _MASK_VAL
+# # 安全模式（no_warning_or_enm=True）下，仅允许水平动作索引 {6}，其余维度置为 -1e8
+# _SAFE_HOR_MASK = torch.tensor([-1, -1, -1, -1, -1, -1, 0], dtype=torch.float32) * _MASK_VAL
 
 
 # 单头交叉注意力模块：query 来自自身状态，key/value 来自实体序列。
@@ -51,7 +53,7 @@ class selector(nn.Module):
         self.enm_attn = EntityAttention(fixed_dim, enm_shape[1], embed_dim)
         self.ally_attn = EntityAttention(fixed_dim, ally_shape[1], embed_dim)
 
-    def forward(self, agent_inputs, mask_inputs, enm_idx=None, ally_idx=None):
+    def forward(self, agent_inputs, mask_inputs, rule_inputs, enm_idx=None, ally_idx=None):
         fixed = agent_inputs['fixed'] # 应该是(batch, fixed_dim)
         enm = agent_inputs['enm'] # 应该是(batch, enm_num, enm_shape[1])
         ally = agent_inputs['ally'] # 应该是(batch, ally_num, ally_shape[1])
@@ -83,11 +85,27 @@ class selector(nn.Module):
 
         # selected_info: concat((B, fixed_dim), (B, embed_dim), (B, embed_dim)) -> (B, fixed_dim + 2*embed_dim)
         selected_info = torch.cat((fixed, e_enm, e_ally), dim=-1)
-        return selected_info, enm_idx, ally_idx, log_prob_enm, log_prob_ally
+        
+        # rule_inputs 处理：按 enm_idx 抽取对应敌机信息，组装 mini_rule_inputs
+        # 输入 rule_inputs 维度结构（张量化后）：
+        #   {'ammo': [B], 'enm_infos': {key: [B, n_enm]}, 'RWR_infos': {key: [B]}, 'weapon_infos': {key: [B]}}
+        # 输出 mini_rule_inputs 中 enm_info 已从 [B, n_enm] 按 enm_idx 抽取为 [B]
+        mini_rule_inputs = {}
+        mini_rule_inputs['ammo'] = rule_inputs.get('ammo')
+        mini_rule_inputs['RWR_infos'] = rule_inputs.get('RWR_infos')
+        mini_rule_inputs['weapon_infos'] = rule_inputs.get('weapon_infos')
+        enm_infos = rule_inputs.get('enm_infos', {})  # dict{key: [B, n_enm]}，每个 key 是所有敌机的某项属性
+        enm_idx_col = enm_idx.unsqueeze(1)  # (B,) -> (B, 1) for gather along dim=1
+        mini_rule_inputs['enm_info'] = {}
+        for k, v in enm_infos.items():
+            v_t = torch.as_tensor(v, device=enm_idx.device)
+            mini_rule_inputs['enm_info'][k] = v_t.gather(1, enm_idx_col).squeeze(1)  # (B,)
+            # 输出[b, 0] = v_t[b, enm_idx_col[b, 0]] = v_t[b, enm_idx[b]]
+        return selected_info, enm_idx, ally_idx, mini_rule_inputs, log_prob_enm, log_prob_ally
 
 
 # 飞行员网络：接收 selector 选出的信息，输出 vert/hor/fire 三路逻辑值。
-# 规则掩码（warning / no_warning_or_enm / just_fired）以 -1e8 偏移量的形式
+# 规则掩码以 -1e8 偏移量的形式
 # 汇流到对应 logits 上，由 actorWrapper 负责后续的采样与 log_prob 计算。
 class pilot(nn.Module):
     def __init__(self, input_dim, hidden_dims=(256, 256)):
@@ -104,32 +122,68 @@ class pilot(nn.Module):
         self.fire_head = nn.Linear(prev, 1)
 
     @staticmethod
-    def _extract_flag(rule_inputs, key, batch_size, device, default=False):
-        if isinstance(rule_inputs, list):
-            vals = [bool((r or {}).get(key, default)) for r in rule_inputs]
-        elif isinstance(rule_inputs, dict):
-            vals = [bool((rule_inputs or {}).get(key, default))] * batch_size
+    def _extract_flag(mini_rule_inputs, key, batch_size, device, default=False):
+        if isinstance(mini_rule_inputs, list):
+            vals = [bool((r or {}).get(key, default)) for r in mini_rule_inputs]
+        elif isinstance(mini_rule_inputs, dict):
+            vals = [bool((mini_rule_inputs or {}).get(key, default))] * batch_size
         else:
             vals = [bool(default)] * batch_size
         return torch.tensor(vals, dtype=torch.bool, device=device)
 
-    def _warning(self, rule_inputs, batch_size, device):
-        # 用户自定义“警告”判定条件
-        RWR_infos = rule_inputs["RWR_infos"]
-        warning = RWR_infos["warning"]
-        return warning
+    def _warning(self, mini_rule_inputs, batch_size, device):
+        # 向量化：按 sin_threat_delta_psi 符号批量生成 hor delta 掩码
+        RWR = mini_rule_inputs.get('RWR_infos') or {}
+        warning = np.asarray(RWR.get('warning', np.zeros(batch_size, dtype=bool))).reshape(-1).astype(bool)
+        sin_dp = np.asarray(RWR.get('sin_threat_delta_psi', np.zeros(batch_size))).reshape(-1)
+        delta = np.zeros((batch_size, HOR_DIM), dtype=np.float32)
+        if warning.any():
+            sign = np.sign(sin_dp)
+            # hor顺序：前，右前，右，后，左，左前，巡逻
+            for s, m in {1: [-1, -1, 0, 0, -1, -1, -1],
+                         0: [-1, -1, 0, 0,  0, -1, -1],
+                         -1: [-1, -1, -1, 0, 0, -1, -1]}.items():
+                sel = (sign == s) & warning
+                if sel.any():
+                    delta[sel] = np.array(m, dtype=np.float32) * _MASK_VAL
+        return (torch.as_tensor(warning, dtype=torch.bool, device=device),
+                torch.as_tensor(delta, dtype=torch.float32, device=device))
 
-    def _no_warning_or_enm(self, rule_inputs, batch_size, device):
-        # TODO: 用户自定义“无警告或敌机”判定条件
-        return self._extract_flag(rule_inputs, 'no_warning_or_enm', batch_size, device, default=False)
+    def _enm_in_range(self, mini_rule_inputs, batch_size, device):
+        # 向量化：批量判断敌机是否在可攻击区，不可攻击时禁火
+        enm = mini_rule_inputs.get('enm_info') or {}
+        eo = np.asarray(enm.get('enm_observable', np.zeros(batch_size))).reshape(-1)
+        cdp = np.asarray(enm.get('cos_enm_delta_psi', np.zeros(batch_size))).reshape(-1)
+        el = np.asarray(enm.get('enm_locked', np.zeros(batch_size))).reshape(-1).astype(bool)
+        edt = np.asarray(enm.get('enm_delta_theta', np.zeros(batch_size))).reshape(-1)
+        ed = np.asarray(enm.get('enm_dist', np.zeros(batch_size))).reshape(-1)
+        in_range = (eo > 0) & (cdp > np.cos(np.radians(40))) & el & (edt < np.radians(15)) & (ed < 100e3)
+        out_range = (~in_range)
+        delta_fire = ((~in_range).astype(np.float32) * (-_MASK_VAL)).reshape(-1, 1)
+        return (torch.as_tensor(out_range, dtype=torch.bool, device=device),
+                torch.as_tensor(delta_fire, dtype=torch.float32, device=device))
 
-    def _just_fired(self, rule_inputs, batch_size, device):
-        # TODO: 用户自定义“刚开火过”判定条件
-        # 示例（留空，按需替换）：
-        #   return self._extract_flag(rule_inputs, 'just_fired', batch_size, device, default=False)
-        return torch.zeros(batch_size, dtype=torch.bool, device=device)
-
-    def forward(self, selected_info, rule_inputs):
+    def _just_fired(self, mini_rule_inputs, batch_size, device):
+        # 向量化：missile_t_fly < 30 视为刚发射，禁火
+        weapon = mini_rule_inputs.get('weapon_infos') or {}
+        t_fly = np.asarray(weapon.get('missile_t_fly', np.full(batch_size, 1e9))).reshape(-1)
+        just_fired = (t_fly < 30)
+        delta_fire = (just_fired.astype(np.float32) * (-_MASK_VAL)).reshape(-1, 1)
+        return (torch.as_tensor(just_fired, dtype=torch.bool, device=device),
+                torch.as_tensor(delta_fire, dtype=torch.float32, device=device))
+    
+    def _has_ammo(self, mini_rule_inputs, batch_size, device):
+        # 向量化：ammo <= 0 时无弹可用，禁火
+        ammo_arr = mini_rule_inputs.get('ammo', None)
+        if ammo_arr is None:
+            no_ammo = np.zeros(batch_size, dtype=bool)
+        else:
+            no_ammo = (np.asarray(ammo_arr).reshape(-1) <= 0)
+        delta_fire = (no_ammo.astype(np.float32) * (-_MASK_VAL)).reshape(-1, 1)
+        return (torch.as_tensor(no_ammo, dtype=torch.bool, device=device),
+                torch.as_tensor(delta_fire, dtype=torch.float32, device=device))
+        
+    def forward(self, selected_info, mini_rule_inputs):
         features = self.backbone(selected_info)
 
         # 主干输出三路原始 logits
@@ -140,26 +194,24 @@ class pilot(nn.Module):
         B = selected_info.shape[0]
         device = selected_info.device
 
-        warning = self._warning(rule_inputs, B, device)
-        no_warning_or_enm = self._no_warning_or_enm(rule_inputs, B, device)
-        just_fired = self._just_fired(rule_inputs, B, device)
+        warning_flag, delta_hor_evade = self._warning(mini_rule_inputs, B, device)
+        out_range_flag, delta_fire_out_range = self._enm_in_range(mini_rule_inputs, B, device)
+        just_fired_flag, delta_fire_recent = self._just_fired(mini_rule_inputs, B, device)
+        no_ammo_flag, delta_fire_noammo = self._has_ammo(mini_rule_inputs, B, device)
 
-        # 第一处汇流：hor_logits = pre_hor_logits + delta_evade + delta_safe
-        # warning 为真时叠加规避掩码，no_warning_or_enm 为真时叠加安全掩码
-        delta_evade = warning.float().unsqueeze(-1) * _EVADE_HOR_MASK.to(device)
-        delta_safe = no_warning_or_enm.float().unsqueeze(-1) * _SAFE_HOR_MASK.to(device)
-        hor_logits = pre_hor_logits + delta_evade + delta_safe
+        # 第一处汇流：hor_logits = pre_hor_logits + delta_evade
+        # delta_evade 由 _warning 按威胁方向动态生成；
+        hor_logits = pre_hor_logits + delta_hor_evade
 
-        # 第二处汇流：fire_logits += delta_fire
-        # just_fired 为真时将开火逻辑值置为 -1e8（禁火）
-        delta_fire = just_fired.float().unsqueeze(-1) * (-_MASK_VAL)   # (B, 1)
-        fire_logits = fire_logits + delta_fire
+        # 第二处汇流：fire_logits += 多源禁火叠加
+        fire_logits = fire_logits + delta_fire_out_range + delta_fire_recent + delta_fire_noammo  # (B, 1)
 
         # 第三处汇流：打包为 logits 字典，由 actorWrapper 采样并计算 log_prob
         return {
             'hor': hor_logits,
             'vert': vert_logits,
             'fire': fire_logits,
+            'fire_mask': 1 - (out_range_flag | just_fired_flag | no_ammo_flag).long(),
         }
 
 
@@ -217,13 +269,13 @@ class ActorWrapper(nn.Module):
         packed_agent, packed_mask = self.pack_inputs(agent_inputs, mask_inputs)
         sel_actions = None if actions is None else {
             'enm_idx': actions['enm_idx'], 'ally_idx': actions['ally_idx']}
-        selected_info, enm_idx, ally_idx, log_prob_enm, log_prob_ally = self.selector(
-            packed_agent, packed_mask,
+        selected_info, enm_idx, ally_idx, mini_rule_inputs, log_prob_enm, log_prob_ally = self.selector(
+            packed_agent, packed_mask, rule_inputs,
             enm_idx=None if sel_actions is None else sel_actions['enm_idx'],
             ally_idx=None if sel_actions is None else sel_actions['ally_idx'],
         )
         # pilot 只输出三路 logits，采样与 log_prob 在 wrapper 中完成
-        pilot_logits = self.pilot(selected_info, rule_inputs)
+        pilot_logits = self.pilot(selected_info, mini_rule_inputs)
 
         vert_dist = Categorical(logits=pilot_logits['vert'])
         hor_dist = Categorical(logits=pilot_logits['hor'])

@@ -105,8 +105,7 @@ if __name__=='__main__':
 
     decide_steps_after_update = 0
 
-    # stack_field: 递归堆叠 LocalTrans 各字段为 dict-of-array 或 array
-
+    # 递归堆叠 LocalTrans 各字段为 dict-of-array 或 array
     def stack_field(field_list):
         """递归堆叠：list[单步值] -> dict-of-array 或 array。
         None 自动跳过；dict 对每个 key 递归；
@@ -152,8 +151,11 @@ if __name__=='__main__':
         Rewards = {}
         
         # 采集不同轨迹的动作
+        episode_times = []  # 记录每场耗时
         for i_episode in range(5): # 5
-
+            ep_start = time.time()
+            prev_total = sum(episode_times)
+            print(f"开始第{i_episode+1}场对抗，前{i_episode}场对抗耗时：{prev_total:.1f}s")
             episode_return = 0
             DEFAULT_RED_BIRTH_STATE, DEFAULT_BLUE_BIRTH_STATE = creat_initial_state()
             env.reset(
@@ -175,6 +177,7 @@ if __name__=='__main__':
             done = False            
             Last_Obs = {id: None for id in env.UAV_ids}
             Last_States = {id: None for id in env.UAV_ids}
+            Curr_States = {id: None for id in env.UAV_ids}
             env.dt_maneuver = dt_maneuver
             
             episode_start_time = time.time()
@@ -182,7 +185,7 @@ if __name__=='__main__':
             # 环境运行一轮的情况
             steps_of_this_eps = -1 # 没办法了
             
-            # 一轮游
+            # 一轮仿真开始
             for count in range(round(args.max_episode_len / dt_maneuver)):
                 # 回合结束判断
                 current_t = count * dt_maneuver
@@ -199,14 +202,13 @@ if __name__=='__main__':
 
                 for id in env.UAV_ids:
                     agent_input, mask_input, rule_input = env.get_obs(id, pomdp=POMDP)
+                    Curr_States[id], _, _ = env.get_obs(id, reward_fn=1)
                     agent_inputs_[id] = agent_input
                     mask_inputs_[id] = mask_input
                     prim_rule_inputs_[id] = copy.deepcopy(rule_input)
                     rule_inputs_[id] = take_some_of_rule_inputs(rule_input)
                     Obs[id] = copy.deepcopy({"agent_input":agent_input, "mask_input":mask_input, "rule_input":rule_inputs_[id]})
-
-                # TODO 拼接Obs到Curr_State
-                Curr_States = {id: None for id in env.UAV_ids}
+                # # TODO CurrStates从Obs获取fixed信息
 
                 # --- 智能体决策 ---
                 # 判断是否到达了决策点（每 10 步）
@@ -217,12 +219,10 @@ if __name__=='__main__':
                         # side_word = 'red' if UAV.side == 'r' else 'blue'
                         # num_word = id if UAV.side == 'r' else id-200
                         # print("我是", side_word, num_word)
-                        if steps_of_this_eps > 0:
-                            LocalTrans[id] = append_experience(LocalTrans[id], Obs[id], Last_States[id], 
+                        if Last_Obs[id] is not None:
+                            LocalTrans[id] = append_experience(LocalTrans[id], Last_Obs[id], Last_States[id], 
                                                                last_Actions[id], Rewards[id], Curr_States[id], 
                                                                done=0, active_mask=not UAV.dead)
-                            Last_Obs[id] = copy.deepcopy(Obs[id])
-                            Last_States[id] = copy.deepcopy(Curr_States[id])
                         
                         # Agent 产生动作
                         if 1: # 如果类型是规则智能体而非神经网络
@@ -238,7 +238,10 @@ if __name__=='__main__':
                         else:
                             # 如果类型是神经网络
                             pass
-
+                        
+                        # 决策瞬间的states和obs
+                        Last_Obs[id] = copy.deepcopy(Obs[id])
+                        Last_States[id] = copy.deepcopy(Curr_States[id])
                         last_Actions[id] = copy.deepcopy({
                                 "vert": vert,
                                 "hor":  hor ,
@@ -306,6 +309,7 @@ if __name__=='__main__':
                     done, reward_dict = env.combat_terminate_and_reward(id=id, action_cycle_multiplier=action_cycle_multiplier)
                     Rewards[id] = sum(reward_dict.values())
                     agent_input, mask_input, rule_input = env.get_obs(id, pomdp=POMDP)
+                    Curr_States[id], _, _ = env.get_obs(id, reward_fn=1)
                     agent_inputs_[id] = agent_input
                     mask_inputs_[id] = mask_input
                     prim_rule_inputs_[id] = copy.deepcopy(rule_input)
@@ -313,9 +317,7 @@ if __name__=='__main__':
                     Obs[id] = copy.deepcopy({"agent_input":agent_input, "mask_input":mask_input, "rule_input":rule_inputs_[id]})
                     # 1 号机 done 采集（仅在决策步，与 obs/actions 对齐）
                     # done 采集已由 LocalTrans 统一处理
-
-                # TODO 拼接Obs到Curr_States
-                Curr_States = {id: None for id in env.UAV_ids}
+                # # TODO CurrStates从Obs获取fixed信息
                 
                 '''显示运行轨迹'''
                 # 可视化
@@ -324,23 +326,23 @@ if __name__=='__main__':
             if done:
                 # 这里已经是最后的next_states
                 for id in env.UAV_ids:
-                    agent_input, mask_input, rule_input = env.get_obs(id, pomdp=POMDP)
-                    agent_inputs_[id] = agent_input
-                    mask_inputs_[id] = mask_input
-                    prim_rule_inputs_[id] = copy.deepcopy(rule_input)
-                    rule_inputs_[id] = take_some_of_rule_inputs(rule_input)
-                    # agent_obs_records 已被 LocalTrans 替代
-                    
                     # buffer再保存一次
                     UAV = env.find_uav_with_id(id)
                     LocalTrans[id] = append_experience(LocalTrans[id], Last_Obs[id], Last_States[id], 
                                                        last_Actions[id], Rewards[id], Curr_States[id], 
                                                        done=1, active_mask=not UAV.dead)
-                    
-            episode_end_time = time.time()  # 记录结束时间
-
+            
+            # 仿真残余清理
             env.clear_render(t_bias=t_bias)
             t_bias += env.t
+            
+            # 时间记录
+            episode_end_time = time.time()  # 记录结束时间
+            ep_cost = episode_end_time - ep_start
+            episode_times.append(ep_cost)
+            print(f"第{i_episode+1}场对抗耗时：{ep_cost:.1f}s")
+            
+            
 
             # 保存本回合各机的事件日志和mask调试信息，每架飞机一个csv
             for uav in env.UAVs:
@@ -385,10 +387,11 @@ if __name__=='__main__':
                       f"obs.enm {getattr(_obs_enm, 'shape', '?')}, "
                       f"actions.hor {getattr(_act_hor, 'shape', '?')})")
 
-
-
         training_end_time = time.time()  # 记录结束时间
-        
+        total_cost = training_end_time - training_start_time
+        n_eps = len(episode_times)
+        avg_cost = total_cost / n_eps if n_eps > 0 else 0
+        print(f"总耗时：{total_cost:.1f}s，平均每场耗时：{avg_cost:.1f}s")
 
 
     except KeyboardInterrupt:

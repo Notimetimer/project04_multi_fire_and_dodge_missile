@@ -1,49 +1,20 @@
-flowchart TB
-    selected_info[selected_info]
-    MLP_backbone[MLP_backbone]
-    mini_rule_inputs[mini_rule_inputs]
-    warning[warning]
-    enm_observable[enm_observable]
-    just_fired[just_fired]
-    vert_logits[vert_logits]
-    pre_hor_logits[pre_hor_logits]
-    delta_hor_logits_evade[delta_hor_logits_evade]
-    delta_hor_logits_safe[delta_hor_logits_safe]
-    hor_logits[hor_logits]
-    fire_logits[fire_logits]
-    pilot_output[pilot_output]
-    delta_fire_logits[delta_fire_logits]
+
+flowchart LR
     selected_info --> MLP_backbone
     mini_rule_inputs --> warning
-    mini_rule_inputs --> enm_observable
+    mini_rule_inputs --> enm_in_range
     mini_rule_inputs --> just_fired
+    mini_rule_inputs --> has_ammo
+    has_ammo --[if False]-->delta_fire_logits
     MLP_backbone --> vert_logits
     MLP_backbone --> pre_hor_logits
-    warning ---|&#91;if True&#93;| delta_hor_logits_evade
-    warning ---|&#91;if False&#93;| delta_hor_logits_safe
-    enm_observable ---|&#91;if False&#93;| delta_hor_logits_safe
+    warning --[if True]--> delta_hor_logits_evade
     pre_hor_logits --> hor_logits
     delta_hor_logits_evade --> hor_logits
-    delta_hor_logits_safe --> hor_logits
     MLP_backbone --> fire_logits
     vert_logits --> pilot_output
     hor_logits --> pilot_output
     fire_logits --> pilot_output
-    enm_observable ---|&#91;if False&#93;| delta_fire_logits
-    just_fired ---|&#91;if True&#93;| delta_fire_logits
+    enm_in_range --[if False]--> delta_fire_logits
+    just_fired --[if True]--> delta_fire_logits
     delta_fire_logits --> fire_logits
-%% MermaidEditor FreeView
-%% pos:selected_info:11,131
-%% pos:MLP_backbone:238,131
-%% pos:mini_rule_inputs:0,385
-%% pos:warning:242,263
-%% pos:enm_observable:234,351
-%% pos:just_fired:240,440
-%% pos:vert_logits:680,50
-%% pos:pre_hor_logits:482,124
-%% pos:delta_hor_logits_evade:473,221
-%% pos:delta_hor_logits_safe:470,308
-%% pos:hor_logits:682,221
-%% pos:fire_logits:683,367
-%% pos:pilot_output:915,221
-%% pos:delta_fire_logits:487,438
