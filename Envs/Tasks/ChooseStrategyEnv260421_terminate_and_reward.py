@@ -38,7 +38,7 @@ def softplus(x):
 
 class ChooseStrategyEnv(BaseChooseStrategyEnv):
     def combat_terminate_and_reward(self, id, action_cycle_multiplier=10):
-        self.update_entity_states() # 更新所有飞机和导弹存活情况
+        self.update_entity_alives() # 更新所有飞机和导弹存活情况
         # 奖励权重预置
         DENSE_REWARD_WEIGHT = 0.5   # 密集奖励参考值
         END_REWARD_WEIGHT = 30      # 结果奖励

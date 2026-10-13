@@ -17,8 +17,11 @@ import csv
 import glob
 import pickle
 
-use_tacview = 0 # 1 动态显示 2 静默写入 acmi_records
+use_tacview = 2 # 1 动态显示 2 静默写入 acmi_records
 action_cycle_multiplier = 10
+
+# 是否考虑视野限制
+POMDP = 1
 
 def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
     '''
@@ -354,7 +357,6 @@ if __name__=='__main__':
 
     def creat_initial_state():
         # 飞机出生状态指定
-        # todo: 随机出生点，确保蓝方能躲掉但不躲就会被打到
         blue_height = 9000
         red_height = 9000
         red_psi = -pi/2
@@ -393,35 +395,32 @@ if __name__=='__main__':
         
         # 启动仿真前清空上次遗留的pkl和csv
         event_log_dir = os.path.join(project_root, 'acmi_records')
-        os.makedirs(event_log_dir, exist_ok=1)
+        os.makedirs(event_log_dir, exist_ok=True)
         for pattern in ('*.pkl', '*.csv'):
             for f in glob.glob(os.path.join(event_log_dir, pattern)):
                 os.remove(f)
 
         # 采集不同轨迹的动作
         for i_episode in range(1): # 5
-
+            # 环境运行一轮的情况
+            ep_start = time.time()
             episode_return = 0
-            # transition_dict = {'states': [], 'actions': [], 'next_states': [], 'rewards': [], 'dones': [],}
-
             DEFAULT_RED_BIRTH_STATE, DEFAULT_BLUE_BIRTH_STATE = creat_initial_state()
-
             env.reset(
                 red_birth_state=DEFAULT_RED_BIRTH_STATE, blue_birth_state=DEFAULT_BLUE_BIRTH_STATE,
-                red_init_num=2,
-                blue_init_num=2,
-                red_init_ammo=4,
-                blue_init_ammo=4,
+                red_init_num=  2,
+                blue_init_num= 2,
+                red_init_ammo= 2, # 4
+                blue_init_ammo=2, # 4
                 ) # 4
             r_action_label=0
             b_action_label=0
-            last_decision_state = None
             
-            b_reward = None
-
-            done = 0
-
-            env.dt_maneuver = dt_maneuver
+            done = False
+            
+            env.dt_move = 0.07
+            env.dt_maneuver = 0.2
+            env.min_alt_safe = 2000
             
             episode_start_time = time.time()
 
@@ -438,14 +437,14 @@ if __name__=='__main__':
                 } for _id in env.UAV_ids
             }
 
-            # 环境运行一轮的情况
             steps_of_this_eps = -1 # 没办法了
+            
+            # 一轮仿真开始
             for count in range(round(args.max_episode_len / dt_maneuver)):
-                # print(f"time: {env.t}")  # 打印当前的 count 值
                 # 回合结束判断
                 current_t = count * dt_maneuver
                 steps_of_this_eps += 1
-                if env.running == 0 or done:
+                if env.running == False or done:
                     # print('回合结束，时间为：', env.t, 's')
                     break
                 # 获取观测信息
@@ -454,7 +453,7 @@ if __name__=='__main__':
                 rule_inputs_ = {}
 
                 for id in env.UAV_ids:
-                    agent_input, mask_input, rule_input = env.get_obs(id, pomdp=0)
+                    agent_input, mask_input, rule_input = env.get_obs(id, pomdp=POMDP)
                     agent_inputs_[id] = agent_input
                     mask_inputs_[id] = mask_input
                     rule_inputs_[id] = rule_input
@@ -468,23 +467,11 @@ if __name__=='__main__':
                 # --- 智能体决策 ---
                 # 判断是否到达了决策点（每 10 步）
                 if steps_of_this_eps % action_cycle_multiplier == 0:
-                    # # **关键点 1: 完成并存储【上一个】动作周期的经验**
-                    # # 如果这不是回合的第0步，说明一个完整的动作周期已经过去了
-
-                    # if steps_of_this_eps > 0:
-                    #     transition_dict['states'].append(last_decision_state)
-
-                    # **关键点 2: 开始【新的】一个动作周期**
-                    # 1. 记录新周期的起始状态
-                    # last_decision_obs = b_obs
-                    
                     for id in env.UAV_ids:
-                        
                         # debug
                         UAV = env.find_uav_with_id(id)
-                        side_word = 'red' if UAV.side == 'r' else 'blue'
-                        num_word = id if UAV.side == 'r' else id-200
-
+                        # side_word = 'red' if UAV.side == 'r' else 'blue'
+                        # num_word = id if UAV.side == 'r' else id-200
                         # print("我是", side_word, num_word)
                         
                         # 2. Agent 产生一个动作
@@ -501,11 +488,14 @@ if __name__=='__main__':
                         # 暂不考虑同时攻击多个目标
                         if fire_action['do']:
                             target_index = fire_action['at']
-                            env.fire_120(id, target_index, tabu=0)
-                            
-                        
-                        # 必须确认雷达开关状态
-                        env.radar_action(id, radar_action)
+                            try:
+                                env.fire_120(id, target_index, tabu=0)
+                            except ValueError as e:
+                                # 环境端对虚目标/越界索引抛错，这里仅打印不中断（规则智能体会输出 null_token 索引）
+                                print(f"[fire_120 警告] {e}")
+
+                        # 雷达全程开
+                        env.radar_action(id, 1)
 
                         # debug
                         # if side_word == 'red' and \
@@ -520,22 +510,9 @@ if __name__=='__main__':
                         #     print('机动动作是：', fly_action)
                         #     print('开火动作是:', fire_action)
                         #     print()
-
                     decide_steps_after_update += 1
 
-                    # b_action_list.append(np.array([env.t + t_bias, b_action_label]))
-                    # current_action = b_action_label
-
-                        # # debug
-                        # if env.t > 40:
-                        #     print("r_state_check", r_state_check["warning"])
-                        #     print("r_action_label", r_action_label)
-                        #     print()
-                        #     print("b_state_check", b_state_check["warning"])
-                        #     print("b_action_label", b_action_label)
-                        #     print()
-                
-                # 循环调用底层控制器
+                # 循环调用底层控制器，环境更新
                 flight_cmds = {}
                 for id in env.UAV_ids:
                     fly_action = fly_action_all[id]
@@ -552,8 +529,8 @@ if __name__=='__main__':
                     #     print("rule_inputs_", rule_inputs_[id]['enm_infos'][target_index])
                     #     print("flight_cmds", flight_cmds[id])
 
-                env.step(flight_cmds.values()) # Environment updates every dt_maneuver
-
+                env.step(flight_cmds.values())  # 环境统一更新
+                
                 # # DEBUG
                 # if steps_of_this_eps % action_cycle_multiplier == 0:
                 #     for id in env.UAV_ids:
@@ -562,8 +539,8 @@ if __name__=='__main__':
                 #         if UAV.dead:
                 #             print("检查导弹的目标")
 
-                for _id in env.UAV_ids: # 每架飞机都调用一遍，保证各自的周期事件都被积累
-                    done, _ = env.combat_terminate_and_reward(id=_id, action_cycle_multiplier=action_cycle_multiplier)
+                for id in env.UAV_ids: # 每架飞机都调用一遍，保证各自的周期事件都被积累
+                    done, _ = env.combat_terminate_and_reward(id=id, action_cycle_multiplier=action_cycle_multiplier)
 
                 # b_reward = b_reward_event + b_reward_constraint + b_reward_shaping
 
@@ -577,7 +554,7 @@ if __name__=='__main__':
             if done:
                 # 这里已经是最后的next_states
                 for id in env.UAV_ids:
-                    agent_input, mask_input, rule_input = env.get_obs(id, pomdp=0)
+                    agent_input, mask_input, rule_input = env.get_obs(id, pomdp=POMDP)
                     agent_inputs_[id] = agent_input
                     mask_inputs_[id] = mask_input
                     rule_inputs_[id] = rule_input
@@ -585,11 +562,15 @@ if __name__=='__main__':
                         agent_obs_records[id]['agent_input'].append(agent_input)
                         agent_obs_records[id]['mask_input'].append(mask_input)
                         agent_obs_records[id]['rule_input'].append(rule_input)
-
-            episode_end_time = time.time()  # 记录结束时间
-
+            
+            # 仿真残余清理
             env.clear_render(t_bias=t_bias)
             t_bias += env.t
+            
+            # 时间记录
+            episode_end_time = time.time()  # 记录结束时间
+            ep_cost = episode_end_time - ep_start
+            print(f"本场对抗耗时：{ep_cost:.1f}s, 仿真倍率：{env.t/ep_cost:.1f}")
 
             # 保存本回合各机的事件日志和mask调试信息，每架飞机一个csv
             for uav in env.UAVs:

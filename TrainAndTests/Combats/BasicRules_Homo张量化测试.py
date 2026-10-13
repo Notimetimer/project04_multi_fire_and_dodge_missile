@@ -160,8 +160,10 @@ if __name__=='__main__':
             DEFAULT_RED_BIRTH_STATE, DEFAULT_BLUE_BIRTH_STATE = creat_initial_state()
             env.reset(
                 red_birth_state=DEFAULT_RED_BIRTH_STATE, blue_birth_state=DEFAULT_BLUE_BIRTH_STATE,
-                red_init_num=2, blue_init_num=2,
-                red_init_ammo=2, blue_init_ammo=2
+                red_init_num=  2,
+                blue_init_num= 2,
+                red_init_ammo= 2, # 4
+                blue_init_ammo=2, # 4
                 ) # 4
             r_action_label=0
             b_action_label=0
@@ -174,11 +176,14 @@ if __name__=='__main__':
                 last_Actions = {id: None for id in env.UAV_ids}
                 Rewards = {id: None for id in env.UAV_ids}
 
-            done = False            
+            done = False
             Last_Obs = {id: None for id in env.UAV_ids}
             Last_States = {id: None for id in env.UAV_ids}
             Curr_States = {id: None for id in env.UAV_ids}
-            env.dt_maneuver = dt_maneuver
+            
+            env.dt_move = 0.07
+            env.dt_maneuver = 0.2
+            env.min_alt_safe = 2000
             
             episode_start_time = time.time()
 
@@ -340,7 +345,7 @@ if __name__=='__main__':
             episode_end_time = time.time()  # 记录结束时间
             ep_cost = episode_end_time - ep_start
             episode_times.append(ep_cost)
-            print(f"第{i_episode+1}场对抗耗时：{ep_cost:.1f}s")
+            print(f"第{i_episode+1}场对抗耗时：{ep_cost:.1f}s, 仿真倍率：{env.t/ep_cost:.1f}")
             
             
 

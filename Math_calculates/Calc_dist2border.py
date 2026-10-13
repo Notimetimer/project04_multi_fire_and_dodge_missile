@@ -83,27 +83,48 @@ class polygon_fences:
         self.poly = Polygon(vertices)
         self.vertices_arr = np.array(vertices)
         self.center = np.mean(self.vertices_arr, axis=0)
+        # 方形边界（南北/东西走向）的北向与东向范围，供 calc_intern_dist 快速判定界内/界外
+        self.bounds_x = (self.vertices_arr[:, 0].min(), self.vertices_arr[:, 0].max())
+        self.bounds_z = (self.vertices_arr[:, 1].min(), self.vertices_arr[:, 1].max())
         
         self.test_point = np.array([2.5, 5.0]) 
         self.target_point = np.array([7.0, 7.0])
     
     def calc_intern_dist(self, pos_, psi):
-        p = Point(np.array([pos_[0], pos_[2]]))
-        is_inside = self.poly.contains(p)
-        v = np.array([cos(psi), sin(psi)])
-        dist_along_v, _ = get_velocity_intercept_info(self.poly, p, v)
-        vec2center = self.center - np.array([pos_[0], pos_[2]])
+        # 原有的多边形求解
+        # p = Point(np.array([pos_[0], pos_[2]]))
+        # is_inside = self.poly.contains(p)
+        # v = np.array([cos(psi), sin(psi)])
+        # dist_along_v, _ = get_velocity_intercept_info(self.poly, p, v)
+        # vec2center = self.center - np.array([pos_[0], pos_[2]])
+        # 方形边界（南北/东西走向）：北向x与东向z均在范围内即界内
+        x, z = pos_[0], pos_[2]
+        min_x, max_x = self.bounds_x
+        min_z, max_z = self.bounds_z
+        is_inside = (min_x <= x <= max_x) and (min_z <= z <= max_z)
+        # 沿航向延长线到边界的距离：用方向余弦（斜率）与北/东向差计算，取各边界中最近者
+        v_north, v_east = cos(psi), sin(psi)
+        dist_candidates = []
+        if v_north > 1e-12:
+            dist_candidates.append((max_x - x) / v_north)
+        elif v_north < -1e-12:
+            dist_candidates.append((min_x - x) / v_north)
+        if v_east > 1e-12:
+            dist_candidates.append((max_z - z) / v_east)
+        elif v_east < -1e-12:
+            dist_candidates.append((min_z - z) / v_east)
+        dist_along_v = min(dist_candidates) if dist_candidates else 0.0
+        vec2center = self.center - np.array([x, z])
         if not is_inside:
             dist_along_v = -100
         psi_of_vec2center = np.arctan2(vec2center[1], vec2center[0])
         side = sub_of_radian(psi, psi_of_vec2center)/pi*2
-        # # 给出当前方向相对中心的偏移角度归一化值
-        # crossed = np.array([
-        #     v[0]*vec2center[1]/(norm(vec2center)+1e-8) - 
-        #     v[1]*vec2center[0]/(norm(vec2center)+1e-8)
-        #     ])
-        # side = np.arcsin(crossed) / pi * 2
         return dist_along_v, side
+
+    def is_inside(self, pos_):
+        # 方形边界快速判定：北向x与东向z均在范围内即界内
+        return (self.bounds_x[0] <= pos_[0] <= self.bounds_x[1]) and \
+               (self.bounds_z[0] <= pos_[2] <= self.bounds_z[1])
 
 if __name__ == '__main__':
     # 设置中文字体

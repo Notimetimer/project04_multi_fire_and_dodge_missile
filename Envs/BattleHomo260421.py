@@ -260,6 +260,9 @@ class Battle(object):
         self.RED_BIRTH_STATE = red_birth_state
         self.dt_maneuver = dt_maneuver  # simulation interval，1 second
         self.t = 0
+        # get_state 缓存：以 self.t 为代次，t 推进时整体失效（每个 maneuver 步重建一次）
+        self._state_cache = {}
+        self._state_cache_t = None
         # 初始化无人机
         self.Rnum = red_init_num
         self.Bnum = blue_init_num
@@ -386,9 +389,9 @@ class Battle(object):
         self.RMissileTable = {}
         self.BMissileTable = {}
         self.MissileTable = {}
-    
-    # 更新所有实体状态
-    def update_entity_states(self,):
+        
+    # 更新存活
+    def update_entity_alives(self,):
         # 更新飞机存活状态
         alive_r_uavs = [u for u in self.RUAVs if not u.dead]
         alive_b_uavs = [u for u in self.BUAVs if not u.dead]
@@ -401,14 +404,21 @@ class Battle(object):
         self.alive_r_missiles = alive_r_missiles
         self.alive_b_missiles = alive_b_missiles
         self.alive_missiles = alive_r_missiles + alive_b_missiles
+        return alive_r_uavs, alive_b_uavs
+    
+    # 更新所有实体状态
+    def update_entity_states(self,):
+        alive_r_uavs, alive_b_uavs = self.update_entity_alives()
         # 统计未发射导弹数
         self.unused_r_missile_num = 0
         self.unused_b_missile_num = 0
         for uav in self.RUAVs:
             self.unused_r_missile_num += 0 if uav.dead else uav.ammo
+            # 更新观测有效性矩阵
             self.get_primitive_obs(uav.id)
         for uav in self.BUAVs:
             self.unused_b_missile_num += 0 if uav.dead else uav.ammo
+            # 更新观测有效性矩阵
             self.get_primitive_obs(uav.id)
         # 导弹重新搜索目标
         for missile in self.alive_missiles:
@@ -634,15 +644,6 @@ class Battle(object):
                         else:
                             target_delta_heading = max(pi/2, target_delta_heading)
                 
-                # d_hor, left_or_right = calc_intern_dist2circle(self.R_cage, UAV.pos_, UAV.psi_v)
-                # # 不准出界
-                # if self.no_out:
-                #     if d_hor < 8e3:
-                #         if left_or_right == 1:
-                #             target_delta_heading = min(-pi/2, target_delta_heading)
-                #         if left_or_right == -1:
-                #             target_delta_heading = max(pi/2, target_delta_heading)
-
                 # 将调整后的动作写回，Python引用就地修改
                 action[0] = target_delta_height
                 action[1] = target_delta_heading
@@ -856,7 +857,7 @@ class Battle(object):
                 # self.running = False
 
         # 更新UAV信息
-        self.update_entity_states()  # 更新飞机存活信息
+        self.update_entity_alives()  # 更新飞机存活信息
 
         return None
 
@@ -925,6 +926,10 @@ class Battle(object):
         原始环境提供的状态信息，通过列表给出，供检查用，不可以直接输入进神经网络
         需要使用外挂状态输入结构转换（先填充为最大可处理数量的信息，未存在的导弹也要用填充值填充）
         '''
+        # 带 t 标记的缓存：同一仿真时刻（同一 maneuver 步）内的重复调用直接复用
+        # 出口统一返回副本：调用方会就地修改 state，隔离写入以保护缓存与 ego.current_state
+        if self._state_cache_t == self.t and id in self._state_cache:
+            return copy.deepcopy(self._state_cache[id])
         # 原先将所有量打包成一个 numpy array，这里改为 dict 结构（字段命名见 Envs/接口.py）
         self.key_order = [
             # 我机信息
@@ -1195,7 +1200,14 @@ class Battle(object):
             "RWR_infos": RWR_infos,
         }
 
-        ego.current_state = one_state
+        if self._state_cache_t != self.t:  # t 已推进，旧代次整体作废
+            self._state_cache = {}
+            self._state_cache_t = self.t
+        # 缓存存独立副本，'t' 时间戳由缓存副本携带（供 base_obs 归档逻辑比对，scale 前会被移除）
+        self._state_cache[id] = copy.deepcopy(one_state)
+        self._state_cache[id]['t'] = self.t
+        # current_state 指向缓存副本：既保证归档逻辑能读到 't'，又不会被调用方就地修改污染
+        ego.current_state = self._state_cache[id]
         return one_state
     
     # 尺度缩放（按字段名索引）
@@ -1392,8 +1404,11 @@ class Battle(object):
 
     def out_cage(self, UAV):
         if self.vertices is not None:
-            p = Point(np.array([UAV.pos_[0], UAV.pos_[2]]))
-            out = not self.polygon_fences.poly.contains(p)
+            # 多边形边界计算
+            # p = Point(np.array([UAV.pos_[0], UAV.pos_[2]]))
+            # out = not self.polygon_fences.poly.contains(p)
+            # 方形边界快速判定，替代 shapely contains
+            out = not self.polygon_fences.is_inside(UAV.pos_)
         else:
             position = UAV.pos_
             pos_h = np.array([position[0], position[2]])
