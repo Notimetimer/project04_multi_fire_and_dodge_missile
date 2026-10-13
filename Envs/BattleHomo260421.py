@@ -50,6 +50,7 @@ g = 9.81
 dt_maneuver = 0.2
 dt_move = 0.02
 # report_move_time_rate = int(round(dt_maneuver / dt_move))
+RL_controller = 1 # 是否启用RL控制器(否则使用PID)
 
 o00 = np.array([144.7, 13.4])  # 地理原点的经纬
 # t = 0
@@ -697,9 +698,9 @@ class Battle(object):
                 if self.out_cage(UAV):
                     UAV.dead = 1
                     continue
-                e2e=1
+                e2e = RL_controller
                 # 临时改动，关闭端到端控制，改为PID
-                if e2e==1:
+                if e2e == 1:
                     # 在这里插入强化学习的控制器
                     # 实时从 UAV 对象读取物理量，与训练环境 get_state() 完全对齐
                     # （不能使用 UAV.current_state 字典缓存——它在整个内层子步循环中不更新，是陈旧的旧状态）
@@ -800,7 +801,7 @@ class Battle(object):
                     missile.dead = True
                 if (not missile.dead) and \
                     (missile.last_guidance_stage == 2 and missile.guidance_stage == 3):
-                    # 谁扔的刀锁到人了
+                    # 谁发射的导弹锁到人了
                     shooter = self.find_uav_with_id(missile.launcher_id)
                     shooter.can_let_go = 1
 
@@ -826,7 +827,7 @@ class Battle(object):
                 if missile.dead == True and not target.dead:
                     # 目标逃脱
                     target.escape_once = 1
-                    # 谁扔的刀把
+                    # 谁的导弹错过了目标
                     shooter = self.find_uav_with_id(missile.launcher_id)
                     shooter.got_a_miss = 1
 
