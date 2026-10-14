@@ -224,7 +224,7 @@ if __name__=='__main__':
                         # side_word = 'red' if UAV.side == 'r' else 'blue'
                         # num_word = id if UAV.side == 'r' else id-200
                         # print("我是", side_word, num_word)
-                        if Last_Obs[id] is not None:
+                        if (Last_Obs[id] is not None) and (steps_of_this_eps % action_cycle_multiplier > 1):
                             LocalTrans[id] = append_experience(LocalTrans[id], Last_Obs[id], Last_States[id], 
                                                                last_Actions[id], Rewards[id], Curr_States[id], 
                                                                done=0, active_mask=not UAV.dead)
@@ -328,14 +328,13 @@ if __name__=='__main__':
                 # 可视化
                 env.render(t_bias=t_bias)
 
-            if done:
-                # 这里已经是最后的next_states
-                for id in env.UAV_ids:
-                    # buffer再保存一次
-                    UAV = env.find_uav_with_id(id)
-                    LocalTrans[id] = append_experience(LocalTrans[id], Last_Obs[id], Last_States[id], 
-                                                       last_Actions[id], Rewards[id], Curr_States[id], 
-                                                       done=1, active_mask=not UAV.dead)
+            # 这里已经是最后的next_states
+            for id in env.UAV_ids:
+                # buffer再保存一次
+                UAV = env.find_uav_with_id(id)
+                LocalTrans[id] = append_experience(LocalTrans[id], Last_Obs[id], Last_States[id], 
+                                                    last_Actions[id], Rewards[id], Curr_States[id], 
+                                                    done=1, active_mask=not UAV.dead)
             
             # 仿真残余清理
             env.clear_render(t_bias=t_bias)

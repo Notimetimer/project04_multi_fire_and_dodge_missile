@@ -871,13 +871,13 @@ class Battle(object):
             'sin_ally_delta_psi': 0,
             'ally_delta_theta': 0,
             'ally_dist': 100e3,
-            'v_ally': 300,
+            'v_ally': 0,
             'cos_ally_rel_heading': 0,
             'sin_ally_rel_heading': 0,
             'theta_ally': 0,
         }
         state_init_mod["enm_info"] = {
-            'enm_observable': 2,
+            'enm_observable': 0,
             'enm_locked': 0,
             'locked_by_enm': 0,
             'cos_enm_delta_psi': 1,
@@ -885,7 +885,7 @@ class Battle(object):
             'enm_delta_theta': 0,
             'enm_dist': 100e3,
             'enm_ATA': 0,
-            'v_enm': 300,
+            'v_enm': 0,
             'enm_AA': pi,
         }
         state_init_mod["enm_info_supplement"] = {

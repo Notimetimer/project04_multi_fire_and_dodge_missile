@@ -361,6 +361,7 @@ class ChooseStrategyEnv(Battle):
         if can_fire:
             # 调用唯一注册入口，严禁直接修改self.Rmissiles或self.Bmissiles
             new_missile_id = self.launch_120(source_id, enm_id)
+            print(f"{ego.id}向{enm_id}发射一枚中距弹")
         return new_missile_id
 
     # 只针对一个敌机的动作空间（不考虑队友也不考虑综合情况）
@@ -562,4 +563,4 @@ class ChooseStrategyEnv(Battle):
             # 调用唯一注册入口，严禁直接修改self.Rmissiles或self.Bmissiles
             new_missile = self.launch_9x(uav.id, target.id)
             if new_missile is not None:
-                print(f'{uav.side}侧{uav.id}近距格斗弹发射')
+                print(f'{uav.side}侧{uav.id}格斗弹发射')
