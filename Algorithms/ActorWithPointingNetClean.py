@@ -265,47 +265,41 @@ class ActorWrapper(nn.Module):
             {'enm': enm_mask, 'ally': ally_mask},
         )
 
-    def forward(self, agent_inputs, mask_inputs, rule_inputs, actions=None):
+    def get_action(self, agent_inputs, mask_inputs, rule_inputs, h=None):
         packed_agent, packed_mask = self.pack_inputs(agent_inputs, mask_inputs)
-        sel_actions = None if actions is None else {
-            'enm_idx': actions['enm_idx'], 'ally_idx': actions['ally_idx']}
         selected_info, enm_idx, ally_idx, mini_rule_inputs, log_prob_enm, log_prob_ally = self.selector(
             packed_agent, packed_mask, rule_inputs,
-            enm_idx=None if sel_actions is None else sel_actions['enm_idx'],
-            ally_idx=None if sel_actions is None else sel_actions['ally_idx'],
         )
-        # pilot 只输出三路 logits，采样与 log_prob 在 wrapper 中完成
         pilot_logits = self.pilot(selected_info, mini_rule_inputs)
 
         vert_dist = Categorical(logits=pilot_logits['vert'])
         hor_dist = Categorical(logits=pilot_logits['hor'])
         fire_dist = Bernoulli(logits=pilot_logits['fire'].squeeze(-1))
 
-        if actions is None:
-            vert = vert_dist.sample()
-            hor = hor_dist.sample()
-            fire = fire_dist.sample().to(torch.long)
-        else:
-            vert = actions['vert']
-            hor = actions['hor']
-            fire = actions['fire']
+        vert_idx = vert_dist.sample()
+        hor_idx = hor_dist.sample()
+        fire = fire_dist.sample().to(torch.long)
 
         log_prob_act = (
-            vert_dist.log_prob(vert)
-            + hor_dist.log_prob(hor)
+            vert_dist.log_prob(vert_idx)
+            + hor_dist.log_prob(hor_idx)
             + fire_dist.log_prob(fire.to(torch.float32))
         )
 
         return {
-            'hor': hor,
-            'vert': vert,
-            'fire': fire,
-            'log_prob_act': log_prob_act,
             'enm_idx': enm_idx,
             'ally_idx': ally_idx,
+            'fire': fire,
+            'hor_idx': hor_idx,
+            'vert_idx': vert_idx,
+            'fire_mask': pilot_logits['fire_mask'],
             'log_prob_enm': log_prob_enm,
             'log_prob_ally': log_prob_ally,
+            'log_prob_act': log_prob_act,
         }
+
+    def evaluate_actions(self, agent_inputs, mask_inputs, rule_inputs, actions, h=None, max_std=None):
+        pass
 
     def save(self, path='actor.pt'):
         torch.save({

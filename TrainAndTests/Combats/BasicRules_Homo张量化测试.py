@@ -79,7 +79,7 @@ if __name__=='__main__':
         red_psi = -pi/2
         blue_psi = pi/2
         red_N = 0
-        red_E = 55e3
+        red_E = - 55e3
         blue_N = red_N
         blue_E = -red_E
         DEFAULT_RED_BIRTH_STATE = {'position': np.array([red_N, red_height, red_E]),
@@ -224,7 +224,7 @@ if __name__=='__main__':
                         # side_word = 'red' if UAV.side == 'r' else 'blue'
                         # num_word = id if UAV.side == 'r' else id-200
                         # print("我是", side_word, num_word)
-                        if (Last_Obs[id] is not None) and (steps_of_this_eps % action_cycle_multiplier > 1):
+                        if Last_Obs[id] is not None and steps_of_this_eps > 0:
                             LocalTrans[id] = append_experience(LocalTrans[id], Last_Obs[id], Last_States[id], 
                                                                last_Actions[id], Rewards[id], Curr_States[id], 
                                                                done=0, active_mask=not UAV.dead)

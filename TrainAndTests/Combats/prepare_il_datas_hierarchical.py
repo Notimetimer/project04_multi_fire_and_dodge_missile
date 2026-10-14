@@ -28,7 +28,7 @@ def run_rules(gamma=0.995, weight_reward=np.array([1,1,0]), action_cycle_multipl
         blue_psi = -pi/2 + np.random.uniform(-1,1)*pi/3
         init_North = np.random.uniform(-30e3, 30e3) * int(randomized)
         red_N = init_North
-        red_E = 55e3
+        red_E = - 55e3
         blue_N = red_N
         blue_E = -red_E
         DEFAULT_RED_BIRTH_STATE = {'position': np.array([red_N, red_height, red_E]),

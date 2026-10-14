@@ -25,7 +25,7 @@ def creat_initial_state():
     red_psi = -np.pi/2
     blue_psi = np.pi/2
     red_N = 0
-    red_E = 55e3
+    red_E = - 55e3
     blue_N = red_N
     blue_E = -red_E
     DEFAULT_RED_BIRTH_STATE = {'position': np.array([red_N, red_height, red_E]), 'psi': red_psi}

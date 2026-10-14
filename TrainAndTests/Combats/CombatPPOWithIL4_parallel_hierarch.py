@@ -201,7 +201,7 @@ def create_initial_state_worker(randomized=0):
     blue_psi = BasicRules_Homo.Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward.sub_of_radian(np.pi/2 + np.random.uniform(-BasicRules_Homo.Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward.pi*2/3, BasicRules_Homo.Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward.pi*2/3))
     init_North = np.random.uniform(-30e3, 30e3) * int(randomized)
     red_N = init_North
-    red_E = 55e3 # 45e3
+    red_E = - 55e3 # 45e3
     if np.random.uniform(0,1) < 0.2: # 以低概率随机初始距离
         red_E = np.random.uniform(10e3,55e3)
     blue_N = init_North
