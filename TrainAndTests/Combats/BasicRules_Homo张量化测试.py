@@ -76,8 +76,8 @@ if __name__=='__main__':
         # 飞机出生状态指定
         blue_height = 9000
         red_height = 9000
-        red_psi = -pi/2
-        blue_psi = pi/2
+        red_psi = pi/2
+        blue_psi = - red_psi 
         red_N = 0
         red_E = - 55e3
         blue_N = red_N
