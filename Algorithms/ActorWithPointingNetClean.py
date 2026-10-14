@@ -76,6 +76,10 @@ class selector(nn.Module):
         log_prob_enm = enm_dist.log_prob(enm_idx)
         log_prob_ally = ally_dist.log_prob(ally_idx)
 
+        # 两个选择分布的熵（mask 槽位 logits=-inf，p=0 对熵无贡献），供 evaluate 组装 H(enm)+H(ally)
+        ent_enm = enm_dist.entropy()
+        ent_ally = ally_dist.entropy()
+
         # enm_keys: (B, enm_num, embed_dim)
         # enm_idx: (B,) -> reshape (-1,1,1) -> (B,1,1) -> expand -> (B, 1, embed_dim)
         # gather(1, ...): 沿 seq_len 维取被选中的实体嵌入 -> (B, 1, embed_dim)
@@ -101,7 +105,7 @@ class selector(nn.Module):
             v_t = torch.as_tensor(v, device=enm_idx.device)
             mini_rule_inputs['enm_info'][k] = v_t.gather(1, enm_idx_col).squeeze(1)  # (B,)
             # 输出[b, 0] = v_t[b, enm_idx_col[b, 0]] = v_t[b, enm_idx[b]]
-        return selected_info, enm_idx, ally_idx, mini_rule_inputs, log_prob_enm, log_prob_ally
+        return selected_info, enm_idx, ally_idx, mini_rule_inputs, log_prob_enm, log_prob_ally, ent_enm, ent_ally
 
 
 # 飞行员网络：接收 selector 选出的信息，输出 vert/hor/fire 三路逻辑值。
@@ -267,7 +271,7 @@ class ActorWrapper(nn.Module):
 
     def get_action(self, agent_inputs, mask_inputs, rule_inputs, h=None):
         packed_agent, packed_mask = self.pack_inputs(agent_inputs, mask_inputs)
-        selected_info, enm_idx, ally_idx, mini_rule_inputs, log_prob_enm, log_prob_ally = self.selector(
+        selected_info, enm_idx, ally_idx, mini_rule_inputs, log_prob_enm, log_prob_ally, _, _ = self.selector(
             packed_agent, packed_mask, rule_inputs,
         )
         pilot_logits = self.pilot(selected_info, mini_rule_inputs)
@@ -299,7 +303,72 @@ class ActorWrapper(nn.Module):
         }
 
     def evaluate_actions(self, agent_inputs, mask_inputs, rule_inputs, actions, h=None, max_std=None):
-        pass
+        # 训练接口：严格传入回放中的批量观测/掩码/规则输入与已采样动作，不做 sample，
+        # 只重算"新策略"在这些动作上的 log_prob 与策略熵，供 PPO 新旧策略比使用。
+        device = self.device
+
+        # 回放数据自带 batch 维（fixed:[B,*], enm:[B,N,*]），直接转 tensor；
+        # 不能走 pack_inputs：其中的 reshape(-1) 是单样本路径，会把 [B,N] 掩码摊平
+        fixed = torch.as_tensor(agent_inputs['fixed'], dtype=torch.float32, device=device)
+        enm = torch.as_tensor(agent_inputs['enm'], dtype=torch.float32, device=device)
+        ally = torch.as_tensor(agent_inputs['ally'], dtype=torch.float32, device=device)
+        enm_mask = torch.as_tensor(np.asarray(mask_inputs['enm']), dtype=torch.bool, device=device)
+        ally_mask = torch.as_tensor(np.asarray(mask_inputs['ally']), dtype=torch.bool, device=device)
+        packed_agent = {'fixed': fixed, 'enm': enm, 'ally': ally}
+        packed_mask = {'enm': enm_mask, 'ally': ally_mask}
+
+        # 回放动作键：vert / hor / fire / enm_idx / ally_idx（与采集脚本 last_Actions 一致）
+        enm_idx = torch.as_tensor(actions['enm_idx'], dtype=torch.long, device=device)
+        ally_idx = torch.as_tensor(actions['ally_idx'], dtype=torch.long, device=device)
+        vert_idx = torch.as_tensor(actions['vert'], dtype=torch.long, device=device)
+        hor_idx = torch.as_tensor(actions['hor'], dtype=torch.long, device=device)
+        fire = torch.as_tensor(actions['fire'], dtype=torch.long, device=device)
+
+        # selector 传入回放中的 enm_idx/ally_idx：只算这两个已选样本的 log_prob 与选定 embedding，
+        # ent_enm/ent_ally 是遍历全部槽位的 Categorical 熵 H(enm)、H(ally)
+        selected_info, _, _, mini_rule_inputs, log_prob_enm, log_prob_ally, ent_enm, ent_ally = self.selector(
+            packed_agent, packed_mask, rule_inputs, enm_idx=enm_idx, ally_idx=ally_idx,
+        )
+
+        # pilot 在"给定敌人与队友选取"下重放三路分布（条件策略 act|enm_idx, ally_idx, o）
+        pilot_logits = self.pilot(selected_info, mini_rule_inputs)
+        vert_dist = Categorical(logits=pilot_logits['vert'])
+        hor_dist = Categorical(logits=pilot_logits['hor'])
+        fire_dist = Bernoulli(logits=pilot_logits['fire'].squeeze(-1))
+
+        log_prob_vert = vert_dist.log_prob(vert_idx)
+        log_prob_hor = hor_dist.log_prob(hor_idx)
+        log_prob_fire = fire_dist.log_prob(fire.to(torch.float32))
+        log_prob_act = log_prob_vert + log_prob_hor + log_prob_fire
+
+        # H(act|enm_idx, ally_idx, o)：三路动作条件熵之和；
+        # fire_mask=0 的样本开火被规则禁死，Bernoulli 退化，不贡献火动作熵
+        fire_mask = pilot_logits['fire_mask'].to(torch.float32)
+        ent_vert = vert_dist.entropy()
+        ent_hor = hor_dist.entropy()
+        ent_fire = fire_dist.entropy() * fire_mask
+        ent_act = ent_vert + ent_hor + ent_fire
+
+        # 联合策略：H = H(enm) + H(ally) + H(act|enm_idx, ally_idx, o)
+        entropy = ent_enm + ent_ally + ent_act
+        # 联合 log_prob：PPO 新旧策略比的分子（分母用回放中存的旧 log_prob_*）
+        log_prob = log_prob_enm + log_prob_ally + log_prob_act
+
+        return {
+            'log_prob': log_prob,
+            'log_prob_enm': log_prob_enm,
+            'log_prob_ally': log_prob_ally,
+            'log_prob_act': log_prob_act,
+            'entropy': entropy,
+            'entropy_details': {
+                'enm': ent_enm,
+                'ally': ent_ally,
+                'vert': ent_vert,
+                'hor': ent_hor,
+                'fire': ent_fire,
+                'act': ent_act,
+            },
+        }
 
     def save(self, path='actor.pt'):
         torch.save({
