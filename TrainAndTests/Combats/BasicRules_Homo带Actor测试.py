@@ -22,6 +22,8 @@ action_cycle_multiplier = 10
 
 from BasicRules_Homo import basic_rules
 from Algorithms.ActorWithPointingNetClean import ActorWrapper
+from Algorithms.CriticWrapper import critic_wrapper
+from torch.utils.tensorboard import SummaryWriter
 
 def append_experience(td, obs, state, action, reward, next_state, done, active_mask):
     """
@@ -437,6 +439,121 @@ if __name__=='__main__':
         avg_cost = total_cost / n_eps if n_eps > 0 else 0
         print(f"总耗时：{total_cost:.1f}s，平均每场耗时：{avg_cost:.1f}s")
 
+        # ===== 结尾附加：从 LocalTrans[第一架红机] 抽取一个 batch，各做一次 Actor / Critic 正向 =====
+        # Actor 走 evaluate_actions（回放动作上的 log_prob 与策略熵），Critic 走 get_value（全局 states）；
+        # 输出保存为 numpy(.npz)，正向计算图分别用 tensorboard 记录到 CalcGraphRecords 下的子目录
+        calc_graph_dir = os.path.join(project_root, 'CalcGraphRecords')
+        os.makedirs(calc_graph_dir, exist_ok=True)
+        npz_dir = os.path.join(project_root, 'acmi_records')
+        os.makedirs(npz_dir, exist_ok=True)
+        
+        # LocalTrans 的键是 UAV id（红方 1/2，蓝方 201/202），取第一架红机的经验
+        rec_id = [i for i in env.UAV_ids if env.find_uav_with_id(i).side == 'r'][0]
+        BATCH_SIZE = 64
+
+        # 递归截取 dict-of-array 的前 n 条作为一个 batch
+        def take_batch(tree, n):
+            if isinstance(tree, dict):
+                return {k: take_batch(v, n) for k, v in tree.items()}
+            if isinstance(tree, np.ndarray):
+                return tree[:n]
+            return tree
+
+        # 堆叠该机全部经验为 dict-of-array，再截取前 BATCH_SIZE 条
+        stacked = {k: stack_field(LocalTrans[rec_id][k]) for k in LocalTrans[rec_id]}
+        batch_obs = take_batch(stacked['obs'], BATCH_SIZE)          # {'agent_input','mask_input','rule_input'}
+        batch_states = take_batch(stacked['states'], BATCH_SIZE)    # {'fixed','ally','enm'} 全局状态
+        batch_actions = take_batch(stacked['actions'], BATCH_SIZE)  # {'vert','hor','fire','enm_idx','ally_idx',...}
+        real_B = batch_states['fixed'].shape[0]
+        print(f"[CalcGraph] 取 id={rec_id} 前 {real_B} 条经验做一次正向计算")
+
+        # --- Actor：一次批量 evaluate_actions，保存 log_prob 与策略熵的 numpy 形式 ---
+        actor = actor_dict[rec_id]
+        with torch.no_grad():
+            actor_out = actor.evaluate_actions(
+                batch_obs['agent_input'], batch_obs['mask_input'],
+                batch_obs['rule_input'], batch_actions,
+            )
+        actor_np = {k: v.detach().cpu().numpy() for k, v in actor_out.items() if torch.is_tensor(v)}
+        actor_np.update({f'entropy_{k}': v.detach().cpu().numpy()
+                         for k, v in actor_out['entropy_details'].items()})
+        actor_np_path = os.path.join(npz_dir, 'actor_evaluate_outputs.npz')
+        np.savez(actor_np_path, **actor_np)
+        print(f"[CalcGraph] Actor 输出已保存: {actor_np_path} (keys: {sorted(actor_np.keys())})")
+
+        # --- Critic：随机初始化 critic_wrapper 对全局 states 做一次 get_value，保存输出 ---
+        critic = critic_wrapper(
+            fixed_dim=batch_states['fixed'].shape[1],
+            enm_shape=batch_states['enm'].shape[1:],
+            ally_shape=batch_states['ally'].shape[1:],
+            device=device,
+        )
+        with torch.no_grad():
+            critic_out = critic.get_value(batch_states)
+        critic_np = {k: v.detach().cpu().numpy() for k, v in critic_out.items()}
+        critic_np_path = os.path.join(npz_dir, 'critic_value_outputs.npz')
+        np.savez(critic_np_path, **critic_np)
+        print(f"[CalcGraph] Critic 输出已保存: {critic_np_path} (keys: {sorted(critic_np.keys())})")
+
+        # --- tensorboard：分别记录两者的正向计算图 ---
+        class ActorGraphWrapper(torch.nn.Module):
+            # ActorWrapper 未定义 forward，包一层供 add_graph 追踪 evaluate_actions；
+            # rule dict 顶层值类型混杂（标量 Tensor + 嵌套 dict），torch 1.11 tracer 无法推断其类型，
+            # 故拆成 4 个独立图输入，在 forward 内部重组回 rule dict（图内部的混合 dict 可正常追踪）
+            def __init__(self, actor):
+                super().__init__()
+                self.actor = actor
+
+            def forward(self, agent_inputs, mask_inputs, actions, ammo, RWR_infos, weapon_infos, enm_infos):
+                rule_inputs = {'ammo': ammo, 'RWR_infos': RWR_infos,
+                               'weapon_infos': weapon_infos, 'enm_infos': enm_infos}
+                out = self.actor.evaluate_actions(agent_inputs, mask_inputs, rule_inputs, actions)
+                # trace 输出不能是 dict（混合类型无法推断，且 torch 1.11 要求输出用 tuple）：
+                # 摊平 entropy_details 后按固定键序返回 tuple
+                flat = {k: v for k, v in out.items() if torch.is_tensor(v)}
+                flat.update({f'entropy_{k}': v for k, v in out['entropy_details'].items()})
+                key_order = ['log_prob', 'log_prob_enm', 'log_prob_ally', 'log_prob_act', 'entropy',
+                             'entropy_enm', 'entropy_ally', 'entropy_vert', 'entropy_hor', 'entropy_fire',
+                             'entropy_act']
+                return tuple(flat[k] for k in key_order)
+
+        class CriticGraphWrapper(torch.nn.Module):
+            # critic_wrapper 同样未定义 forward，包一层供 add_graph 追踪 get_value
+            def __init__(self, critic):
+                super().__init__()
+                self.critic = critic
+
+            def forward(self, agent_inputs):
+                out = self.critic.get_value(agent_inputs)
+                # trace 输出用 tuple（同 ActorGraphWrapper，dict 输出会被 torch 1.11 tracer 拒绝）
+                return (out['enm_logits'], out['ally_logits'], out['value'])
+
+        # 递归把 numpy 数组转为 tensor（追踪时 dict 内非 tensor 值不会被记录为图输入）
+        def to_tensor_tree(x):
+            if isinstance(x, dict):
+                return {k: to_tensor_tree(v) for k, v in x.items()}
+            if isinstance(x, (list, tuple)):
+                return [to_tensor_tree(v) for v in x]
+            return torch.as_tensor(np.asarray(x))
+
+        rule_t = to_tensor_tree(batch_obs['rule_input'])
+        actor_graph_inputs = (
+            to_tensor_tree(batch_obs['agent_input']),
+            to_tensor_tree(batch_obs['mask_input']),
+            to_tensor_tree(batch_actions),
+            rule_t['ammo'], rule_t['RWR_infos'], rule_t['weapon_infos'], rule_t['enm_infos'],
+        )
+        critic_graph_inputs = (to_tensor_tree(batch_states),)
+
+        actor_writer = SummaryWriter(log_dir=os.path.join(calc_graph_dir, 'actor_graph'))
+        actor_writer.add_graph(ActorGraphWrapper(actor), actor_graph_inputs)
+        actor_writer.close()
+
+        critic_writer = SummaryWriter(log_dir=os.path.join(calc_graph_dir, 'critic_graph'))
+        critic_writer.add_graph(CriticGraphWrapper(critic), critic_graph_inputs)
+        critic_writer.close()
+        print(f"[CalcGraph] 正向计算图已写入 tensorboard: "
+              f"{os.path.join(calc_graph_dir, 'actor_graph')} 与 {os.path.join(calc_graph_dir, 'critic_graph')}")
 
     except KeyboardInterrupt:
         print("\n检测到 KeyboardInterrupt")
