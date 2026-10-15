@@ -52,6 +52,19 @@ def load_obs_dims(json_path=None):
         dims = json.load(f)
     return dims['fixed_dim'], tuple(dims['enm_shape']), tuple(dims['ally_shape'])
 
+def append_experience(td, obs, state, action, reward, next_state, done, active_mask):
+    """
+    统一把经验追加到 transition_dict。
+
+    """
+    td['obs'].append(obs) # 新增：存储Actor用的局部观测
+    td['states'].append(state) # 修改：这里存储Critic用的全局状态
+    td['actions'].append(action)
+    td['rewards'].append(reward)
+    td['next_states'].append(next_state)
+    td['dones'].append(done)
+    td['active_masks'].append(active_mask) # 【新增】active_mask，转入多智能体
+    return td
 
 if __name__=='__main__':
     sys.path.append(project_root)

@@ -239,8 +239,8 @@ def summarize(il_dict):
             
 def append_experience(td, obs, state, action, reward, next_state, done, active_mask):
     """
-    统一把一次蓝方经验追加到 transition_dict。
-    修改：增加 obs 输入，用于存储局部观测
+    统一把经验追加到 transition_dict。
+
     """
     td['obs'].append(obs) # 新增：存储Actor用的局部观测
     td['states'].append(state) # 修改：这里存储Critic用的全局状态

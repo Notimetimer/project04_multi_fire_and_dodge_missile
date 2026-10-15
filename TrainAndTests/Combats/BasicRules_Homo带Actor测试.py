@@ -22,23 +22,9 @@ action_cycle_multiplier = 10
 
 from BasicRules_Homo import basic_rules
 from Algorithms.ActorWithPointingNetClean import ActorWrapper
-from _context import take_some_of_rule_inputs, load_obs_dims, stack_field
+from _context import take_some_of_rule_inputs, load_obs_dims, stack_field, append_experience
 from Algorithms.CriticWrapper import critic_wrapper
 from torch.utils.tensorboard import SummaryWriter
-
-def append_experience(td, obs, state, action, reward, next_state, done, active_mask):
-    """
-    统一把一次蓝方经验追加到 transition_dict。
-    修改：增加 obs 输入，用于存储局部观测
-    """
-    td['obs'].append(obs) # 新增：存储Actor用的局部观测
-    td['states'].append(state) # 修改：这里存储Critic用的全局状态
-    td['actions'].append(action)
-    td['rewards'].append(reward)
-    td['next_states'].append(next_state)
-    td['dones'].append(done)
-    td['active_masks'].append(active_mask) # 【新增】active_mask，转入多智能体
-    return td
 
 # 是否考虑视野限制
 POMDP = 1
