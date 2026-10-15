@@ -22,6 +22,7 @@ action_cycle_multiplier = 10
 
 from BasicRules_Homo import basic_rules
 from Algorithms.ActorWithPointingNetClean import ActorWrapper
+from _context import take_some_of_rule_inputs, load_obs_dims, stack_field
 from Algorithms.CriticWrapper import critic_wrapper
 from torch.utils.tensorboard import SummaryWriter
 
@@ -38,16 +39,6 @@ def append_experience(td, obs, state, action, reward, next_state, done, active_m
     td['dones'].append(done)
     td['active_masks'].append(active_mask) # 【新增】active_mask，转入多智能体
     return td
-
-# rule_input 只保留 RWR/weapon/enm 三块，统一后续堆叠为 dict-of-array
-def take_some_of_rule_inputs(rule_input):
-    # return rule_input
-    return copy.deepcopy({
-        "RWR_infos":    rule_input["RWR_infos"],
-        "weapon_infos": rule_input["weapon_infos"],
-        "enm_infos":    rule_input["enm_infos"],
-        "ammo":         rule_input["ego_ammo"],
-    })
 
 # 是否考虑视野限制
 POMDP = 1
@@ -108,32 +99,6 @@ if __name__=='__main__':
 
     decide_steps_after_update = 0
 
-    # 递归堆叠 LocalTrans 各字段为 dict-of-array 或 array
-    def stack_field(field_list):
-        """递归堆叠：list[单步值] -> dict-of-array 或 array。
-        None 自动跳过；dict 对每个 key 递归；
-        list-of-dict 按字段堆叠为 [B, N]；
-        list-of-scalar / scalar 堆叠为 array。"""
-        sample = next((v for v in field_list if v is not None), None)
-        if sample is None:
-            return None
-        if isinstance(sample, dict):
-            all_keys = set()
-            for item in field_list:
-                if item is not None:
-                    all_keys.update(item.keys())
-            return {k: stack_field([item.get(k) if item is not None else None
-                                    for item in field_list])
-                    for k in all_keys}
-        elif isinstance(sample, list):
-            if sample and isinstance(sample[0], dict):
-                keys = sample[0].keys()
-                return {k: np.array([[d.get(k) for d in step] for step in field_list]) for k in keys}
-            else:
-                return np.array(field_list)
-        else:
-            return np.array(field_list)
-
     try:
         r_action_list = []
         b_action_list = []
@@ -177,11 +142,8 @@ if __name__=='__main__':
             if actor_dict is None:
                 actor_dict = {}
                 red_ids = [i for i in env.UAV_ids if env.find_uav_with_id(i).side == 'r']
-                # 各红机观测维度一致，用第一架红机的观测确定网络维度
-                sample_agent, _, _ = env.get_obs(red_ids[0], pomdp=POMDP)
-                fixed_dim = len(sample_agent['fixed'])
-                enm_shape = sample_agent['enm'].shape
-                ally_shape = sample_agent['ally'].shape
+                # 网络维度统一从 env_obs_dims.json 读取（由 读取环境参数并存json.py 生成）
+                fixed_dim, enm_shape, ally_shape = load_obs_dims()
                 for rid in red_ids:
                     actor_dict[rid] = ActorWrapper(
                         fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device=device,
