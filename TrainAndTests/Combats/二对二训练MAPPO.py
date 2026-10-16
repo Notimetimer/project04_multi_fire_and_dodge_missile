@@ -1,6 +1,6 @@
 import os, sys
 # from CombatPPOWithIL3_parallel_hierarch_Classic import *
-from CombatPPOWithIL4_parallel_hierarch import *
+from TrainAndTests.Combats.CombatMAPPO_parall_hier import *
 from datetime import datetime
 from prepare_il_datas_hierarchical import run_rules
 
@@ -74,39 +74,24 @@ if __name__=='__main__':
     start_time = datetime.now()
     print(f"Simulation start: {start_time.isoformat(sep=' ', timespec='seconds')}")
     run_MLP_simulation(
-        k_nonlinear=0.0,
         collape_recover=collape_recover,
         num_workers=15,  # 并行进程数，根据CPU核数调整，建议 10-20
         mission_name=mission_name,
         actor_lr=actor_lr,
         critic_lr=critic_lr,
-        IL_epoches=IL_epoches,
         max_steps=max_steps,
-        hidden_dim=hidden_dim,
         gamma=gamma,
         lmbda=lmbda,
         epochs=epochs,
         eps=eps,
-        k_entropy=k_entropy,
-        alpha_il=alpha_il,
-        il_batch_size=il_batch_size,
-        il_buffer_max_size=il_buffer_max_size,
-        mini_batch_size_mixed=mini_batch_size_mixed,
-        beta_mixed=beta_mixed,
-        label_smoothing=label_smoothing,
-        label_smoothing_mixed=label_smoothing_mixed,
+        beta_entropy=0.01,
         action_cycle_multiplier=action_cycle_multiplier,
-        trigger0=trigger0,
-        trigger_delta=trigger_delta,
-        weight_reward_0=weight_reward_0,
-        IL_rule=IL_rule,
-        no_crash=no_crash,
         dt_move=dt_move,
         max_episode_duration=max_episode_duration,
         R_cage=R_cage,
         dt_maneuver=dt_maneuver,
         transition_dict_threshold=transition_dict_threshold,
-        should_kick=0, # False,  # 是否踢走不合规的对手
+        mini_batch_size_mixed=mini_batch_size_mixed,
         init_elo_ratings = {
             'Rule_0': 1200, # debug
             "Rule_1": 1200,
@@ -118,8 +103,6 @@ if __name__=='__main__':
             },
         self_play_type = 'PFSP_balanced', # PFSP_balanced, PFSP_challenge, FSP, SP, None 表示非自博弈
         hist_agent_as_opponent = 1, # 奖励函数调试禁止自博弈
-        use_sil = 0,
-        p_factor = 0.23,
         WARM_UP_STEPS = 0e3, # 500e3, # 1e3 为debug
         ADMISSION_THRESHOLD = -1,  # 0.5,
         MAX_HISTORY_SIZE = 50, # 150  # 300
@@ -127,15 +110,10 @@ if __name__=='__main__':
         K_FACTOR = 16,  # 32 原先振荡太大了
         randomized_birth = 1,
         save_interval = 1, # 触发更新至少要经过多少批采样
-        opp_greedy_rate = 0, # 对手贪婪率
         num_runs = 3, # 测试回合重复次数
         device = device,
-        R_cage_range = (R_cage, R_cage), # 固定场地大小
         vertices = None,
         resume_dir=resume_target_dir, # 指定中断续训目录
-        init_il_data = original_il_transition_dict, # 传入模仿数据集
-        POMDP=0,
-        adj_r_w=0, # 奖励函数权重可调
     )
     end_time = datetime.now()
     print(f"Simulation end: {end_time.isoformat(sep=' ', timespec='seconds')}")
