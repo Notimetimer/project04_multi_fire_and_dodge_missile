@@ -232,6 +232,9 @@ class Battle(object):
     def reset(self, red_birth_state=None, blue_birth_state=None, 
               red_init_num=2, blue_init_num=2,
               red_init_ammo=4, blue_init_ammo=4, seed=None, options={"random_pos": True}, ego_side='r'):  # 重置位置和状态
+        # 胜负情况
+        self.r_outcome = None
+        self.b_outcome = None
         self.R_cage = self.R_cage0
         if self.vertices is not None:
             self.horizontal_center = np.mean(self.vertices, axis=0)

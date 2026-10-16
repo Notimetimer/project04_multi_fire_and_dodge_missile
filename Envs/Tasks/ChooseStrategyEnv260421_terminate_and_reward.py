@@ -238,5 +238,14 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             ego.cycle_events.append((t_now, ego.id,
                                      reward_dict["shaping"], reward_dict["end"], reward_dict["event"],
                                      ';'.join(events_this_cycle)))
-
+            
+            # 胜负结果可导出
+            if side == 'r':
+                self.r_outcome = outcome
+                if outcome is not None:
+                    self.b_outcome = - outcome
+            else:
+                self.b_outcome = outcome
+                if outcome is not None:
+                    self.r_outcome = - outcome
         return done, reward_dict

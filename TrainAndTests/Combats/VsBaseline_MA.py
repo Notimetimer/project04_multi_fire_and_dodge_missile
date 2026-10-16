@@ -72,7 +72,7 @@ def test_worker(model_state_dict, rules_num,
     np.random.seed(seed)
     """
     红方各机独立 ActorWrapper（共享同一份 model_state_dict），蓝方统一 basic_rules。
-    胜负从红机 reward_dict['end'] 判读（end = outcome * 30，outcome 以 ego 视角给出）。
+    胜负直接读环境端导出的 r_outcome（1 胜 / -1 负 / 0 平，红方视角）。
     """
     device = torch.device(device_name)
 
@@ -144,7 +144,6 @@ def test_worker(model_state_dict, rules_num,
             target_index_all = {}
 
             done = False
-            red_end_reward = 0 # 终局时红机 reward_dict['end']，>0 胜 / <0 负 / ==0 平
 
             test_env.dt_move = dt_move
             test_env.dt_maneuver = dt_maneuver
@@ -239,19 +238,17 @@ def test_worker(model_state_dict, rules_num,
 
                 for id in test_env.UAV_ids: # 每架飞机都调用一遍，保证各自的周期事件都被积累
                     done, reward_dict = test_env.combat_terminate_and_reward(id=id, action_cycle_multiplier=action_cycle_multiplier)
-                    # 终局帧从红机视角记录结果奖励（end = outcome * 30）
-                    if done and 'end' in reward_dict and test_env.find_uav_with_id(id).side == 'r':
-                        red_end_reward = reward_dict['end']
 
                 '''显示运行轨迹'''
                 # 可视化
                 test_env.render(t_bias=t_bias)
 
-            # 结果统计（红方视角）：end>0 胜 / <0 负 / ==0 平；
+            # 结果统计（红方视角）：直接读环境端导出的 r_outcome（1 胜 / -1 负 / 0 平）；
             # 平局且在时限前结束视为双杀（双方同归于尽），超时按剩余机数判 0 也是平
-            if red_end_reward > 0:
+            outcome = test_env.r_outcome if test_env.r_outcome is not None else 0
+            if outcome > 0:
                 wins += 1
-            elif red_end_reward < 0:
+            elif outcome < 0:
                 loses += 1
             else:
                 draws += 1
