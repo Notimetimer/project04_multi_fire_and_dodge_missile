@@ -6,7 +6,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
 sys.path.append(os.path.join(project_root, 'Algorithms'))  # Utils.py 里 from _context import * 需要
 
-from Algorithms.ActorWithPointingNetClean import ActorWrapper
+from Algorithms.ActorWithPointingNet import ActorWrapper
 from Algorithms.CriticWrapper import critic_wrapper
 from Algorithms.MAPPOHybrid import MAPPOHybrid
 

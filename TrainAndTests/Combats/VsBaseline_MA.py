@@ -19,6 +19,7 @@ import glob
 import csv
 import time
 import random
+import re
 from math import *
 
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,7 +28,7 @@ sys.path.append(project_root)
 from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import *
 from Math_calculates.sub_of_angles import *
 from BasicRules_Homo import basic_rules
-from Algorithms.ActorWithPointingNetClean import ActorWrapper
+from Algorithms.ActorWithPointingNet import ActorWrapper
 from _context import take_some_of_rule_inputs, load_obs_dims, stack_field
 
 use_tacview = 2 # 1 动态显示 2 静默写入 acmi_records
@@ -303,7 +304,7 @@ if __name__=='__main__':
 
     # 测试配置
     RULES_NUM = 5      # 蓝方规则编号
-    N_EPISODES = 10    # 测试场次
+    N_EPISODES = 3    # 测试场次  10
 
     args.max_episode_len = 15*60
     args.R_cage = 60.3e3
@@ -311,14 +312,30 @@ if __name__=='__main__':
     # 构建场地边界，南北长54km，东西宽100km的长方形边界
     vertices = [[50e3, 50e3], [-50e3, 50e3], [-50e3, -50e3], [50e3, -50e3]]
 
-    # 随机初始化的红方网络（验证权重加载通路；正式使用时替换为训练后的 state_dict）
-    # 异构模式：为每架红机（id=1, 2）各建一份独立权重，打包为 {id: state_dict}
-    fixed_dim, enm_shape, ally_shape = load_obs_dims()
-    red_ids = [1, 2]
-    model_state_dict = {}
-    for rid in red_ids:
-        random_actor = ActorWrapper(fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device='cpu')
-        model_state_dict[rid] = random_actor.state_dict()
+    # 加载指定训练目录下最新一批 actor（异构：每架红机一份权重，打包为 {id: state_dict}）
+    upper_log_dir = r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat"
+    LOG_DIR = os.path.join(upper_log_dir, 
+                           "MAPPO-run-20261016-130957"
+                           )
+    actor_files = glob.glob(os.path.join(LOG_DIR, "actor_rein*_*.pt"))
+    if not actor_files:
+        raise FileNotFoundError(f"未在 {LOG_DIR} 找到 actor_rein*_*.pt")
+    # 文件名形如 actor_rein{batch}_{id}.pt，解析出 (batch, id) 后取最大 batch 的一批
+    parsed = []
+    for f in actor_files:
+        m = re.match(r'actor_rein(\d+)_(\d+)\.pt', os.path.basename(f))
+        if m:
+            parsed.append((int(m.group(1)), int(m.group(2)), f))
+    latest_batch = max(b for b, _, _ in parsed)
+    
+    # 加载的版本号
+    loaded_version = 10 # latest_batch
+    
+    model_state_dict = {
+        uid: torch.load(path, map_location='cpu')
+        for b, uid, path in parsed if b == loaded_version
+    }
+    print(f"加载最新 actor：batch={loaded_version}，红机 id={sorted(model_state_dict.keys())}")
 
     rules_num, result, wins, loses, draws, perish_togethers = test_worker(
         model_state_dict, RULES_NUM, args, num_runs=N_EPISODES, vertices=vertices, save_record=True)

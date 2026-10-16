@@ -21,7 +21,7 @@ use_tacview = 2 # 1 动态显示 2 静默写入 acmi_records
 action_cycle_multiplier = 10
 
 from BasicRules_Homo import basic_rules
-from Algorithms.ActorWithPointingNetClean import ActorWrapper
+from Algorithms.ActorWithPointingNet import ActorWrapper
 from _context import take_some_of_rule_inputs, load_obs_dims, stack_field, append_experience, load_init_states
 from Algorithms.CriticWrapper import critic_wrapper
 from torch.utils.tensorboard import SummaryWriter
