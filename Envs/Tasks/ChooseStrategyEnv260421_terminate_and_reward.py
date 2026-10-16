@@ -40,7 +40,7 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
     def combat_terminate_and_reward(self, id, action_cycle_multiplier=10):
         self.update_entity_alives() # 更新所有飞机和导弹存活情况
         # 奖励权重预置
-        DENSE_REWARD_WEIGHT = 0.5   # 密集奖励参考值
+        DENSE_REWARD_WEIGHT = 0.2   # 密集奖励参考值
         END_REWARD_WEIGHT = 30      # 结果奖励
         # 事件奖励
         DIE_WEIGHT = -10            # 被击杀
@@ -97,8 +97,6 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             enmside_unused_msl_num = self.unused_r_missile_num
 
         # 胜负平续判决
-
-
         # self.close_range_kill() # 允许跑刀
         if getattr(self, 'last_shoot_9x_t', None) != self.t: # 同一帧内多机重复调用只执行一次
             self.last_shoot_9x_t = self.t
@@ -127,24 +125,8 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             done = 1
         # 时间内，而且双方飞机都有剩
         else:
-            # # 双方中距弹耗尽，按剩余飞机数量判别胜负
-            # if len(egoside_alive_msls) + egoside_unused_msl_num + \
-            #     len(enmside_alive_msls) + enmside_unused_msl_num == 0:
-            #         outcome = np.sign(len(egoside_alive_uavs) - len(enmside_alive_uavs))
-            #         done = 1
-            # # 我方一发可用的导弹都没有，而敌方还有导弹未发射
-            # elif len(egoside_alive_msls) + egoside_unused_msl_num == 0 and\
-            #     enmside_unused_msl_num > 0:
-            #         if len(egoside_alive_uavs) <= len(enmside_alive_uavs):
-            #             outcome = -1 # 预判为输
-            #             done = 1
-            #         else:
-            #             outcome = None # 继续
-            #             done = 0
-            # else:
-                outcome = None # 继续
-                done = 0
-
+            outcome = None # 继续
+            done = 0
         
         # 回填开火记录的命中/脱靶结果 ---
         # 每次调用都扫描本侧全部已发射导弹（不论死活）；hit 优先于 dead（命中导弹同时 dead=1）
@@ -172,9 +154,68 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             ego.last_cycle_t = self.t
             t_now = (int(self.t/60), int(self.t%60))
             # 密集奖励
-            reward_dict["shaping"] = 0
-
+            r_shaping = 0
+            # 获取信息
+            _ ,_ , ego_full_state = self.get_obs(id, reward_fn=1)
+            RWR_infos = ego_full_state["RWR_infos"]
+            warning = RWR_infos["warning"]
+            cos_threat_delta_psi = RWR_infos["cos_threat_delta_psi"]
+            threat_theta = RWR_infos["threat_theta"]
+            weapon_infos = ego_full_state["weapon_infos"]
+            missile_t_fly = weapon_infos["missile_t_fly"]
+            missile_in_mid_term = weapon_infos["mid_term"]
+            ammo = ego.ammo
             
+            enm_infos = ego_full_state["enm_infos"]
+            ally_infos = ego_full_state["ally_infos"]
+            
+            # 敌机全灭或 POMDP 下不可见时 enm_infos 为空：锁定标志取 False，ATA 取中性值 pi/2（cos=0、不触发贴脸惩罚）
+            if enm_infos:
+                ego_has_lock = any(temp["enm_locked"] for temp in enm_infos)
+                ego_is_locked = any(temp["locked_by_enm"] for temp in enm_infos)
+                ata_list = [temp["enm_ATA"] for temp in enm_infos]
+                min_enm_ATA = min(ata_list)
+                max_enm_ATA = max(ata_list)
+                mean_enm_ATA = float(np.mean(ata_list))
+            else:
+                ego_has_lock = False
+                ego_is_locked = False
+                min_enm_ATA = max_enm_ATA = mean_enm_ATA = pi / 2
+            
+            # 速度奖励（常驻）
+            mach = ego.mach
+            r_shaping += (mach-1.0)*2 * DENSE_REWARD_WEIGHT/2
+            
+            # 受到威胁时
+            if warning:
+                # 下高引导
+                r_shaping += (-ego.vu/100) * np.sign(threat_theta-(-pi/4)) * DENSE_REWARD_WEIGHT
+                # 三九和拖尾机动的奖励在动作mask面前很微弱，不写了
+            else:
+                # 锁定/被锁定
+                r_shaping += (ego_has_lock - ego_is_locked) * DENSE_REWARD_WEIGHT
+                
+                # 制导时
+                if missile_t_fly < 40:
+                    # 开火后下高
+                    r_shaping += (-ego.vu/100) * np.sign(threat_theta-(-pi/4)) * DENSE_REWARD_WEIGHT
+                    # 开火后不要继续指着敌机飞了
+                    if min_enm_ATA < np.radians(15):
+                        r_shaping += - DENSE_REWARD_WEIGHT
+                
+                # 没有导弹处于中制导阶段
+                if (not missile_in_mid_term):
+                    # 奖励指向任何一个目标
+                    r_shaping += cos(min_enm_ATA) * DENSE_REWARD_WEIGHT
+                    if ammo > 0: # 有弹药，爬高争取发射机会
+                        r_shaping += (ego.vu/100) * DENSE_REWARD_WEIGHT
+                    else: # 没有弹药，飞5000m
+                        r_shaping += (-ego.vu/100) * np.sign(ego.alt-5000) * DENSE_REWARD_WEIGHT
+                
+                # TODO 指向场地中心奖励
+            
+            
+            reward_dict["shaping"] = r_shaping
             reward_dict["shaping"] *= (1-ego.dead) # 死了没有密集奖励
 
             # 结果奖励
