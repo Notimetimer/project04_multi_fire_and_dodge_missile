@@ -9,7 +9,7 @@ from Algorithms.ActorMLPHeads import ActorMLPWrapper, ActorMLPHeads
 class MAPPOHybrid:
     def __init__(self, actor, critic, actor_lr, critic_lr,
                  lmbda, epochs, eps, gamma, device, 
-                 beta_entropy=0.01, critic_max_grad=2, actor_max_grad=2, max_std=0.7):
+                 k_entropy=0.001, critic_max_grad=2, actor_max_grad=2, max_std=0.7):
         
         self.actor = actor 
         self.critic = critic
@@ -22,7 +22,7 @@ class MAPPOHybrid:
         self.epochs = epochs
         self.eps = eps
         self.device = device
-        self.beta_entropy = beta_entropy
+        self.k_entropy = k_entropy
         
         self.critic_max_grad = critic_max_grad
         self.actor_max_grad = actor_max_grad
@@ -83,11 +83,13 @@ class MAPPOHybrid:
                 advantage = compute_advantage(self.gamma, self.lmbda, td_delta.cpu(), dones.cpu(), truncs.cpu() if truncs is not None else None).to(self.device)
 
         with torch.no_grad():
-            # obs 为 {'agent_input','mask_input','rule_input'} 的 dict-of-arrays，
-            # actions 为 {'vert','hor','fire','enm_idx','ally_idx',...} 的 dict-of-arrays
-            old_log_probs = self.actor.evaluate_actions(
-                obs['agent_input'], obs['mask_input'], obs['rule_input'], actions
-            )['log_prob'].view(-1, 1)
+            # [修改] old_log_prob 直接读取采样时存储的行为策略 log_prob（joint = enm + ally + act，
+            # 与 evaluate_actions['log_prob'] 同一联合语义），不再重算
+            old_log_probs = (
+                to_tensor(actions['log_prob_enm'], torch.float)
+                + to_tensor(actions['log_prob_ally'], torch.float)
+                + to_tensor(actions['log_prob_act'], torch.float)
+            ).view(-1, 1)
             v_pred_old = self.critic.get_value(critic_inputs)['value'].view(-1, 1)
 
         if adv_normed:
@@ -148,7 +150,7 @@ class MAPPOHybrid:
 
                 self.actor_optimizer.zero_grad()
                 self.critic_optimizer.zero_grad()
-                loss = actor_loss - self.beta_entropy * entropy + critic_loss
+                loss = actor_loss - self.k_entropy * entropy + critic_loss
                 loss.backward()
 
                 torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.actor_max_grad)

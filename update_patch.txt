@@ -124,7 +124,7 @@
                 
                 self.actor_optimizer.zero_grad()
                 self.critic_optimizer.zero_grad()
-                loss = actor_loss - self.beta_entropy * entropy + critic_loss
+                loss = actor_loss - self.k_entropy * entropy + critic_loss
                 loss.backward()
                 
                 torch.nn.utils.clip_grad_norm_(self.actor.net.parameters(), 0.5)

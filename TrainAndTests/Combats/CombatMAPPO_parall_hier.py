@@ -206,9 +206,9 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
     from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import ChooseStrategyEnv
     from Algorithms.ActorWithPointingNetClean import ActorWrapper
     from BasicRules_Homo import basic_rules
-    from _context import take_some_of_rule_inputs, stack_field, load_obs_dims, load_init_states
+    from _context import take_some_of_rule_inputs, stack_field, load_obs_dims, load_init_states, append_experience
 
-    env = ChooseStrategyEnv(args, tacview_show=False, vertices=vertices)
+    env = ChooseStrategyEnv(args, tacview_show=0, vertices=vertices)
     env.dt_move = dt_move
     env.dt_maneuver = dt_maneuver
 
@@ -295,16 +295,11 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                         for id in env.UAV_ids:
                             UAV = env.find_uav_with_id(id)
                             is_student = UAV.side == 'r'
-                            # 保存上一步经验（仅学生，决策步对齐）
+                            # 保存上一步经验（仅学生，决策步对齐，统一走 append_experience）
                             if is_student and Last_Obs[id] is not None and count > 0:
-                                lt = LocalTrans[id]
-                                lt['obs'].append(Last_Obs[id])
-                                lt['states'].append(Last_States[id])
-                                lt['actions'].append(Last_Actions[id])
-                                lt['next_states'].append(Curr_States[id])
-                                lt['rewards'].append(Rewards[id])
-                                lt['dones'].append(0)
-                                lt['active_masks'].append(not UAV.dead)
+                                LocalTrans[id] = append_experience(LocalTrans[id], Last_Obs[id], Last_States[id],
+                                                                   Last_Actions[id], Rewards[id], Curr_States[id],
+                                                                   done=0, active_mask=not UAV.dead)
 
                             if is_student or id in blue_nn_weights:
                                 # 神经网络决策（红方学生 / 蓝方历史 nn）
@@ -320,13 +315,15 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                                 target_index_all[id] = enm_idx
                                 fire_target = enm_idx
                                 fire_flag = bool(fire)
-                                # 记录动作供经验池使用（仅学生）
+                                # 记录动作供经验池使用（仅学生，log_prob 为行为策略真实值，update 直接读取）
                                 if is_student:
                                     Last_Actions[id] = {
                                         "vert": vert, "hor": hor, "fire": fire,
-                                        "enm_idx": enm_idx, "ally_idx": 0,
-                                        "log_prob_enm": -1e-6, "log_prob_ally": -1e-6,
-                                        "log_prob_act": -1e-6,
+                                        "enm_idx": enm_idx,
+                                        "ally_idx": int(actor_out['ally_idx'].item()),
+                                        "log_prob_enm": float(actor_out['log_prob_enm'].item()),
+                                        "log_prob_ally": float(actor_out['log_prob_ally'].item()),
+                                        "log_prob_act": float(actor_out['log_prob_act'].item()),
                                     }
                             else:
                                 # 蓝方规则对手
@@ -377,17 +374,13 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                     for id in env.UAV_ids:
                         Curr_States[id], _, _ = env.get_obs(id, reward_fn=1)
 
-                # 最后一帧经验（done=1，仅学生）
+                # 最后一帧经验（done=1，仅学生，统一走 append_experience）
                 for id in student_ids:
                     UAV = env.find_uav_with_id(id)
-                    lt = LocalTrans[id]
-                    lt['obs'].append(Last_Obs[id])
-                    lt['states'].append(Last_States[id])
-                    lt['actions'].append(Last_Actions[id])
-                    lt['next_states'].append(Curr_States[id])
-                    lt['rewards'].append(Rewards[id])
-                    lt['dones'].append(1)
-                    lt['active_masks'].append(not UAV.dead)
+                    LocalTrans[id] = append_experience(LocalTrans[id], Last_Obs[id], Last_States[id],
+                                                        Last_Actions[id], Rewards[id],
+                                                        Curr_States.get(id, Last_States[id]),
+                                                        done=1, active_mask=not UAV.dead)
 
                 # 堆叠各 id 经验（dict-of-arrays，只有学生 id）
                 stacked_trans = {}
@@ -439,7 +432,7 @@ def run_MLP_simulation(
     lmbda=0.995,
     epochs=4,
     eps=0.2,
-    beta_entropy=0.01,
+    k_entropy=0.001,
     action_cycle_multiplier=10,
     dt_move=0.07,
     dt_maneuver=0.2,
@@ -497,7 +490,7 @@ def run_MLP_simulation(
     print(f"Master training device: {device}")
 
     # 3. 网络维度从 json 读取，用 dummy env 获取 UAV id 列表
-    dummy_env = ChooseStrategyEnv(args, tacview_show=False, vertices=vertices)
+    dummy_env = ChooseStrategyEnv(args, tacview_show=0, vertices=vertices)
     dummy_env.reset(red_init_num=red_init_num, blue_init_num=blue_init_num,
                     red_init_ammo=red_init_ammo, blue_init_ammo=blue_init_ammo)
     uav_ids = list(dummy_env.UAV_ids)
@@ -520,7 +513,7 @@ def run_MLP_simulation(
             actor=actors[uid], critic=critics[uid],
             actor_lr=actor_lr, critic_lr=critic_lr,
             lmbda=lmbda, epochs=epochs, eps=eps, gamma=gamma,
-            device=device, beta_entropy=beta_entropy,
+            device=device, k_entropy=k_entropy,
         )
 
     # 日志记录
@@ -673,47 +666,48 @@ def run_MLP_simulation(
                                      for uid in red_student_ids}
 
             # [测试] 每 batch 采样前：并行测试当前学生队 vs 规则对手
-            print(f"\n>>> [Per-Batch Test] Testing student team vs rules (batch {batch_idx})...")
-            # 学生即红方且不改 id：测试环境红机 id 与学生 id 一致，直接下发整队
-            test_team_weights = current_actor_weights
-            test_tasks = []
-            for r_idx in TEST_RULE_IDS:
-                obj = test_pool.apply_async(
-                    test_worker,
-                    kwds={
-                        'model_state_dict': test_team_weights,
-                        'rules_num': r_idx,
-                        'env_args': args,
-                        'device_name': 'cpu',
-                        'num_runs': num_runs,
-                        'vertices': vertices,
-                        'dt_move': dt_move,
-                        'dt_maneuver': dt_maneuver,
-                        'action_cycle_multiplier': action_cycle_multiplier,
-                        'red_init_num': red_init_num,
-                        'blue_init_num': blue_init_num,
-                        'red_init_ammo': test_red_init_ammo,
-                        'blue_init_ammo': test_blue_init_ammo,
-                    }
-                )
-                test_tasks.append(obj)
+            if num_runs > 0:
+                print(f"\n>>> [Per-Batch Test] Testing student team vs rules (batch {batch_idx})...")
+                # 学生即红方且不改 id：测试环境红机 id 与学生 id 一致，直接下发整队
+                test_team_weights = current_actor_weights
+                test_tasks = []
+                for r_idx in TEST_RULE_IDS:
+                    obj = test_pool.apply_async(
+                        test_worker,
+                        kwds={
+                            'model_state_dict': test_team_weights,
+                            'rules_num': r_idx,
+                            'env_args': args,
+                            'device_name': 'cpu',
+                            'num_runs': num_runs,
+                            'vertices': vertices,
+                            'dt_move': dt_move,
+                            'dt_maneuver': dt_maneuver,
+                            'action_cycle_multiplier': action_cycle_multiplier,
+                            'red_init_num': red_init_num,
+                            'blue_init_num': blue_init_num,
+                            'red_init_ammo': test_red_init_ammo,
+                            'blue_init_ammo': test_blue_init_ammo,
+                        }
+                    )
+                    test_tasks.append(obj)
 
-            # 阻塞等待全部测试完成后再进入采样
-            test_results = [t.get() for t in test_tasks]
-            outcomes = {rule_num: score for rule_num, score, wins, loses, draws, p_t_ in test_results}
-            outcomes_perish = {rule_num: p_t_ for rule_num, score, wins, loses, draws, p_t_ in test_results}
+                # 阻塞等待全部测试完成后再进入采样
+                test_results = [t.get() for t in test_tasks]
+                outcomes = {rule_num: score for rule_num, score, wins, loses, draws, p_t_ in test_results}
+                outcomes_perish = {rule_num: p_t_ for rule_num, score, wins, loses, draws, p_t_ in test_results}
 
-            for r_num, score in outcomes.items():
-                logger.add(f"test/agent_vs_rule{r_num}", score, total_steps)
-                print(f"  [Test Result] Rule_{r_num}: {score}")
+                for r_num, score in outcomes.items():
+                    logger.add(f"test/agent_vs_rule{r_num}", score, total_steps)
+                    print(f"  [Test Result] Rule_{r_num}: {score}")
 
-            # 所有对手的平均Score和超视距双杀率
-            avg_score = np.mean(list(outcomes.values()))
-            avg_perish_together = np.mean(list(outcomes_perish.values()))
-            logger.add("test/avg_score", avg_score, total_steps)
-            logger.add("test/BVR perish together", avg_perish_together, total_steps)
+                # 所有对手的平均Score和超视距双杀率
+                avg_score = np.mean(list(outcomes.values()))
+                avg_perish_together = np.mean(list(outcomes_perish.values()))
+                logger.add("test/avg_score", avg_score, total_steps)
+                logger.add("test/BVR perish together", avg_perish_together, total_steps)
 
-            # 分发任务给 Worker
+            # 分发采样任务给 Worker
             worker_metrics_buffer = []
 
             # 对手池
@@ -834,12 +828,12 @@ def run_MLP_simulation(
                 elif metrics['lose']: batch_loss_cnt += 1
                 else: batch_draw_cnt += 1
 
-                # 按 id 聚合经验
+                # 按 id 聚合经验（worker 已堆叠为 dict-of-arrays，递归合并；dict 字段禁用 extend）
                 for uid, uid_trans in l_tr_by_id.items():
                     if uid not in transition_dicts:
                         continue
                     for k in transition_dicts[uid]:
-                        transition_dicts[uid][k].extend(uid_trans[k])
+                        transition_dicts[uid][k] = merge_transition_tree(transition_dicts[uid][k], uid_trans[k])
 
                 # ELO 更新
                 actual_score = 0.5

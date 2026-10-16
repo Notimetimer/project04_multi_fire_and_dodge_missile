@@ -77,5 +77,19 @@ def append_experience(td, obs, state, action, reward, next_state, done, active_m
     td['active_masks'].append(active_mask) # 【新增】active_mask，转入多智能体
     return td
 
+
+# 递归合并两个 dict-of-arrays 经验树（worker 端已堆叠为 numpy）：空槽位按源结构初始化，
+# 非空叶子沿 batch 维（axis=0）拼接。注意 dict 字段不能用 list.extend——extend 会误存键名
+def merge_transition_tree(dst, src):
+    if isinstance(src, dict):
+        merged = dst if isinstance(dst, dict) else {}
+        for k, sv in src.items():
+            merged[k] = merge_transition_tree(merged.get(k), sv)
+        return merged
+    arr = np.asarray(src)
+    if dst is None or (isinstance(dst, list) and not dst):
+        return arr.copy()
+    return np.concatenate([np.asarray(dst), arr], axis=0)
+
 if __name__=='__main__':
     sys.path.append(project_root)
