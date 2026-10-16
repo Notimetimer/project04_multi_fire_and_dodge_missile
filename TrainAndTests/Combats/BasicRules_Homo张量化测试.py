@@ -21,7 +21,7 @@ use_tacview = 2 # 1 动态显示 2 静默写入 acmi_records
 action_cycle_multiplier = 10
 
 from BasicRules_Homo import basic_rules
-from _context import take_some_of_rule_inputs, stack_field, append_experience
+from _context import take_some_of_rule_inputs, stack_field, append_experience, load_init_states
 
 
 # 是否考虑视野限制
@@ -110,13 +110,14 @@ if __name__=='__main__':
             print(f"开始第{i_episode+1}场对抗，前{i_episode}场对抗耗时：{prev_total:.1f}s")
             episode_return = 0
             DEFAULT_RED_BIRTH_STATE, DEFAULT_BLUE_BIRTH_STATE = creat_initial_state()
+            init_cfg = load_init_states() # 初始数量/挂载统一从 init_states.json 读取
             env.reset(
                 red_birth_state=DEFAULT_RED_BIRTH_STATE, blue_birth_state=DEFAULT_BLUE_BIRTH_STATE,
-                red_init_num=  2,
-                blue_init_num= 2,
-                red_init_ammo= 2, # 4
-                blue_init_ammo=2, # 4
-                ) # 4
+                red_init_num=init_cfg['red_init_num'],
+                blue_init_num=init_cfg['blue_init_num'],
+                red_init_ammo=init_cfg['red_init_ammo'],
+                blue_init_ammo=init_cfg['blue_init_ammo'],
+                )
             r_action_label=0
             b_action_label=0
 

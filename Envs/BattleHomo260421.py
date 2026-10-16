@@ -231,7 +231,7 @@ class Battle(object):
 
     def reset(self, red_birth_state=None, blue_birth_state=None, 
               red_init_num=2, blue_init_num=2,
-              red_init_ammo=4, blue_init_ammo=4, seed=None, options=None, ego_side='b'):  # 重置位置和状态
+              red_init_ammo=4, blue_init_ammo=4, seed=None, options={"random_pos": True}, ego_side='r'):  # 重置位置和状态
         self.R_cage = self.R_cage0
         if self.vertices is not None:
             self.horizontal_center = np.mean(self.vertices, axis=0)
@@ -243,21 +243,16 @@ class Battle(object):
         self.last_record_t = -10
         
         # [新增] 如果需要支持随机种子控制，可以在这里设置
-        if seed is not None:
-            np.random.seed(seed)
-            random.seed(seed)
+        # seed 仅用于队内初始位置排序打乱：int 或 (red_seed, blue_seed)，红蓝各自独立；
+        # 用局部 Random 实例，不播种全局随机流（np.random 噪声序列不受 reset 影响）
             
         if red_birth_state is None:
             red_birth_state = self.RED_BIRTH_STATE
         if blue_birth_state is None:
             blue_birth_state = self.BLUE_BIRTH_STATE
-
-        # # 随机对调红蓝双方的出生位置和朝向，消除物理不对称性带来的长期偏置
-        # if np.random.rand() > 0.5:
-        #     red_birth_state, blue_birth_state = blue_birth_state, red_birth_state
-
         self.BLUE_BIRTH_STATE = blue_birth_state
         self.RED_BIRTH_STATE = red_birth_state
+        
         self.dt_maneuver = dt_maneuver  # simulation interval，1 second
         self.t = 0
         # get_state 缓存：以 self.t 为代次，t 推进时整体失效（每个 maneuver 步重建一次）
@@ -286,17 +281,42 @@ class Battle(object):
         self.win = 0
         self.lose = 0
         self.draw = 0
+        # 打乱编队内位置顺序
+        red_birth_positions = []
+        blue_birth_positions = []
+        for i in range(self.Rnum + self.Bnum):
+            is_red = i < self.Rnum
+            index_in_side = i if is_red else i - self.Rnum
+            # 出生点 (注意：使用 copy 防止修改外部传入的字典数据)
+            # 构造一个0, 1, -1, 2，-2 的函数
+            # temp = (-1)**index_in_side * int((index_in_side+1)/2)
+            # 1/2, -1/2, 3/2, -3/2, 5/2, -5/2...
+            ally_dist_init = 5e3
+            temp = (-1)**index_in_side * (np.floor(index_in_side/2) + 1) / 2
+            if is_red:
+                # 出生点间距ally_dist_init，南北排开
+                red_birth_positions.append(red_birth_state['position'].copy() + np.array([1, 0, 0]) * temp * 2 * ally_dist_init)
+            else:
+                blue_birth_positions.append(blue_birth_state['position'].copy() + np.array([1, 0, 0]) * temp * 2 * ally_dist_init)
+        if options.get("random_pos"):
+            # 红蓝双方分别用不同的随机种子打乱队内初始位置排序（局部Random实例，None则从系统熵播种）
+            if seed is None:
+                random.shuffle(red_birth_positions)
+                random.shuffle(blue_birth_positions)
+            else:
+                red_seed, blue_seed = seed if isinstance(seed, (tuple, list)) else (seed, seed + 1)
+                random.Random(red_seed).shuffle(red_birth_positions)
+                random.Random(blue_seed).shuffle(blue_birth_positions)
+        
         # 无人机统一初始化
         for i in range(self.Rnum + self.Bnum):
             is_red = i < self.Rnum
             index_in_side = i if is_red else i - self.Rnum
-            
             # 初始化组合视野过程中id对位置的映射
             if is_red:
                 self.r_id2indexinside[(index_in_side + 1)] = index_in_side
             else:
                 self.b_id2indexinside[(index_in_side + 201)] = index_in_side
-            
             UAV = UAVModel(dt=self.dt_move)
             UAV.state_memory = None
             UAV.action_memory = np.array([0, 0, 340])
@@ -315,13 +335,10 @@ class Battle(object):
             UAV.launched_aim120s = []
             birth_state = red_birth_state if is_red else blue_birth_state
             
-            # 出生点 (注意：使用 copy 防止修改外部传入的字典数据)
-            # 构造一个0, 1, -1, 2，-2 的函数
-            # temp = (-1)**index_in_side * int((index_in_side+1)/2)
-            # 1/2, -1/2, 3/2, -3/2, 5/2, -5/2...
-            ally_dist_init = 5e3
-            temp = (-1)**index_in_side * (np.floor(index_in_side/2) + 1) / 2
-            UAV.pos_ = birth_state['position'].copy() + np.array([1, 0, 0]) * temp * 2 * ally_dist_init # 出生点间距ally_dist_init，南北排开
+            if is_red:
+                UAV.pos_ = red_birth_positions[index_in_side]
+            else:
+                UAV.pos_ = blue_birth_positions[index_in_side]
             
             if self.vertices is not None:
                 # 对长方形边界，直接分维度压进边界内
@@ -339,13 +356,6 @@ class Battle(object):
                     scale_factor = safe_R_cage / init_R
                     UAV.pos_[0] *= scale_factor
                     UAV.pos_[2] *= scale_factor
-            # # 不能出生在外面
-            # init_R = norm([UAV.pos_[0], UAV.pos_[2]])
-            # safe_R_cage = self.R_cage - 5e3
-            # if init_R > safe_R_cage:
-            #     scale_factor = safe_R_cage / init_R
-            #     UAV.pos_[0] *= scale_factor
-            #     UAV.pos_[2] *= scale_factor
                 
             # 判断是否有自定义初始速度、theta、phi
             default_speed = 300 if is_red else (UAV.speed_max - UAV.speed_min) / 2

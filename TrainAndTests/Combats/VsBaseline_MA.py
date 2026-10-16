@@ -4,6 +4,10 @@
 以 BasicRules_Homo带Actor测试.py 为蓝本，流程向 BasicRules_Homo.py 靠拢：
 测试不存经验池，每帧每机只调一次 get_obs；沿用 test_worker(model_state_dict, ...) 接口，
 函数内把 state_dict load 到各红机独立的 ActorWrapper；主程序以随机初始化网络传入。
+
+支持同构/异构两种输入：
+- 同构：model_state_dict 为单份 state_dict，所有红机共享同一份权重；
+- 异构：model_state_dict 为 {id: state_dict}，每架红机按 id 加载各自的权重。
 """
 
 import os
@@ -105,6 +109,8 @@ def test_worker(model_state_dict, rules_num,
                 blue_init_num=blue_init_num,
                 red_init_ammo=red_init_ammo,
                 blue_init_ammo=blue_init_ammo,
+                # 红蓝各自独立的位置打乱种子（np.random 已在函数入口固定，序列可复现且场间不同）
+                seed=(int(np.random.randint(0, 2**31 - 1)), int(np.random.randint(0, 2**31 - 1))),
                 )
 
             # 首场 reset 后为每架红机各建一个独立 ActorWrapper 并加载权重，按 id 索引
@@ -113,11 +119,23 @@ def test_worker(model_state_dict, rules_num,
                 red_ids = [i for i in test_env.UAV_ids if test_env.find_uav_with_id(i).side == 'r']
                 # 网络维度统一从 env_obs_dims.json 读取（由 读取环境参数并存json.py 生成）
                 fixed_dim, enm_shape, ally_shape = load_obs_dims()
+                # 支持异构输入：model_state_dict 可以是单份 state_dict（同构，所有红机共享）
+                # 或 {id: state_dict}（异构，每架红机加载自己的权重）
+                _is_single_sd = isinstance(model_state_dict, dict) and \
+                    all(isinstance(v, torch.Tensor) for v in model_state_dict.values())
                 for rid in red_ids:
                     actor = ActorWrapper(
                         fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device=device,
                     )
-                    actor.load_state_dict(model_state_dict)
+                    if _is_single_sd:
+                        # 同构：所有红机共享同一份权重
+                        actor.load_state_dict(model_state_dict)
+                    else:
+                        # 异构：{id: state_dict}，按 id 加载；缺省则用第一份权重兜底
+                        if rid in model_state_dict:
+                            actor.load_state_dict(model_state_dict[rid])
+                        else:
+                            actor.load_state_dict(next(iter(model_state_dict.values())))
                     actor.eval()
                     actor_dict[rid] = actor
 
@@ -297,9 +315,13 @@ if __name__=='__main__':
     vertices = [[50e3, 50e3], [-50e3, 50e3], [-50e3, -50e3], [50e3, -50e3]]
 
     # 随机初始化的红方网络（验证权重加载通路；正式使用时替换为训练后的 state_dict）
+    # 异构模式：为每架红机（id=1, 2）各建一份独立权重，打包为 {id: state_dict}
     fixed_dim, enm_shape, ally_shape = load_obs_dims()
-    random_actor = ActorWrapper(fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device='cpu')
-    model_state_dict = random_actor.state_dict()
+    red_ids = [1, 2]
+    model_state_dict = {}
+    for rid in red_ids:
+        random_actor = ActorWrapper(fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device='cpu')
+        model_state_dict[rid] = random_actor.state_dict()
 
     rules_num, result, wins, loses, draws, perish_togethers = test_worker(
         model_state_dict, RULES_NUM, args, num_runs=N_EPISODES, vertices=vertices, save_record=True)

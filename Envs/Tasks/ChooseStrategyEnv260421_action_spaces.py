@@ -54,11 +54,12 @@ class ChooseStrategyEnv(Battle):
         self.last_obs = None
 
     def reset(self, red_birth_state=None, blue_birth_state=None, red_init_num=2, blue_init_num=2,
-              red_init_ammo=4, blue_init_ammo=4, pomdp=1, ego_side='b'):
+              red_init_ammo=4, blue_init_ammo=4, pomdp=1, seed=None, options={"random_pos": True}, ego_side='r'):
         # 1. 调用父类 Battle 的 reset 方法，执行所有通用初始化
         super().reset(red_birth_state=red_birth_state, blue_birth_state=blue_birth_state,
                       red_init_num=red_init_num, blue_init_num=blue_init_num,
-                      red_init_ammo=red_init_ammo, blue_init_ammo=blue_init_ammo, ego_side=ego_side)
+                      red_init_ammo=red_init_ammo, blue_init_ammo=blue_init_ammo, seed=seed,
+                      options=options, ego_side=ego_side)
         # # 初始化红蓝远离速度
         # self.last_dist_dot = None
         # self.last_dhor = None

@@ -12,6 +12,7 @@ sys.path.append(project_root)
 
 from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import *
 from Math_calculates.sub_of_angles import *
+from _context import load_init_states
 import re
 import csv
 import glob
@@ -406,13 +407,14 @@ if __name__=='__main__':
             ep_start = time.time()
             episode_return = 0
             DEFAULT_RED_BIRTH_STATE, DEFAULT_BLUE_BIRTH_STATE = creat_initial_state()
+            init_cfg = load_init_states() # 初始数量/挂载统一从 init_states.json 读取
             env.reset(
                 red_birth_state=DEFAULT_RED_BIRTH_STATE, blue_birth_state=DEFAULT_BLUE_BIRTH_STATE,
-                red_init_num=  2,
-                blue_init_num= 2,
-                red_init_ammo= 2, # 4
-                blue_init_ammo=2, # 4
-                ) # 4
+                red_init_num=init_cfg['red_init_num'],
+                blue_init_num=init_cfg['blue_init_num'],
+                red_init_ammo=init_cfg['red_init_ammo'],
+                blue_init_ammo=init_cfg['blue_init_ammo'],
+                )
             r_action_label=0
             b_action_label=0
             
