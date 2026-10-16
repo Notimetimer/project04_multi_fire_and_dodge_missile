@@ -31,7 +31,7 @@ if __name__=='__main__':
     print(f"Simulation start: {start_time.isoformat(sep=' ', timespec='seconds')}")
     run_MLP_simulation(
         collape_recover=collape_recover,
-        num_workers = 2,  # 并行进程数，根据CPU核数调整，建议 10-20
+        num_workers = 10,  # 并行进程数，根据CPU核数调整，建议 10-20
         mission_name=mission_name,
         actor_lr = 1e-4,
         critic_lr = 5e-4,
@@ -66,7 +66,7 @@ if __name__=='__main__':
         K_FACTOR = 16,  # 32 原先振荡太大了
         randomized_birth = 1,
         save_interval = 1, # 触发更新至少要经过多少批采样
-        num_runs = 0, # 3, # 测试回合重复次数  3
+        num_runs = 3, # 测试回合重复次数  3
         device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
         vertices = None,
         resume_dir=resume_target_dir, # 指定中断续训目录
