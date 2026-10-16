@@ -1,6 +1,6 @@
 import os, sys
 from _context import *
-from TrainAndTests.Combats.CombatMAPPO_parall_hetero import *
+from TrainAndTests.Combats.CombatMAPPO_parall_homo import *
 from datetime import datetime
 from prepare_il_datas_hierarchical import run_rules
 
@@ -14,7 +14,7 @@ collape_recover={ # 是否是崩盘后恢复
             "actor_frozen_batchs": 5,
         }
 
-mission_name = f'MAPPO'
+mission_name = f'MAPPO_homo'
 
 # 超参数
 dt_decide = 2 # 2 # 6
