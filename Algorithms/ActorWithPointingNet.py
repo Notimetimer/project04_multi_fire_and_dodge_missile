@@ -349,6 +349,17 @@ class ActorWrapper(nn.Module):
         ent_fire = fire_dist.entropy() * fire_mask
         ent_act = ent_vert + ent_hor + ent_fire
 
+        # 统计未被禁火样本的开火概率极值（仅记录用，无梯度，mini_batch 级标量）
+        with torch.no_grad():
+            fire_prob = torch.sigmoid(pilot_logits['fire'].squeeze(-1))
+            fire_allowed = fire_mask.bool()
+            if fire_allowed.any():
+                fire_prob_max = fire_prob[fire_allowed].max().item()
+                fire_prob_min = fire_prob[fire_allowed].min().item()
+            else:
+                fire_prob_max = float('nan')
+                fire_prob_min = float('nan')
+
         # 联合策略：H = H(enm) + H(ally) + H(act|enm_idx, ally_idx, o)
         entropy = ent_enm + ent_ally + ent_act
         # 联合 log_prob：PPO 新旧策略比的分子（分母用回放中存的旧 log_prob_*）
@@ -368,6 +379,8 @@ class ActorWrapper(nn.Module):
                 'fire': ent_fire,
                 'act': ent_act,
             },
+            'fire_prob_max': fire_prob_max,
+            'fire_prob_min': fire_prob_min,
         }
 
     def save(self, path='actor.pt'):

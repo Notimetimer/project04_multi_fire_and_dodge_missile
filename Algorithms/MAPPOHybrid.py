@@ -30,6 +30,9 @@ class MAPPOHybrid:
         
         self.actor_loss = 0
         self.critic_loss = 0
+        # 本批更新的开火概率极值（各 mini_batch 极值的平均，供训练侧按 id 记录 tensorboard）
+        self.max_fire_prob = float('nan')
+        self.min_fire_prob = float('nan')
         
     def RDistill(self, transition_dict, *args, **kwargs):
         return dict(transition_dict), 0
@@ -103,6 +106,7 @@ class MAPPOHybrid:
 
         actor_loss_list, critic_loss_list, entropy_list, ratio_list = [], [], [], []
         kl_list, clip_frac_list = [], []
+        fire_prob_max_list, fire_prob_min_list = [], []
         ppo_samples_total, ppo_valid_samples_total = 0, 0
         mask_eps = 1e-5
         num_samples = rewards.shape[0]
@@ -129,6 +133,10 @@ class MAPPOHybrid:
                 )
                 log_probs = actor_out['log_prob'].view(-1, 1)
                 entropy = actor_out['entropy'].view(-1, 1)
+                # 收集本 mini_batch 未禁火样本的开火概率极值（由 evaluate_actions 提供）
+                if 'fire_prob_max' in actor_out:
+                    fire_prob_max_list.append(actor_out['fire_prob_max'])
+                    fire_prob_min_list.append(actor_out['fire_prob_min'])
                 log_ratio = log_probs - mb_old_log_probs
                 ratio = torch.exp(log_ratio)
 
@@ -165,7 +173,15 @@ class MAPPOHybrid:
                 ppo_samples_total += len(batch_idx)
                 ppo_valid_samples_total += active_sum.item()
 
+        # 各 mini_batch 极值平均到类属性（全被禁火时无有效值，保留 NaN）
+        finite_max = [v for v in fire_prob_max_list if np.isfinite(v)]
+        finite_min = [v for v in fire_prob_min_list if np.isfinite(v)]
+        self.max_fire_prob = float(np.mean(finite_max)) if finite_max else float('nan')
+        self.min_fire_prob = float(np.mean(finite_min)) if finite_min else float('nan')
+
         return {
+            'fire_prob_max': self.max_fire_prob,
+            'fire_prob_min': self.min_fire_prob,
             'actor_loss': np.mean(actor_loss_list) if actor_loss_list else 0.0,
             'critic_loss': np.mean(critic_loss_list) if critic_loss_list else 0.0,
             'entropy': np.mean(entropy_list) if entropy_list else 0.0,

@@ -698,14 +698,14 @@ def run_MLP_simulation(
                 outcomes_perish = {rule_num: p_t_ for rule_num, score, wins, loses, draws, p_t_ in test_results}
 
                 for r_num, score in outcomes.items():
-                    logger.add(f"test/agent_vs_rule{r_num}", score, total_steps)
+                    logger.add(f"test/agent_vs_rule{r_num}", score, total_steps/action_cycle_multiplier)
                     print(f"  [Test Result] Rule_{r_num}: {score}")
 
                 # 所有对手的平均Score和超视距双杀率
                 avg_score = np.mean(list(outcomes.values()))
                 avg_perish_together = np.mean(list(outcomes_perish.values()))
-                logger.add("test/avg_score", avg_score, total_steps)
-                logger.add("test/BVR perish together", avg_perish_together, total_steps)
+                logger.add("test/avg_score", avg_score, total_steps/action_cycle_multiplier)
+                logger.add("test/BVR perish together", avg_perish_together, total_steps/action_cycle_multiplier)
 
             # 分发采样任务给 Worker
             worker_metrics_buffer = []
@@ -873,21 +873,21 @@ def run_MLP_simulation(
                 ema_score = (1 - alpha_ema) * ema_score + alpha_ema * batch_score
 
             filtered_score = ema_score
-            logger.add("train_plus/batch_score", batch_score, total_steps)
-            logger.add("train_plus/filtered_score", filtered_score, total_steps)
-            logger.add("train_plus/target_p1", target_p1, total_steps)
+            logger.add("train_plus/batch_score", batch_score, total_steps/action_cycle_multiplier)
+            logger.add("train_plus/filtered_score", filtered_score, total_steps/action_cycle_multiplier)
+            logger.add("train_plus/target_p1", target_p1, total_steps/action_cycle_multiplier)
 
-            logger.add("train/1 avg_episode_return", batch_total_return / num_workers, total_steps)
+            logger.add("train/1 avg_episode_return", batch_total_return / num_workers, total_steps/action_cycle_multiplier)
             # 个体回报（每 id 一条）
             for uid, r_id in batch_return_by_id.items():
-                logger.add(f"train/1 avg_episode_return_id{uid}", r_id / num_workers, total_steps)
-            logger.add("train/2 win", batch_wins / num_workers, total_steps)
-            logger.add("train/2 lose", batch_loss_cnt / num_workers, total_steps)
-            logger.add("train/2 draw", batch_draw_cnt / num_workers, total_steps)
-            logger.add("train/2 BVR perish together", batch_bvr_perish_together_cnt / num_workers, total_steps)
-            logger.add("train/2 BVR not end", (batch_draw_cnt-batch_bvr_perish_together_cnt) / num_workers, total_steps)
-            logger.add("agent/ episode_step", batch_idx * num_workers, total_steps)
-            logger.add("agent/ batch_step", batch_idx, total_steps)
+                logger.add(f"train/1 avg_episode_return_id{uid}", r_id / num_workers, total_steps/action_cycle_multiplier)
+            logger.add("train/2 win", batch_wins / num_workers, total_steps/action_cycle_multiplier)
+            logger.add("train/2 lose", batch_loss_cnt / num_workers, total_steps/action_cycle_multiplier)
+            logger.add("train/2 draw", batch_draw_cnt / num_workers, total_steps/action_cycle_multiplier)
+            logger.add("train/2 BVR perish together", batch_bvr_perish_together_cnt / num_workers, total_steps/action_cycle_multiplier)
+            logger.add("train/2 BVR not end", (batch_draw_cnt-batch_bvr_perish_together_cnt) / num_workers, total_steps/action_cycle_multiplier)
+            logger.add("agent/ episode_step", batch_idx * num_workers, total_steps/action_cycle_multiplier)
+            logger.add("agent/ batch_step", batch_idx, total_steps/action_cycle_multiplier)
 
             # 更新，保存与维护 (Checkpoint & Pool)
             if batch_idx % save_interval == 0 and \
@@ -901,7 +901,7 @@ def run_MLP_simulation(
                 target_pool_keys = rule_keys + latest_rein_keys
                 avg_pool_elo = np.mean([elo_ratings[k] for k in target_pool_keys])
                 x_elo_diff = main_agent_elo - avg_pool_elo
-                logger.add("train_plus/elo_diff_x", x_elo_diff, total_steps)
+                logger.add("train_plus/elo_diff_x", x_elo_diff, total_steps/action_cycle_multiplier)
 
                 # 各学生 id 独立 PPO 更新
                 update_metrics_by_id = {}
@@ -911,29 +911,30 @@ def run_MLP_simulation(
                         continue
                     m = agents[uid].update(td, adv_normed=1, mini_batch_size=mini_batch_size_mixed)
                     update_metrics_by_id[uid] = m
-                    logger.add(f"train/7 actor_loss_id{uid}", m.get('actor_loss', 0.0), total_steps)
-                    logger.add(f"train/8 critic_loss_id{uid}", m.get('critic_loss', 0.0), total_steps)
-                    logger.add(f"train/9 entropy_id{uid}", m.get('entropy', 0.0), total_steps)
-                    logger.add(f"train/10 approx_kl_id{uid}", m.get('kl', 0.0), total_steps)
-                    logger.add(f"train/11 clip_frac_id{uid}", m.get('clip_frac', 0.0), total_steps)
+                    logger.add(f"train/7 actor_loss_id{uid}", m.get('actor_loss', 0.0), total_steps/action_cycle_multiplier)
+                    logger.add(f"train/8 critic_loss_id{uid}", m.get('critic_loss', 0.0), total_steps/action_cycle_multiplier)
+                    logger.add(f"train/9 entropy_id{uid}", m.get('entropy', 0.0), total_steps/action_cycle_multiplier)
+                    logger.add(f"train/10 approx_kl_id{uid}", m.get('kl', 0.0), total_steps/action_cycle_multiplier)
+                    logger.add(f"train/11 clip_frac_id{uid}", m.get('clip_frac', 0.0), total_steps/action_cycle_multiplier)
 
                 # 团队级聚合指标
                 if update_metrics_by_id:
-                    avg_actor_loss = np.mean([m.get('actor_loss', 0.0) for m in update_metrics_by_id.values()])
-                    avg_critic_loss = np.mean([m.get('critic_loss', 0.0) for m in update_metrics_by_id.values()])
-                    avg_entropy = np.mean([m.get('entropy', 0.0) for m in update_metrics_by_id.values()])
-                    logger.add("train/7 actor_loss", avg_actor_loss, total_steps)
-                    logger.add("train/8 critic_loss", avg_critic_loss, total_steps)
-                    logger.add("train/9 entropy", avg_entropy, total_steps)
+                    # 分 id 记录未禁火 mask 内的开火概率极值
+                    for uid, m in update_metrics_by_id.items():
+                        logger.add(f"train/12 max_fire_prob_id{uid}", m.get('fire_prob_max', float('nan')), total_steps/action_cycle_multiplier)
+                        logger.add(f"train/13 min_fire_prob_id{uid}", m.get('fire_prob_min', float('nan')), total_steps/action_cycle_multiplier)
 
                 print(f"Step {total_steps}: Batch WinRate {batch_wins}/{num_workers}, ELO {main_agent_elo:.0f}")
 
                 # A. 保存模型（异构命名，仅学生）
                 actor_team_key = f"actor_rein{batch_idx}"
-                for uid in red_student_ids:
-                    torch.save(actors[uid].state_dict(), os.path.join(log_dir, f"{actor_team_key}_{uid}.pt"))
-                    torch.save(critics[uid].state_dict(), os.path.join(log_dir, f"critic_{uid}.pt"))
-                print(f"Saved Checkpoint team: {actor_team_key}")
+                if batch_idx % 10 == 0:
+                    for uid in red_student_ids:
+                        torch.save(actors[uid].state_dict(), os.path.join(log_dir, f"{actor_team_key}_{uid}.pt"))
+                        torch.save(critics[uid].state_dict(), os.path.join(log_dir, f"critic_{uid}.pt"))
+                    print(f"Saved Checkpoint team: {actor_team_key}")
+                    # 只注册已落盘的版本，保证自博弈采样对手时总能加载到对应权重
+                    elo_ratings[actor_team_key] = main_agent_elo
 
                 # 清空各学生 id Buffer
                 for uid in red_student_ids:
@@ -944,7 +945,6 @@ def run_MLP_simulation(
                     elo_ratings[opp_name] = main_agent_elo
 
                 # 全量历史记录
-                elo_ratings[actor_team_key] = main_agent_elo
                 elo_ratings["__LAST_UPDATE_STEP__"] = total_steps
                 elo_ratings["__LAST_UPDATE_BATCH__"] = batch_idx
 
@@ -986,7 +986,7 @@ def run_MLP_simulation(
                     # 这里为了简单，直接遍历
                     # sorted_keys = sorted(valid_elos.keys())
                     
-                    logger.add("Elo/Main_Agent_Raw", main_agent_elo, total_steps)
+                    logger.add("Elo/Main_Agent_Raw", main_agent_elo, total_steps/action_cycle_multiplier)
                     
                     # 记录主智能体在当前所有 ELO 中的归一化排名位置：
                     # (主elo - min_elo) / (max_elo - min_elo)，当分母为0时取0.5
@@ -1006,18 +1006,18 @@ def run_MLP_simulation(
 
                     # 记录与 Rule 阈值的差值 (维持旧指标名)
                     elo_diff_to_thres = main_agent_elo - rule_elo_thres
-                    logger.add("Elo_Centered/EloDiffToMean", elo_diff_to_thres, total_steps)
+                    logger.add("Elo_Centered/EloDiffToMean", elo_diff_to_thres, total_steps/action_cycle_multiplier)
                     
                     # 新增：记录 ELO 极差（max - min），用于判断 PFSP sigma 是否合适...
                     elo_spread = float(max_elo - min_elo)
                     print('elo分极差：', elo_spread)
-                    logger.add("Elo/Spread", elo_spread, total_steps)
+                    logger.add("Elo/Spread", elo_spread, total_steps/action_cycle_multiplier)
 
                     curr_rank = 0.5 if elo_spread == 0 else (main_agent_elo - min_elo) / elo_spread
 
                     # Elo分数没有稳定不许记录
                     if total_steps >= WARM_UP_STEPS:
-                        logger.add("Elo_Centered/Current_rank_normed %", curr_rank * 100, total_steps)
+                        logger.add("Elo_Centered/Current_rank_normed %", curr_rank * 100, total_steps/action_cycle_multiplier)
 
                     if main_agent_elo >= rule_elo_thres:
                         # 满员清理
@@ -1037,11 +1037,11 @@ def run_MLP_simulation(
                             print(f"Accepted {actor_team_key} into Elite Pool.")
 
                     hist_count = len([k for k in valid_elos if not k.startswith("Rule")])
-                    logger.add("Elo/History_Pool_Size", hist_count, total_steps)
+                    logger.add("Elo/History_Pool_Size", hist_count, total_steps/action_cycle_multiplier)
 
                     # 记录详细分数
                     # 记录最新个体的绝对分和相对均值的居中分
-                    logger.add("Elo_Centered/Latest_Best", main_agent_elo - mean_elo, total_steps)
+                    logger.add("Elo_Centered/Latest_Best", main_agent_elo - mean_elo, total_steps/action_cycle_multiplier)
 
                     # 3. 提取所有的 Rule 对手并遍历，一步到位记录 Rule信息 和 差值
                     rule_keys = [k for k in valid_elos.keys() if k.startswith("Rule_")]
@@ -1049,10 +1049,10 @@ def run_MLP_simulation(
                         rule_elo = float(valid_elos[rk])
                         
                         # 记录 Rule 的绝对分与居中分
-                        logger.add(f"Elo_Raw/{rk}", rule_elo, total_steps)
+                        logger.add(f"Elo_Raw/{rk}", rule_elo, total_steps/action_cycle_multiplier)
                         
                         # 直接计算并记录 最强个体 vs 规则对手 的差值
-                        logger.add(f"Elo_Diff/Latest_vs_{rk}", main_agent_elo - rule_elo, total_steps)
+                        logger.add(f"Elo_Diff/Latest_vs_{rk}", main_agent_elo - rule_elo, total_steps/action_cycle_multiplier)
 
                 # 例行保存优化器状态（按学生 id）
                 opt_save = {}
