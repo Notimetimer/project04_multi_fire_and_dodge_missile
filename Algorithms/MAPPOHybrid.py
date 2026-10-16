@@ -37,7 +37,9 @@ class MAPPOHybrid:
     def ADistill(self, advantage, *args, **kwargs):
         return advantage
 
-    def update(self, transition_dict, adv_normed=True, clip_vf=False, clip_range=0.2, shuffled=True, mini_batch_size=None):
+    def update(self, transition_dict, adv_normed=True, clip_range=0.2, shuffled=True, mini_batch_size=None):
+        if clip_range is not None:
+            self.eps = clip_range
         def to_tensor(x, dtype):
             if isinstance(x, np.ndarray):
                 return torch.tensor(x, dtype=dtype).to(self.device)
@@ -140,11 +142,7 @@ class MAPPOHybrid:
                 actor_loss = -(torch.min(surr1, surr2) * mb_active_masks).sum() / (active_sum + mask_eps)
 
                 v_pred = self.critic.get_value(mb_critic_inputs)['value'].view(-1, 1)
-                if clip_vf:
-                    v_pred_clipped = v_pred_old[batch_idx] + torch.clamp(v_pred - v_pred_old[batch_idx], -clip_range, clip_range)
-                    critic_loss = torch.max(F.mse_loss(v_pred, mb_td_target, reduction='none'), F.mse_loss(v_pred_clipped, mb_td_target, reduction='none'))
-                else:
-                    critic_loss = F.mse_loss(v_pred, mb_td_target, reduction='none')
+                critic_loss = F.mse_loss(v_pred, mb_td_target, reduction='none')
                 critic_loss = (critic_loss * mb_active_masks).sum() / (active_sum + mask_eps)
                 entropy = (entropy * mb_active_masks).sum() / (active_sum + mask_eps)
 
