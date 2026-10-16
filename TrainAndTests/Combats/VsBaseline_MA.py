@@ -67,6 +67,7 @@ def test_worker(model_state_dict, rules_num,
                 min_alt_safe=2000,
                 red_init_num=2, blue_init_num=2,
                 red_init_ammo=2, blue_init_ammo=2,
+                temperature=1.0,  # 玻尔兹曼采样温度，仅本测试函数使用；训练 worker_process 不传此参数
                 ):
     seed = 42
     random.seed(seed)
@@ -196,7 +197,9 @@ def test_worker(model_state_dict, rules_num,
                             # selector 期望的 dict-of-array（[B=1]）格式
                             actor_rule = stack_field([take_some_of_rule_inputs(rule_inputs_[id])])
                             with torch.no_grad():
-                                actor_out = actor_dict[id].get_action(agent_inputs_[id], mask_inputs_[id], actor_rule)
+                                actor_out = actor_dict[id].get_action(
+                                    agent_inputs_[id], mask_inputs_[id], actor_rule,
+                                    temperature=temperature)
                             vert = int(actor_out['vert_idx'].item())
                             hor = int(actor_out['hor_idx'].item())
                             fire = int(actor_out['fire'].item())
@@ -305,6 +308,7 @@ if __name__=='__main__':
     # 测试配置
     RULES_NUM = 5      # 蓝方规则编号
     N_EPISODES = 3    # 测试场次  10
+    TEMPERATURE = 1.0  # 采样温度：1为原始分布，>1更随机，<1更贪婪（仅测试生效）
 
     args.max_episode_len = 15*60
     args.R_cage = 60.3e3
@@ -338,7 +342,8 @@ if __name__=='__main__':
     print(f"加载最新 actor：batch={loaded_version}，红机 id={sorted(model_state_dict.keys())}")
 
     rules_num, result, wins, loses, draws, perish_togethers = test_worker(
-        model_state_dict, RULES_NUM, args, num_runs=N_EPISODES, vertices=vertices, save_record=True)
+        model_state_dict, RULES_NUM, args, num_runs=N_EPISODES, vertices=vertices,
+        save_record=True, temperature=TEMPERATURE)
 
     print(f"\n红方(神经网络) vs 蓝方(规则{rules_num})，共{N_EPISODES}场：")
     print(f"胜 {wins} / 负 {loses} / 平 {draws}，综合得分率 {result:.2%}，死光 {perish_togethers} 场")

@@ -53,7 +53,7 @@ class selector(nn.Module):
         self.enm_attn = EntityAttention(fixed_dim, enm_shape[1], embed_dim)
         self.ally_attn = EntityAttention(fixed_dim, ally_shape[1], embed_dim)
 
-    def forward(self, agent_inputs, mask_inputs, rule_inputs, enm_idx=None, ally_idx=None):
+    def forward(self, agent_inputs, mask_inputs, rule_inputs, enm_idx=None, ally_idx=None, temperature=1.0):
         fixed = agent_inputs['fixed'] # 应该是(batch, fixed_dim)
         enm = agent_inputs['enm'] # 应该是(batch, enm_num, enm_shape[1])
         ally = agent_inputs['ally'] # 应该是(batch, ally_num, ally_shape[1])
@@ -64,9 +64,9 @@ class selector(nn.Module):
         enm_scores, enm_keys = self.enm_attn(fixed, enm, enm_mask)
         ally_scores, ally_keys = self.ally_attn(fixed, ally, ally_mask)
 
-        # 敌人选取分布和队友选取分布
-        enm_dist = Categorical(logits=enm_scores)
-        ally_dist = Categorical(logits=ally_scores)
+        # 敌人选取分布和队友选取分布（temperature 仅测试时调节采样平滑度，默认1不改变分布）
+        enm_dist = Categorical(logits=enm_scores / temperature)
+        ally_dist = Categorical(logits=ally_scores / temperature)
 
         if enm_idx is None:
             enm_idx = enm_dist.sample()
@@ -269,15 +269,16 @@ class ActorWrapper(nn.Module):
             {'enm': enm_mask, 'ally': ally_mask},
         )
 
-    def get_action(self, agent_inputs, mask_inputs, rule_inputs, h=None):
+    def get_action(self, agent_inputs, mask_inputs, rule_inputs, h=None, temperature=1.0):
+        # temperature：玻尔兹曼采样温度，仅测试时使用；训练采样走默认值1，分布不变
         packed_agent, packed_mask = self.pack_inputs(agent_inputs, mask_inputs)
         selected_info, enm_idx, ally_idx, mini_rule_inputs, log_prob_enm, log_prob_ally, _, _ = self.selector(
-            packed_agent, packed_mask, rule_inputs,
+            packed_agent, packed_mask, rule_inputs, temperature=temperature,
         )
         pilot_logits = self.pilot(selected_info, mini_rule_inputs)
 
-        vert_dist = Categorical(logits=pilot_logits['vert'])
-        hor_dist = Categorical(logits=pilot_logits['hor'])
+        vert_dist = Categorical(logits=pilot_logits['vert'] / temperature)
+        hor_dist = Categorical(logits=pilot_logits['hor'] / temperature)
         fire_dist = Bernoulli(logits=pilot_logits['fire'].squeeze(-1))
 
         vert_idx = vert_dist.sample()
