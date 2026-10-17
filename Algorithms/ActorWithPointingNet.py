@@ -33,7 +33,7 @@ class EntityAttention(nn.Module):
         keys = self.key_proj(entity_seq)              # (B, N, E)
         scores = torch.einsum('be,bne->bn', query, keys) * self.scale
         if mask is not None:
-            scores = scores.masked_fill(~mask, torch.finfo(scores.dtype).min)
+            scores = scores.masked_fill(~mask, -_MASK_VAL)
         return scores, keys
 
 
@@ -65,8 +65,15 @@ class selector(nn.Module):
         ally_scores, ally_keys = self.ally_attn(fixed, ally, ally_mask)
 
         # 敌人选取分布和队友选取分布（temperature 仅测试时调节采样平滑度，默认1不改变分布）
-        enm_dist = Categorical(logits=enm_scores / temperature)
-        ally_dist = Categorical(logits=ally_scores / temperature)
+        # 缩放后重新铺掩码兜底：掩码槽位统一用 -_MASK_VAL（有限值），温度缩放不会溢出为 -inf
+        enm_scores = enm_scores / temperature
+        ally_scores = ally_scores / temperature
+        if enm_mask is not None:
+            enm_scores = enm_scores.masked_fill(~enm_mask, -_MASK_VAL)
+        if ally_mask is not None:
+            ally_scores = ally_scores.masked_fill(~ally_mask, -_MASK_VAL)
+        enm_dist = Categorical(logits=enm_scores)
+        ally_dist = Categorical(logits=ally_scores)
 
         if enm_idx is None:
             enm_idx = enm_dist.sample()
