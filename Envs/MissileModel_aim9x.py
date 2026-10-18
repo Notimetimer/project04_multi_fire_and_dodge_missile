@@ -35,6 +35,8 @@ def rho(h):
     # # 拟合公式1（高空误差大）
     # answer = 1.225 * np.exp(-h / 9300)
     # 拟合公式2（高空误差小）
+    # 高度夹取：h>44300 时底数为负产生NaN，44km以上密度趋近于0，按44km截断
+    h = min(max(float(h), 0.0), 40000.0)
     answer = 101325*(1-h/44300)**5.256/(286.9*(288.15-0.0065*h))
     return answer
 
@@ -110,6 +112,12 @@ def sub_of_radian(input1, input2):
 
 # 导弹模型
 class aim9x:
+    # 类属性：供环境端以 aim9x.sight_angle_max 方式读取（近距格斗弹发射锥角上限）
+    # 最大视角
+    sight_angle_max = np.radians(60) # 极限离轴可能接近90度
+    # 被告警距离
+    detect_range = 8e3  # 15~20km之间, 14km有些激进了  # m todo 计算截获距离
+
     def __init__(self, pos0_, vel0_, pt0_, vt0_, launch_time=0):
         super(aim9x, self).__init__()
         self.WeaponType = "AIM-9X"
@@ -154,12 +162,8 @@ class aim9x:
         # 阻力系数是一个函数，不在这里定义
         # 最小速度
         self.speed_min = 0.65 * 340  # m/s
-        # 最大视角
-        self.sight_angle_max = np.radians(60) # 极限离轴可能接近90度
         # 最大跟踪视角速度
         self.sight_angle_rate_max = np.radians(75) # 0.7  # rad/s
-        # 被告警距离
-        self.detect_range = 8e3  # 15~20km之间, 14km有些激进了  # m todo 计算截获距离
         self.distance = 100e3
         self.t = 0  # 导弹初始计时
         self.t_max = self.stage1_start + 65  # 电池工作时间

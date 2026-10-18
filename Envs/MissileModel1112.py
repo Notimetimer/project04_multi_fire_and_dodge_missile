@@ -38,6 +38,8 @@ def rho(h):
     # # 拟合公式1（高空误差大）
     # answer = 1.225 * np.exp(-h / 9300)
     # 拟合公式2（高空误差小）
+    # 高度夹取：h>44300 时底数为负产生NaN，44km以上密度趋近于0，按44km截断
+    h = min(max(float(h), 0.0), 40000.0)
     answer = 101325*(1-h/44300)**5.256/(286.9*(288.15-0.0065*h))
     return answer
 
@@ -71,10 +73,13 @@ def hit_target(pmt_1, vmt_1, ptt_1, vtt_1, dt=0.02, kill_range=85):
     # 调大杀伤半径后直接根据两点距离取最小判别
     d1 = norm(M1-T1)
     d2 = norm(M2-T2)
+    d1_5 = norm((M1+M2)/2-(T1+T2)/2)
     if d1 <= kill_range:
         return 1, M1, T1
     elif d2 <= kill_range:
         return 1, M2, T2
+    elif d1_5 <= kill_range:
+        return 1, (M1+M2)/2, (T1+T2)/2
     else:
         return 0, M1, T1
     
@@ -113,6 +118,11 @@ def sub_of_radian(input1, input2):
 
 # 导弹模型
 class aim120:
+    # 最大视角（类属性，环境端可直接以类名读取）
+    sight_angle_max = np.radians(40) # 极限离轴可能接近40度，也有用53度的，稳定跟踪区在正负25度以内
+    # 被告警距离
+    detect_range = 15e3  # 15~20km之间, 14km有些激进了  # m todo 计算截获距离
+
     def __init__(self, pos0_, vel0_, pt0_, vt0_, launch_time=0):
         super(aim120, self).__init__()
         self.WeaponType = "AIM-120C"
@@ -160,12 +170,8 @@ class aim120:
         # 阻力系数是一个函数，不在这里定义
         # 最小速度
         self.speed_min = 0.8 * 340  # m/s 0.7
-        # 最大视角
-        self.sight_angle_max = np.radians(40) # 极限离轴可能接近40度，也有用53度的，稳定跟踪区在正负25度以内
         # 最大跟踪视角速度
-        self.sight_angle_rate_max = np.radians(40) # 0.7  # rad/s
-        # 截获距离
-        self.detect_range = 15e3  # 15~20km之间, 14km有些激进了  # m todo 计算截获距离
+        self.sight_angle_rate_max = np.radians(75) # 0.7  # rad/s
         self.distance = 100e3
         # 初制导下最大速度倾角
         self.v_theta_of_initial_guidance_max = 45 * pi / 180
@@ -173,6 +179,7 @@ class aim120:
         self.t_max = self.stage1_start + 110  # 120 电池工作时间
         self.t_go = 120
         self.trajectory = np.empty((0, 7))  # 导弹轨迹, 结构为时间、位置（3）、速度（3）
+        self.last_guidance_stage = 2 # 用于捕获上升沿
         self.guidance_stage = 2  # 2为中制导，3为末制导
         self.in_angle = 0
         self.in_distance = 0
@@ -504,6 +511,8 @@ class aim120:
 
     # 制导律选择
     def guidance(self, v_missile_, v_target_, p_missile_, p_target_, datalink):
+        # 更新前记录
+        self.last_guidance_stage = self.guidance_stage
         ptt_ = p_target_
         pmt_ = p_missile_
         line_t_ = ptt_ - pmt_

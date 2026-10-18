@@ -38,6 +38,8 @@ def rho(h):
     # # 拟合公式1（高空误差大）
     # answer = 1.225 * np.exp(-h / 9300)
     # 拟合公式2（高空误差小）
+    # 高度夹取：h>44300 时底数为负产生NaN，44km以上密度趋近于0，按44km截断
+    h = min(max(float(h), 0.0), 40000.0)
     answer = 101325*(1-h/44300)**5.256/(286.9*(288.15-0.0065*h))
     return answer
 
@@ -116,6 +118,11 @@ def sub_of_radian(input1, input2):
 
 # 导弹模型
 class aim120:
+    # 最大视角（类属性，环境端可直接以类名读取）
+    sight_angle_max = np.radians(40) # 极限离轴可能接近40度，也有用53度的，稳定跟踪区在正负25度以内
+    # 被告警距离
+    detect_range = 15e3  # 15~20km之间, 14km有些激进了  # m todo 计算截获距离
+
     def __init__(self, pos0_, vel0_, pt0_, vt0_, launch_time=0):
         super(aim120, self).__init__()
         self.WeaponType = "AIM-120C"
@@ -163,12 +170,8 @@ class aim120:
         # 阻力系数是一个函数，不在这里定义
         # 最小速度
         self.speed_min = 0.8 * 340  # m/s 0.7
-        # 最大视角
-        self.sight_angle_max = np.radians(40) # 极限离轴可能接近40度，也有用53度的，稳定跟踪区在正负25度以内
         # 最大跟踪视角速度
-        self.sight_angle_rate_max = np.radians(40) # 0.7  # rad/s
-        # 截获距离
-        self.detect_range = 15e3  # 15~20km之间, 14km有些激进了  # m todo 计算截获距离
+        self.sight_angle_rate_max = np.radians(50) # 0.7  # rad/s
         self.distance = 100e3
         # 初制导下最大速度倾角
         self.v_theta_of_initial_guidance_max = 45 * pi / 180

@@ -477,7 +477,7 @@ class UAVModel(object):
         # 根据距离调整导弹参数
         distance = np.linalg.norm(target.pos_ - self.pos_)
         new_missile.max_g = 40  # 最大过载
-        new_missile.sight_angle_max = pi / 2  # 导引头视角
+        
         new_missile.launcher_id = self.id  # 发射机id
         new_missile.target_id = target.id  # 目标机id
         # print('导弹已发射')
