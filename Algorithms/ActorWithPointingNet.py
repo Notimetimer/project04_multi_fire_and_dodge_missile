@@ -61,15 +61,12 @@ class selector(nn.Module):
         ally_mask = mask_inputs.get('ally') # 应该是(batch, ally_num)
 
         # 两个独立的交叉注意力：各自的 query/key 投影产生打分与嵌入
-        # type A
-        # [对比实验] 仅将 fixed 换成常数张量作为 enm 注意力的 query，原代码注释保留
-        # enm_scores, enm_keys = self.enm_attn(fixed, enm, enm_mask)
-        # type B
-        # 常数 query 经 query_proj 后只剩可学习偏置向量 → 打分不再依赖自身状态 fixed，
-        # 但 key_proj(enm) 仍在学习，策略可依据敌机自身特征形成选择倾向性；
-        # enm_keys 保持为敌机特征的投影，pilot 仍能通过 e_enm 区分被选目标
-        const_query = torch.zeros_like(fixed)
-        enm_scores, enm_keys = self.enm_attn(const_query, enm, enm_mask)
+        # type A 变量query
+        query_enm = fixed
+        # # type B 常数query
+        # query_enm = torch.zeros_like(fixed)
+        # 聚合敌机特征
+        enm_scores, enm_keys = self.enm_attn(query_enm, enm, enm_mask)
         # 队友信息需要本机query
         ally_scores, ally_keys = self.ally_attn(fixed, ally, ally_mask)
 
