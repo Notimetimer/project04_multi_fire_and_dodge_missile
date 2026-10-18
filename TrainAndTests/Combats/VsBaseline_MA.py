@@ -2,7 +2,7 @@
 """
 多智能体基线测试：红方神经网络（ActorWrapper，采样决策） vs 蓝方规则（basic_rules）
 以 BasicRules_Homo带Actor测试.py 为蓝本，流程向 BasicRules_Homo.py 靠拢：
-测试不存经验池，每帧每机只调一次 get_obs；沿用 test_worker(model_state_dict, ...) 接口，
+测试不存经验池，每帧每机只调一次 get_obs；沿用 test worker(model_state_dict, ...) 接口，
 函数内把 state_dict load 到各红机独立的 ActorWrapper；主程序以随机初始化网络传入。
 
 支持同构/异构两种输入：

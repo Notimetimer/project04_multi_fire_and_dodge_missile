@@ -688,6 +688,7 @@ def run_MLP_simulation(
                             'blue_init_num': blue_init_num,
                             'red_init_ammo': test_red_init_ammo,
                             'blue_init_ammo': test_blue_init_ammo,
+                            'temperature': 0.3,  # 测试采样温度：<1趋于贪婪决策
                         }
                     )
                     test_tasks.append(obj)
