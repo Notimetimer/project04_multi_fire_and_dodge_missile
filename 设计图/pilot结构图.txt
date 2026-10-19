@@ -18,3 +18,4 @@ flowchart LR
     enm_in_range --[if False]--> delta_fire_logits
     just_fired --[if True]--> delta_fire_logits
     delta_fire_logits --> fire_logits
+    pilot_output --> log_prob_act
