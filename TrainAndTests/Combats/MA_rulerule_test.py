@@ -28,7 +28,7 @@ from Math_calculates.sub_of_angles import *
 from BasicRules_Homo import basic_rules
 
 # 规则自博弈测试不写 acmi、不做记录，只跑仿真与统计
-use_tacview = 0
+use_tacview = 2
 
 # 是否考虑视野限制
 POMDP = 1
@@ -64,7 +64,7 @@ def rulerule_worker(red_rules_num, blue_rules_num,
                     action_cycle_multiplier=10,
                     min_alt_safe=2000,
                     red_init_num=2, blue_init_num=2,
-                    red_init_ammo=6, blue_init_ammo=6,
+                    red_init_ammo=4, blue_init_ammo=4,
                     ):
     seed = 42
     random.seed(seed)
@@ -246,8 +246,8 @@ if __name__ == '__main__':
 
     # 测试配置
     N_EPISODES = 8      # 对局场次
-    RED_RULES_NUM = 0   # 红方规则编号
-    BLUE_RULES_NUM = 0  # 蓝方规则编号
+    RED_RULES_NUM =  5   # 红方规则编号
+    BLUE_RULES_NUM = 5  # 蓝方规则编号
 
     args.max_episode_len = 15*60
     args.R_cage = 60.3e3
@@ -257,7 +257,7 @@ if __name__ == '__main__':
 
     result, wins, loses, draws, perish, judge_miss, judge_miss_sign, judge_anomaly = rulerule_worker(
         RED_RULES_NUM, BLUE_RULES_NUM, args, num_runs=N_EPISODES, vertices=vertices,
-        red_init_ammo=6, blue_init_ammo=6)
+        red_init_ammo=4, blue_init_ammo=4)
 
     print(f"\n红方(规则{RED_RULES_NUM}) vs 蓝方(规则{BLUE_RULES_NUM})，共{N_EPISODES}场：")
     print(f"胜 {wins} / 负 {loses} / 平 {draws}，红方得分率 {result:.2%}")

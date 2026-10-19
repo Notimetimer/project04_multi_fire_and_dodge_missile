@@ -90,7 +90,7 @@ def selfplay_worker(red_state_dict, blue_state_dict,
                     action_cycle_multiplier=10,
                     min_alt_safe=2000,
                     red_init_num=2, blue_init_num=2,
-                    red_init_ammo=6, blue_init_ammo=6,
+                    red_init_ammo=4, blue_init_ammo=4,
                     temperature=0.3,  # 采样温度：两侧共用同一温度，保证对比公平
                     ):
     seed = 42
@@ -336,7 +336,7 @@ if __name__ == '__main__':
 
     result, wins, loses, draws, perish, judge_miss, judge_miss_sign, judge_anomaly = selfplay_worker(
         red_sd, blue_sd, args, num_runs=N_EPISODES, vertices=vertices,
-        red_init_ammo=6, blue_init_ammo=6, temperature=TEMPERATURE)
+        red_init_ammo=4, blue_init_ammo=4, temperature=TEMPERATURE)
 
     print(f"\n红方(最新 batch={red_batch}) vs 蓝方(batch={blue_batch})，共{N_EPISODES}场：")
     print(f"胜 {wins} / 负 {loses} / 平 {draws}，红方得分率 {result:.2%}")

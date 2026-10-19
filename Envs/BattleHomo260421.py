@@ -361,7 +361,8 @@ class Battle(object):
                     UAV.pos_[2] *= scale_factor
                 
             # 判断是否有自定义初始速度、theta、phi
-            default_speed = 300 if is_red else (UAV.speed_max - UAV.speed_min) / 2
+            # 红蓝两侧统一初速（原实现红 300 / 蓝 (speed_max-speed_min)/2，存在阵营不对称）
+            default_speed = 300
             UAV.speed = birth_state.get('speed', default_speed)
             
             UAV.psi = birth_state['psi']
