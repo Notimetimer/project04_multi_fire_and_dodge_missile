@@ -185,6 +185,15 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             # 速度奖励（常驻）
             mach = ego.mach
             r_shaping += (mach-1.0)*2 * DENSE_REWARD_WEIGHT/2
+
+            # 队友间距（直接取观测中已算好的 ally_dist，即本机到各队友的相对距离，无需再自算）差分缓存：每周期都更新，保证差分跨度恰好为一个周期
+            if len(ally_infos) > 0:
+                teammate_dist = float(np.mean([temp["ally_dist"] for temp in ally_infos]))
+            else:
+                teammate_dist = None
+            teammate_dist_prev = getattr(ego, 'last_teammate_dist', None)
+            if teammate_dist is not None:
+                ego.last_teammate_dist = teammate_dist
             
             # 受到威胁时
             if warning:
@@ -202,6 +211,15 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                     # 开火后不要继续指着敌机飞了
                     if min_enm_ATA < np.radians(15):
                         r_shaping += - DENSE_REWARD_WEIGHT
+
+                # 队友间距分区引导（阶跃，无威胁时）：<40km 鼓励分离，>50km 鼓励靠近，40~50km 不介入，力度为标准密集奖励的 1/3
+                if teammate_dist is not None and teammate_dist_prev is not None:
+                    if teammate_dist < 40e3:
+                        # 过近：距离扩大给正奖励，收缩给惩罚
+                        r_shaping += (1.0 if teammate_dist >= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT / 3
+                    elif teammate_dist > 60e3:
+                        # 过远：距离收缩给正奖励，扩大给惩罚
+                        r_shaping += (1.0 if teammate_dist <= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT / 3
                 
                 # 没有导弹处于中制导阶段
                 if (not missile_in_mid_term):
