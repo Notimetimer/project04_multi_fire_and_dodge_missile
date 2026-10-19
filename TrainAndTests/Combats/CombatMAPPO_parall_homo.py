@@ -304,10 +304,10 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                             if is_student or id in blue_nn_weights:
                                 # 神经网络决策（红方学生走共享实例 / 蓝方历史 nn 按 id 取）
                                 act_model = student_actor if is_student else actor_dict[id]
-                                actor_rule = stack_field([take_some_of_rule_inputs(rule_inputs_[id])])
+                                rule_input4actor = stack_field([take_some_of_rule_inputs(rule_inputs_[id])])
                                 with torch.no_grad():
                                     actor_out = act_model.get_action(
-                                        agent_inputs_[id], mask_inputs_[id], actor_rule)
+                                        agent_inputs_[id], mask_inputs_[id], rule_input4actor)
                                 vert = int(actor_out['vert_idx'].item())
                                 hor = int(actor_out['hor_idx'].item())
                                 fire = int(actor_out['fire'].item())
