@@ -179,16 +179,24 @@ def create_initial_state_worker(randomized=0):
     if np.random.uniform(0,1) < 0.2 and int(randomized): # 以很低概率在更大的范围随机初始高度
         blue_height = np.random.uniform(4000.0, 12000.0)
     red_height = blue_height
-    # 初始航向随机化
-    red_psi = sub_of_radian(np.pi/2 + np.random.uniform(-np.pi*1/4, np.pi*1/4))
-    blue_psi = sub_of_radian(-np.pi/2 + np.random.uniform(-np.pi*1/4, np.pi*1/4))
+    
     init_North = np.random.uniform(-20e3, 20e3) * int(randomized)
+    # 红方初始化
     red_N = init_North
     red_E = - 55e3 # 45e3
+    red_psi = sub_of_radian(np.pi/2 + np.random.uniform(-np.pi*1/4, np.pi*1/4))
     if np.random.uniform(0,1) < 0.2: # 以低概率随机初始距离
-        red_E = np.random.uniform(40e3,55e3)
+        red_E = np.random.uniform(-40e3, -55e3)
+    # 蓝方对称初始化
     blue_N = init_North
-    blue_E = -red_E
+    blue_E = - red_E
+    blue_psi = sub_of_radian(-np.pi/2 + np.random.uniform(-np.pi*1/4, np.pi*1/4))
+    if np.random.uniform(0,1) < 0.5: # 随机换边
+        red_E = - red_E
+        blue_E = - blue_E
+        red_psi = - red_psi
+        blue_psi = - blue_psi
+
     DEFAULT_RED_BIRTH_STATE = {'position': np.array([red_N, red_height, red_E]),
                             'psi': red_psi
                             }
@@ -225,7 +233,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
             cmd, packet = pipe.recv()
             if cmd == 'RUN_EPISODE':
                 student_actor_weights = packet[0]   # 同构单份 state_dict，全队共享
-                opp_name, opp_type, opp_data, opp_temperature = packet[1]
+                opp_name, opp_type, opp_data = packet[1]
                 settings = packet[2]
                 action_cycle_multiplier = settings['action_cycle_multiplier']
                 red_init_num = settings.get('red_init_num', init_cfg['red_init_num'])
@@ -756,8 +764,7 @@ def run_MLP_simulation(
                         opp_type = 'rule'
                         opp_data = 0
 
-                opp_temperature = np.random.uniform(0.99, 1.0)
-                opp_info = (selected_opponent_name, opp_type, opp_data, opp_temperature)
+                opp_info = (selected_opponent_name, opp_type, opp_data)
 
                 rb, bb = create_initial_state_worker(randomized_birth)
                 settings = {

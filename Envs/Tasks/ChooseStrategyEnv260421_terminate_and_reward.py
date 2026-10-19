@@ -119,7 +119,7 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             outcome = 1 # 赢
             done = 1
         # 超时
-        elif self.t > self.game_time_limit:
+        elif self.t >= self.game_time_limit:
             # 超时，按剩余飞机数量判别胜负
             outcome = np.sign(len(egoside_alive_uavs) - len(enmside_alive_uavs))
             done = 1

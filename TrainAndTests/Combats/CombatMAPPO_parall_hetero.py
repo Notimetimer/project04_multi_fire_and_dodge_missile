@@ -224,7 +224,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
             cmd, packet = pipe.recv()
             if cmd == 'RUN_EPISODE':
                 student_actor_weights = packet[0]   # {id: state_dict} 红方学生各 id 权重（不改 id）
-                opp_name, opp_type, opp_data, opp_temperature = packet[1]
+                opp_name, opp_type, opp_data = packet[1]
                 settings = packet[2]
                 action_cycle_multiplier = settings['action_cycle_multiplier']
                 red_init_num = settings.get('red_init_num', init_cfg['red_init_num'])
@@ -765,8 +765,7 @@ def run_MLP_simulation(
                         opp_type = 'rule'
                         opp_data = 0
 
-                opp_temperature = np.random.uniform(0.99, 1.0)
-                opp_info = (selected_opponent_name, opp_type, opp_data, opp_temperature)
+                opp_info = (selected_opponent_name, opp_type, opp_data)
 
                 rb, bb = create_initial_state_worker(randomized_birth)
                 settings = {
