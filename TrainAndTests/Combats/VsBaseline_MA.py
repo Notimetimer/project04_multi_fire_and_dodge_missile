@@ -46,6 +46,11 @@ def creat_initial_state():
     red_E = - 55e3
     blue_N = red_N
     blue_E = -red_E
+    if np.random.uniform(0, 1) < 0.5: # 随机换边（与 CombatMAPPO_parall_homo 初始状态一致）
+        red_E = - red_E
+        blue_E = - blue_E
+        red_psi = - red_psi
+        blue_psi = - blue_psi
     DEFAULT_RED_BIRTH_STATE = {'position': np.array([red_N, red_height, red_E]),
                         'psi': red_psi
                         }
