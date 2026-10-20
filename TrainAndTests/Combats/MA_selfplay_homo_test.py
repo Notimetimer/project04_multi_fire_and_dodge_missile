@@ -309,14 +309,14 @@ if __name__ == '__main__':
 
     # 红方：该目录下最新一批同构 actor_rein{batch}.pt
     RED_LOG_DIR = os.path.join(upper_log_dir,
-                               "MAPPO_homo-run-20261017-001537"
+                               "MAPPO_homo-run-20261019-185822"
                                )
     RED_BATCH = None
     # 蓝方：另指定的检查点目录与批次
     #   BLUE_BATCH = None  → 取 BLUE_LOG_DIR 下的最新批次（默认与红方同目录，即为“最新 vs 最新”）
     #   BLUE_BATCH = 10    → 取该目录下 actor_rein10.pt（改成你要对比的版本）
     BLUE_LOG_DIR = os.path.join(upper_log_dir,
-                                "MAPPO_homo-run-20261017-001537"
+                                "MAPPO_homo-run-20261019-185822"
                                 )
     BLUE_BATCH = None
     
