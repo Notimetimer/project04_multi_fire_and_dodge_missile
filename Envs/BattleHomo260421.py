@@ -434,8 +434,10 @@ class Battle(object):
             self.unused_b_missile_num += 0 if uav.dead else uav.ammo
             # 更新观测有效性矩阵
             self.get_primitive_obs(uav.id)
-        # 导弹重新搜索目标
+        # 导弹重新搜索目标 仅限于9x, 120不变
         for missile in self.alive_missiles:
+            if missile.WeaponType == "AIM-120C":
+                continue
             if not missile.radar_on:
                 continue
             speed = norm(missile.vel_)
