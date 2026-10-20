@@ -232,6 +232,10 @@ class Battle(object):
     def reset(self, red_birth_state=None, blue_birth_state=None, 
               red_init_num=2, blue_init_num=2,
               red_init_ammo=4, blue_init_ammo=4, seed=None, options={"random_pos": True}, ego_side='r'):  # 重置位置和状态
+        # 红方已取得分配的蓝方id清零
+        self.allocatedIDs_r2b = set()
+        # 蓝方已取得分配的红方id清零
+        self.allocatedIDs_b2r = set()
         # 胜负情况
         self.r_outcome = None
         self.b_outcome = None
@@ -403,6 +407,8 @@ class Battle(object):
         self.RMissileTable = {}
         self.BMissileTable = {}
         self.MissileTable = {}
+        # reset后、首个step前就填充存活列表，保证决策循环可访问 alive_*_uavs
+        self.update_entity_alives()
         
     # 更新存活
     def update_entity_alives(self,):
@@ -590,6 +596,10 @@ class Battle(object):
 
     # TODO 输入动作打包为大小不确定的量
     def step(self, flight_cmds):
+        # 红方已取得分配的蓝方id清零
+        self.allocatedIDs_r2b = set()
+        # 蓝方已取得分配的红方id清零
+        self.allocatedIDs_b2r = set()
         "flight_cmds 为一个list, 用id顺序排列所有飞机"
         # "actions_of_ids: {id: action}"
         report_move_time_rate = int(round(self.dt_maneuver / self.dt_move))
