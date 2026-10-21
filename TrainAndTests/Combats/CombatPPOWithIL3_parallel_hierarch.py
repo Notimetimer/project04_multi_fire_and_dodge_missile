@@ -2351,11 +2351,11 @@ def run_MLP_simulation(
                     print('elo分极差：', elo_spread)
                     logger.add("Elo/Spread", elo_spread, total_steps)
 
-                    curr_rank = 0.5 if elo_spread == 0 else (main_agent_elo - min_elo) / elo_spread
+                    curr_rate = 0.5 if elo_spread == 0 else (main_agent_elo - min_elo) / elo_spread
 
                     # Elo分数没有稳定不许记录
                     if total_steps >= WARM_UP_STEPS:
-                        logger.add("Elo_Centered/Current_rank_normed %", curr_rank * 100, total_steps)
+                        logger.add("Elo_Centered/Current_rate_normed %", curr_rate * 100, total_steps)
                     
                     
                     # # 仅对高门槛使用
@@ -2380,7 +2380,7 @@ def run_MLP_simulation(
                             print(f"Accepted {actor_key} into Elite Pool.")
 
                     # # 动态学习率调节
-                    # actor_lr = 1e-4 + np.clip(curr_rank, 0, 1) * (1e-5 - 1e-4)
+                    # actor_lr = 1e-4 + np.clip(curr_rate, 0, 1) * (1e-5 - 1e-4)
                     # critic_lr = actor_lr * 5
                     # student_agent.set_learning_rate(actor_lr, critic_lr)
 

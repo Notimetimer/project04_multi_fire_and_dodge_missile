@@ -1009,11 +1009,11 @@ def run_MLP_simulation(
                     print('elo分极差：', elo_spread)
                     logger.add("Elo/Spread", elo_spread, total_steps/action_cycle_multiplier)
 
-                    curr_rank = 0.5 if elo_spread == 0 else (main_agent_elo - min_elo) / elo_spread
+                    curr_rate = 0.5 if elo_spread == 0 else (main_agent_elo - min_elo) / elo_spread
 
                     # Elo分数没有稳定不许记录
                     if total_steps >= WARM_UP_STEPS:
-                        logger.add("Elo_Centered/Current_rank_normed %", curr_rank * 100, total_steps/action_cycle_multiplier)
+                        logger.add("Elo_Centered/Current_rate_normed %", curr_rate * 100, total_steps/action_cycle_multiplier)
 
                     if main_agent_elo >= rule_elo_thres:
                         # 满员清理
