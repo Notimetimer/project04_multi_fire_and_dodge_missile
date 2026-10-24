@@ -28,7 +28,7 @@ sys.path.append(project_root)
 
 from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import *
 from Math_calculates.sub_of_angles import *
-from Algorithms.ActorWithPointingNet import ActorWrapper
+from Algorithms.ActorWithATTN import ActorWrapper
 from _context import take_some_of_rule_inputs, load_obs_dims, stack_field
 
 use_tacview = 2

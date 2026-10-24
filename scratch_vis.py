@@ -14,7 +14,7 @@ import sys
 import numpy as np
 import torch
 
-from Algorithms.ActorWithPointingNet import ActorWrapper
+from Algorithms.ActorWithATTN import ActorWrapper
 
 
 # ONNX / TensorBoard 都只接受位置参数(tuple)，且不能有动态控制流，
