@@ -929,6 +929,8 @@ def run_MLP_simulation(
                     torch.save(actor.state_dict(), os.path.join(log_dir, f"{actor_team_key}.pt"))
                     torch.save(critic.state_dict(), os.path.join(log_dir, "critic.pt"))
                     print(f"Saved Checkpoint team: {actor_team_key}")
+                    # 每次落盘新的 actor_rein 时记录：横轴当前步数，纵轴 actor_rein 后面的数字（batch_idx）
+                    logger.add("checkpoint/actor_rein_idx", batch_idx, total_steps/action_cycle_multiplier)
                     # 只注册已落盘的版本，保证自博弈采样对手时总能加载到对应权重
                     elo_ratings[actor_team_key] = main_agent_elo
 
