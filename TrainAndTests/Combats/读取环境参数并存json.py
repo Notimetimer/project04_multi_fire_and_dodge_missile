@@ -25,7 +25,7 @@ if __name__ == '__main__':
     args.R_cage = 60.3e3
 
     # 构建场地边界，南北长54km，东西宽100km的长方形边界
-    vertices = [[50e3, 50e3], [-50e3, 50e3], [-50e3, -50e3], [50e3, -50e3]]
+    vertices = [[60e3, 60e3], [-60e3, 60e3], [-60e3, -60e3], [60e3, -60e3]]
     env = ChooseStrategyEnv(args, tacview_show=0, vertices=vertices)
     env.reset(red_init_num=2, blue_init_num=2, red_init_ammo=2, blue_init_ammo=2)
 
