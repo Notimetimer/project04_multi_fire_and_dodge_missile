@@ -21,7 +21,7 @@ use_tacview = 2 # 1 动态显示 2 静默写入 acmi_records
 action_cycle_multiplier = 10
 
 from BasicRules_Homo import basic_rules
-from Algorithms.ActorWithPointingNet import ActorWrapper
+from Algorithms.ActorWithATTN import ActorWrapper
 from _context import take_some_of_rule_inputs, load_obs_dims, stack_field, append_experience, load_init_states
 from Algorithms.CriticWrapper import critic_wrapper
 from torch.utils.tensorboard import SummaryWriter
@@ -276,10 +276,13 @@ if __name__=='__main__':
                             # 场上存活的敌机id列表，也许可以换成集合
                             enm_alive_ids = {uav.id for uav in enm_alive_uavs}
                             # 优先使用在飞导弹锁定的目标作为占用集；无存活导弹时再用当前决策选中的目标
+                            # 记录 目标id -> 锁定该目标的导弹发射者集合，用于豁免"自己打的导弹"
+                            target_lockers = {}
                             if alive_missiles:
                                 for missile in alive_missiles:
                                     if missile.target_id is not None:
                                         enm_allocated_ids.add(missile.target_id)
+                                        target_lockers.setdefault(missile.target_id, set()).add(missile.launcher_id)
                             else:
                                 # id靠前的先选目标，如果敌机没有被选完，id号大的只能从余下的目标里面选取
                                 allocated_eid = env.index2id(UAV.id, enm_idx)
@@ -296,6 +299,10 @@ if __name__=='__main__':
                                         continue
                                     for eid in enm_allocated_ids:
                                         if eid in enm_id2index:
+                                            # 目标只被该机自己发射的导弹锁定时，这枚导弹不构成对它的禁选
+                                            lockers = target_lockers.get(eid)
+                                            if lockers is not None and lockers <= {fid}:
+                                                continue
                                             mask_inputs_[fid]['enm'][enm_id2index[eid]] = 0
                                             Obs[fid]["mask_input"]["enm"][enm_id2index[eid]] = 0
                         

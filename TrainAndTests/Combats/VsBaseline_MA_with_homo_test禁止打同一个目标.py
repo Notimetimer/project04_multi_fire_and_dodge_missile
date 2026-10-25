@@ -24,10 +24,10 @@ from VsBaseline_MA import test_worker, creat_initial_state
 from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import *
 from Math_calculates.sub_of_angles import *
 from BasicRules_Homo import basic_rules
-from Algorithms.ActorWithPointingNet import ActorWrapper
+from Algorithms.ActorWithATTN import ActorWrapper
 from _context import take_some_of_rule_inputs, load_obs_dims, stack_field
 
-use_tacview = 2 # 1 动态显示 2 静默写入 acmi_records
+use_tacview = 1 # 1 动态显示 2 静默写入 acmi_records
 
 # 是否考虑视野限制
 POMDP = 1
@@ -222,10 +222,13 @@ def test_worker(model_state_dict, rules_num,
                                 alive_missiles = test_env.alive_b_missiles
                             enm_alive_ids = {uav.id for uav in enm_alive_uavs}
                             # 优先使用在飞导弹锁定的目标作为占用集；无存活导弹时再用当前决策选中的目标
+                            # 记录 目标id -> 锁定该目标的导弹发射者集合，用于豁免"自己打的导弹"
+                            target_lockers = {}
                             if alive_missiles:
                                 for missile in alive_missiles:
                                     if missile.target_id is not None:
                                         enm_allocated_ids.add(missile.target_id)
+                                        target_lockers.setdefault(missile.target_id, set()).add(missile.launcher_id)
                             else:
                                 allocated_eid = test_env.index2id(UAV.id, target_index_all[id])
                                 if allocated_eid is not None:
@@ -244,6 +247,10 @@ def test_worker(model_state_dict, rules_num,
                                     # 不重复攻击同一个目标，除非有富余的火力资源
                                     for eid in enm_allocated_ids:
                                         if eid in enm_id2index:
+                                            # 目标只被该机自己发射的导弹锁定时，这枚导弹不构成对它的禁选
+                                            lockers = target_lockers.get(eid)
+                                            if lockers is not None and lockers <= {fid}:
+                                                continue
                                             mask_inputs_[fid]['enm'][enm_id2index[eid]] = 0
 
                 # 循环调用底层控制器，环境更新
@@ -338,7 +345,7 @@ if __name__=='__main__':
     # 加载同构训练目录下的单份 actor（CombatMAPPO_parall_homo 产出：actor_rein{batch}.pt）
     upper_log_dir = r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat"
     LOG_DIR = os.path.join(upper_log_dir,
-                           "MAPPO_homo-run-20261019-185822"
+                           "MAPPO_homo-run-20261024-234937"
                            )
     actor_files = glob.glob(os.path.join(LOG_DIR, "actor_rein*.pt"))
     if not actor_files:
