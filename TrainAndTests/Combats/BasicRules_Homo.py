@@ -114,7 +114,7 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
                 action_v = 1 # 平飞
 
             # 置尾机动
-            action_h = 6 # 水平方向背离
+            action_h = 3 # 水平方向背离
 
             # # 三九线机动
             # if delta_psi < 0:
@@ -402,7 +402,7 @@ if __name__=='__main__':
                 os.remove(f)
 
         # 采集不同轨迹的动作
-        for i_episode in range(1): # 5
+        for i_episode in range(5): # [5]
             # 环境运行一轮的情况
             ep_start = time.time()
             episode_return = 0
@@ -478,7 +478,7 @@ if __name__=='__main__':
                         
                         # 2. Agent 产生一个动作
                         if 1: # 如果类型是规则智能体而非神经网络
-                            fly_action, fire_action, radar_action = basic_rules(rule_inputs_[id], mask_inputs_[id], rules_num=5)
+                            fly_action, fire_action, radar_action = basic_rules(rule_inputs_[id], mask_inputs_[id], rules_num=i_episode)
                         else:
                             # 如果类型是神经网络
                             pass

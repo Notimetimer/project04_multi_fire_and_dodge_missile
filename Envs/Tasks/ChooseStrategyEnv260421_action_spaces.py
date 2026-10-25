@@ -33,20 +33,6 @@ from Envs.BattleHomo260421 import *
 class ChooseStrategyEnv(Battle):
     def __init__(self, args, tacview_show=0, vertices=None):
         super().__init__(args, tacview_show, vertices=vertices)
-        # self.key_order_1v1 = [
-        #     "target_alive", # 1
-        #     "target_observable", # 1
-        #     "target_locked", # 1
-        #     "missile_in_mid_term",  # 1
-        #     "locked_by_target",  # 1
-        #     "warning",  # 1
-        #     "target_information",  # 8
-        #     "ego_main",  # 7
-        #     "weapon", # 1
-        #     "threat",  # 4
-        #     "border",  # 2
-        # ]
-        # self.obs_dim = 1*6+8+7+1+4+2
         self.fly_act_dim = [5, 7] # [5,7] 14
         self.fire_dim = 1
         
@@ -149,20 +135,6 @@ class ChooseStrategyEnv(Battle):
             if ally.dead:
                 mask_ally[i] = 0
                 full_obs["ally_infos"][i] = copy.deepcopy(self.scaled_init_mod["ally_info"])
-
-        # # 追加敌机 null_token 槽位（固定维度 enm_side_num+1，与开火动作的 null_token 对齐）
-        # full_obs["enm_infos"].append(copy.deepcopy(self.scaled_init_mod["enm_info"]))
-        # # 仅统计真实敌机槽位（不含 null_token），避免 enm_side_num=0 时把空槽位的 1 误算进去
-        # if sum(mask_enm[:enm_side_num]) > 0:
-        #     mask_enm[enm_side_num] = 0
-        # else:
-        #     mask_enm[enm_side_num] = 1
-        # # 追加队友 null_token 槽位（固定维度 ego_side_num），可见性规则与敌机 null_token 一致
-        # full_obs["ally_infos"].append(copy.deepcopy(self.scaled_init_mod["ally_info"]))
-        # if sum(mask_ally[:ally_num]) > 0:
-        #     mask_ally[ally_num] = 0
-        # else:
-        #     mask_ally[ally_num] = 1
 
         # 处理武器（取最新发射的武器）
         if len(full_obs["weapon_infos"]) == 0: # 空列表

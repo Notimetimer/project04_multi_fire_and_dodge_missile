@@ -213,13 +213,13 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                         r_shaping += - DENSE_REWARD_WEIGHT
 
                 # 队友间距分区引导（阶跃，无威胁时）：<40km 鼓励分离，>50km 鼓励靠近，40~50km 不介入，力度为标准密集奖励的 1/3
-                if teammate_dist is not None and teammate_dist_prev is not None:
+                if teammate_dist is not None and teammate_dist_prev is not None and missile_t_fly < 40:
                     if teammate_dist < 40e3:
                         # 过近：距离扩大给正奖励，收缩给惩罚
-                        r_shaping += (1.0 if teammate_dist >= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT / 2 #/1.2
+                        r_shaping += (1.0 if teammate_dist >= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT * 0.75 #/1.2
                     elif teammate_dist > 60e3:
                         # 过远：距离收缩给正奖励，扩大给惩罚
-                        r_shaping += (1.0 if teammate_dist <= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT / 2 #/1.2
+                        r_shaping += (1.0 if teammate_dist <= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT * 0.75 #/1.2
                 
                 # 没有导弹处于中制导阶段
                 if (not missile_in_mid_term):
