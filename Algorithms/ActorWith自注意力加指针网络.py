@@ -20,7 +20,7 @@ _EVADE_HOR_MASK = torch.tensor([-1, -1, 0, 0, 0, -1, -1], dtype=torch.float32) *
 
 # 单头交叉注意力模块：query 来自自身状态，key/value 来自实体序列。
 # 每个实体类型（enm / ally）各持有一份独立实例，参数互不共享。
-class EntityAttention(nn.Module):
+class PointerNetAttention(nn.Module):
     def __init__(self, query_dim, entity_dim, embed_dim):
         super().__init__()
         self.embed_dim = embed_dim
@@ -126,8 +126,8 @@ class selector(nn.Module):
 
         # 敌机与友机各自独立的交叉注意力模块：query/key 投影参数互不共享
         # query 来自 e_f' (embed_dim)，entity 来自 e_e'/e_a' (embed_dim)
-        self.enm_attn = EntityAttention(embed_dim, embed_dim, embed_dim)
-        self.ally_attn = EntityAttention(embed_dim, embed_dim, embed_dim)
+        self.enm_attn = PointerNetAttention(embed_dim, embed_dim, embed_dim)
+        self.ally_attn = PointerNetAttention(embed_dim, embed_dim, embed_dim)
 
     def forward(self, agent_inputs, mask_inputs, rule_inputs, enm_idx=None, ally_idx=None, temperature=1.0):
         fixed = agent_inputs['fixed'] # 应该是(batch, fixed_dim)
