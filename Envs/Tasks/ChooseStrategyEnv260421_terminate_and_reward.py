@@ -216,10 +216,10 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 if teammate_dist is not None and teammate_dist_prev is not None:
                     if teammate_dist < 40e3:
                         # 过近：距离扩大给正奖励，收缩给惩罚
-                        r_shaping += (1.0 if teammate_dist >= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT / 3
+                        r_shaping += (1.0 if teammate_dist >= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT / 1.5
                     elif teammate_dist > 60e3:
                         # 过远：距离收缩给正奖励，扩大给惩罚
-                        r_shaping += (1.0 if teammate_dist <= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT / 3
+                        r_shaping += (1.0 if teammate_dist <= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT / 1.5
                 
                 # 没有导弹处于中制导阶段
                 if (not missile_in_mid_term):
