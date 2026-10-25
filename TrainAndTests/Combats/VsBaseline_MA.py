@@ -29,7 +29,7 @@ from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import *
 from Math_calculates.sub_of_angles import *
 from BasicRules_Homo import basic_rules
 from Algorithms.ActorWithATTN import ActorWrapper
-from _context import take_some_of_rule_inputs, load_obs_dims, stack_field
+from _context import take_some_of_rule_inputs, load_obs_dims, stack_field, load_init_states
 
 use_tacview = 2 # 1 动态显示 2 静默写入 acmi_records
 
@@ -319,7 +319,7 @@ if __name__=='__main__':
     args.R_cage = 60.3e3
 
     # 构建场地边界，南北长54km，东西宽100km的长方形边界
-    vertices = [[60e3, 60e3], [-60e3, 60e3], [-60e3, -60e3], [60e3, -60e3]]
+    vertices = load_init_states()['vertices']
 
     # 加载指定训练目录下最新一批 actor（异构：每架红机一份权重，打包为 {id: state_dict}）
     upper_log_dir = r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat"

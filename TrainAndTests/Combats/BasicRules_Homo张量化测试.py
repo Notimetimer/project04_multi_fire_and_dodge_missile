@@ -42,7 +42,7 @@ if __name__=='__main__':
     args.R_cage = 60.3e3
 
     # 构建场地边界，南北长54km，东西宽100km的长方形边界
-    vertices = [[60e3, 60e3], [-60e3, 60e3], [-60e3, -60e3], [60e3, -60e3]]
+    vertices = load_init_states()['vertices']
     env = ChooseStrategyEnv(args, tacview_show=use_tacview, vertices=vertices)
     # test
     env.dt_move = 0.07 # 0.04 # 4 # 0.025 0.02

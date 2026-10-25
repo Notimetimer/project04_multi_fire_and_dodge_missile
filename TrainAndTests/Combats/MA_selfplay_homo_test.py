@@ -29,7 +29,7 @@ sys.path.append(project_root)
 from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import *
 from Math_calculates.sub_of_angles import *
 from Algorithms.ActorWithATTN import ActorWrapper
-from _context import take_some_of_rule_inputs, load_obs_dims, stack_field
+from _context import take_some_of_rule_inputs, load_obs_dims, stack_field, load_init_states
 
 use_tacview = 2
 
@@ -308,7 +308,7 @@ if __name__ == '__main__':
     args.R_cage = 60.3e3
 
     # 构建场地边界，南北长 54km，东西宽 100km 的长方形边界
-    vertices = [[60e3, 60e3], [-60e3, 60e3], [-60e3, -60e3], [60e3, -60e3]]
+    vertices = load_init_states()['vertices']
 
     upper_log_dir = r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat"
 

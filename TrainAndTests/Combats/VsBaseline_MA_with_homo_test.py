@@ -16,6 +16,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.append(project_root)
 
 from VsBaseline_MA import test_worker
+from _context import load_init_states
 
 if __name__=='__main__':
     print("\n根目录为：", project_root, "\n")
@@ -31,7 +32,7 @@ if __name__=='__main__':
     args.R_cage = 60.3e3
 
     # 构建场地边界，南北长54km，东西宽100km的长方形边界
-    vertices = [[60e3, 60e3], [-60e3, 60e3], [-60e3, -60e3], [60e3, -60e3]]
+    vertices = load_init_states()['vertices']
 
     # 加载同构训练目录下的单份 actor（CombatMAPPO_parall_homo 产出：actor_rein{batch}.pt）
     upper_log_dir = r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat"
@@ -52,7 +53,7 @@ if __name__=='__main__':
     latest_batch = max(homo.keys())
 
     # 加载的版本号
-    loaded_version = latest_batch  # 可手动指定，如 10
+    loaded_version = 90 # latest_batch  # 可手动指定，如 10
 
     # 单份 state_dict：test_worker 检测到后所有红机共享同一份权重
     model_state_dict = torch.load(homo[loaded_version], map_location='cpu')

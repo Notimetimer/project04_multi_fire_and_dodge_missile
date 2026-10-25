@@ -26,6 +26,7 @@ sys.path.append(project_root)
 from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import *
 from Math_calculates.sub_of_angles import *
 from BasicRules_Homo import basic_rules
+from _context import load_init_states
 
 # 规则自博弈测试不写 acmi、不做记录，只跑仿真与统计
 use_tacview = 2
@@ -258,7 +259,7 @@ if __name__ == '__main__':
     args.R_cage = 60.3e3
 
     # 构建场地边界，南北长 54km，东西宽 100km 的长方形边界
-    vertices = [[60e3, 60e3], [-60e3, 60e3], [-60e3, -60e3], [60e3, -60e3]]
+    vertices = load_init_states()['vertices']
 
     result, wins, loses, draws, perish, judge_miss, judge_miss_sign, judge_anomaly = rulerule_worker(
         RED_RULES_NUM, BLUE_RULES_NUM, args, num_runs=N_EPISODES, vertices=vertices,

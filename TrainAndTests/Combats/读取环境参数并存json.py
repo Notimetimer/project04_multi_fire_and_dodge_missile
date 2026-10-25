@@ -14,6 +14,8 @@ from math import pi
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(project_root)
 
+from _context import load_init_states
+
 from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import *
 
 
@@ -25,7 +27,7 @@ if __name__ == '__main__':
     args.R_cage = 60.3e3
 
     # 构建场地边界，南北长54km，东西宽100km的长方形边界
-    vertices = [[60e3, 60e3], [-60e3, 60e3], [-60e3, -60e3], [60e3, -60e3]]
+    vertices = load_init_states()['vertices']
     env = ChooseStrategyEnv(args, tacview_show=0, vertices=vertices)
     env.reset(red_init_num=2, blue_init_num=2, red_init_ammo=2, blue_init_ammo=2)
 

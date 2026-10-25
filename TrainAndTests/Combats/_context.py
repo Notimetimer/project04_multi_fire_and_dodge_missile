@@ -56,12 +56,8 @@ def load_obs_dims(json_path=None):
 # 初始飞机数量和导弹挂载数统一从 init_states.json 读取（各训练/测试脚本共用一份配置）
 def load_init_states(json_path=None):
     path = json_path or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'init_states.json')
-    defaults = {'red_init_num': 2, 'blue_init_num': 2, 'red_init_ammo': 2, 'blue_init_ammo': 2}
-    if not os.path.exists(path):
-        return defaults
     with open(path, 'r', encoding='utf-8') as f:
-        cfg = json.load(f)
-    return {k: cfg.get(k, defaults[k]) for k in defaults}
+        return json.load(f)
 
 def append_experience(td, obs, state, action, reward, next_state, done, active_mask):
     """
