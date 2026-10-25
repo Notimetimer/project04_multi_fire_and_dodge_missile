@@ -37,7 +37,7 @@ if __name__=='__main__':
     # 加载同构训练目录下的单份 actor（CombatMAPPO_parall_homo 产出：actor_rein{batch}.pt）
     upper_log_dir = r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat"
     LOG_DIR = os.path.join(upper_log_dir,
-                           "MAPPO_homo-run-20261024-234937"
+                           "MAPPO_homo-run-20261025-105746"
                            )
     actor_files = glob.glob(os.path.join(LOG_DIR, "actor_rein*.pt"))
     if not actor_files:
@@ -53,7 +53,7 @@ if __name__=='__main__':
     latest_batch = max(homo.keys())
 
     # 加载的版本号
-    loaded_version = 90 # latest_batch  # 可手动指定，如 10
+    loaded_version = latest_batch  # 可手动指定，如 10
 
     # 单份 state_dict：test_worker 检测到后所有红机共享同一份权重
     model_state_dict = torch.load(homo[loaded_version], map_location='cpu')
