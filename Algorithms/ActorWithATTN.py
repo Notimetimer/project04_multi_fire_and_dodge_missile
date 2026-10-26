@@ -181,6 +181,13 @@ class selector(nn.Module):
         e_enm = enm_keys.gather(1, enm_idx.reshape(-1, 1, 1).expand(-1, 1, self.embed_dim)).squeeze(1)
         e_ally = ally_keys.gather(1, ally_idx.reshape(-1, 1, 1).expand(-1, 1, self.embed_dim)).squeeze(1)
 
+        # TODO(待启用)：队友阵亡时把该槽位特征置零（null_token），
+        # 避免 het_attn 从本机/存活敌机聚合出的"幻觉嵌入"以权重 1 进入 pilot。
+        # 环境端 get_obs 已把该职责划给 actor 侧；此处仅留注释，暂不改变当前行为。
+        # 待实现（N_a=1 可直接用，N_a>1 需按 ally_idx 取对应 mask 位特征
+        # 
+        # e_ally = e_ally * ally_mask.to(e_ally.dtype)     # ally_mask: (B, N_a)
+        
         # selected_info: concat((B, d), (B, d), (B, d)) -> (B, 3*d)
         # e_f' 直接输出给 pilot，e_e'/e_a' 经交叉注意力选中后切片输出给 pilot
         selected_info = torch.cat((query_state, e_enm, e_ally), dim=-1)

@@ -93,10 +93,10 @@ class ChooseStrategyEnv(Battle):
         ego_side_num = self.Rnum if side =='r' else self.Bnum
         enm_side_num = self.Bnum if side =='r' else self.Rnum
         
-        # 队友mask没有自己（null_token 由 actor 端在全 mask 时强制 [1,0,...0] 处理，环境端不再预留槽位）
+        # 队友mask没有自己
         ally_num = ego_side_num - 1
         mask_ally = np.ones(ally_num)
-        # 敌人mask包含了全部敌人（同上，不再预留 null_token 槽位）
+        # 敌人mask包含了全部敌人
         mask_enm = np.ones(enm_side_num)
         
         information_output = {'fixed':[], 'ally':[], 'enm':[]}
