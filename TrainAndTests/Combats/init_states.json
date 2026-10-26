@@ -4,6 +4,9 @@
 
   "red_init_num":   2,
   "blue_init_num":  2,
+  
+  "red_alive_num":  2,
+  "blue_alive_num": 2,
 
   "vertices": [[60e3, 60e3], [-60e3, 60e3], [-60e3, -60e3], [60e3, -60e3]]
 }

@@ -9,6 +9,7 @@ import copy
 import jsbsim
 import sys
 import os
+import json
 import importlib
 import copy
 from numpy.linalg import norm
@@ -382,6 +383,7 @@ class Battle(object):
                       theta0=UAV.theta, o00=o00)
             UAV.fire_hit_records = []  # 记录所有导弹的命中情况
             UAV.got_hit = False
+            UAV.chosen_by_opp = 0 # 是否被对手选中
             UAV.radar_on = 1
             UAV.radar_center = np.array([0, 0]) # 雷达中心相对方位的归一化值，先水平后垂直
             UAV.escape_once = 0 # 逃脱导弹攻击
@@ -407,6 +409,26 @@ class Battle(object):
         self.RMissileTable = {}
         self.BMissileTable = {}
         self.MissileTable = {}
+        # 按 init_states.json 的 alive_num 随机击杀差额飞机，直到该方剩余 alive_num 架存活
+        init_states_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'TrainAndTests', 'Combats', 'init_states.json')
+        with open(init_states_path, 'r', encoding='utf-8') as f:
+            init_states = json.load(f)
+        red_alive_num = init_states.get('red_alive_num', self.Rnum)
+        blue_alive_num = init_states.get('blue_alive_num', self.Bnum)
+        # 击杀选取复用 seed 机制保证可复现：与位置打乱的 Random 实例相互独立，+2 偏移避免同种子同源
+        if seed is None:
+            red_kill_rng, blue_kill_rng = random, random
+        else:
+            red_seed, blue_seed = seed if isinstance(seed, (tuple, list)) else (seed, seed + 1)
+            red_kill_rng = random.Random(red_seed + 2)
+            blue_kill_rng = random.Random(blue_seed + 2)
+        for side_uavs, alive_num, kill_rng in ((self.RUAVs, red_alive_num, red_kill_rng),
+                                               (self.BUAVs, blue_alive_num, blue_kill_rng)):
+            kill_num = len(side_uavs) - alive_num
+            if kill_num > 0:
+                for uav in kill_rng.sample(side_uavs, kill_num):
+                    uav.dead = 1
+                    uav.radar_on = 0
         # reset后、首个step前就填充存活列表，保证决策循环可访问 alive_*_uavs
         self.update_entity_alives()
         
@@ -635,6 +657,7 @@ class Battle(object):
             UAV.got_a_miss = 0 # 发射的导弹脱靶
             UAV.got_a_kill = 0 # 发射的导弹命中目标
             UAV.can_let_go = 0 # 发射的导弹锁定目标
+            UAV.chosen_by_opp = 0
 
         # 导弹发射不在这里执行，这里只处理运动解算，且发射在step之前
         # 运动按照dt_move更新，结果合并到dt_maneuver中
