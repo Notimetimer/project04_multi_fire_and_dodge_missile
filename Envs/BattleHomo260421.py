@@ -440,30 +440,6 @@ class Battle(object):
             self.unused_b_missile_num += 0 if uav.dead else uav.ammo
             # 更新观测有效性矩阵
             self.get_primitive_obs(uav.id)
-        # 导弹重新搜索目标 仅限于9x, 120不变
-        for missile in self.alive_missiles:
-            if missile.WeaponType == "AIM-120C":
-                continue
-            if not missile.radar_on:
-                continue
-            speed = norm(missile.vel_)
-            if speed == 0:
-                continue
-            replacement_id = None
-            replacement_distance = float('inf')
-            enemy_uavs = alive_b_uavs if missile.side == 'r' else alive_r_uavs
-            for uav in enemy_uavs:
-                line_of_sight = uav.pos_ - missile.pos_
-                distance = norm(line_of_sight)
-                if distance == 0 or distance > missile.detect_range:
-                    continue
-                sight_cos = np.dot(missile.vel_, line_of_sight) / (speed * distance)
-                if sight_cos > np.cos(missile.sight_angle_max) and distance < replacement_distance:
-                    replacement_id = uav.id
-                    replacement_distance = distance
-            if replacement_id is not None:
-                missile.target_id = replacement_id
-        
         # 队内共享视野
         for i, uav in enumerate(self.BUAVs):
             if np.sum(self.prim_r2b_visable[:, i]) >= 2:
@@ -472,7 +448,6 @@ class Battle(object):
             else:
                 # 按照原始定位来
                 self.r2b_visable[:, i] = self.prim_r2b_visable[:, i]
-            
         for i, uav in enumerate(self.RUAVs):
             if np.sum(self.prim_b2r_visable[:, i]) >= 2:
                 # 不管是单架飞机有全信息还是多星测角定位，都有完全信息
@@ -481,6 +456,51 @@ class Battle(object):
                 # 按照原始定位来
                 self.b2r_visable[:, i] = self.prim_b2r_visable[:, i]
         
+        # 导弹重新搜索目标 120只能在目标死后重新搜索目标
+        for missile in self.alive_missiles:
+            if missile.WeaponType == "AIM-120C":
+                # 目标没死不许换目标
+                target = self.find_uav_with_id(missile.target_id)
+                if not target.dead:
+                    continue
+                # 雷达没开，靠载机数据链更换目标（无接力制导）
+                if not missile.radar_on:
+                    launcher_id = missile.launcher_id
+                    launcher_uav = self.find_uav_with_id(launcher_id)
+                    # 载机死了就别想换目标
+                    if launcher_uav.dead:
+                        continue
+                    # 载机没死，载机锁谁我跟谁
+                    # 如果载机能锁我就换，载机锁不了我continue
+                    if getattr(launcher_uav, 'lock_on', 0) == 1 and getattr(launcher_uav, 'current_target_id', None) is not None:
+                        target_id = launcher_uav.current_target_id
+                        missile.target_id = target_id
+                        continue
+                    else:
+                        continue
+            # 导引头开了，数据链靠边站
+            speed = norm(missile.vel_)
+            if speed == 0:
+                continue
+            # 靠自身雷达/红外导引头重搜索目标
+            replacement_id = None
+            # replacement_distance = float('inf')
+            replacement_off_axis = missile.sight_angle_max
+            enemy_uavs = alive_b_uavs if missile.side == 'r' else alive_r_uavs
+            for uav in enemy_uavs:
+                line_of_sight = uav.pos_ - missile.pos_
+                distance = norm(line_of_sight)
+                # 超出探测距离不许换
+                if distance == 0 or distance > missile.detect_range:
+                    continue
+                # 探测距离之内找角度偏移最小的
+                sight_cos = np.dot(missile.vel_, line_of_sight) / (speed * distance)
+                if sight_cos > np.cos(replacement_off_axis):
+                    replacement_id = uav.id
+                    # replacement_distance = distance
+                    replacement_off_axis = np.arccos(sight_cos)
+            if replacement_id is not None:
+                missile.target_id = replacement_id
         
     # 根据飞机id查找飞机类实例
     def find_uav_with_id(self, id):

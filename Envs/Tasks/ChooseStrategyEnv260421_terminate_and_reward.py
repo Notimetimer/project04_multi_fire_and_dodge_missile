@@ -209,12 +209,12 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 if missile_t_fly < 40:
                     # 开火后下高
                     r_shaping += (-ego.vu/100) * np.sign(threat_theta-(-pi/4)) * DENSE_REWARD_WEIGHT
-                    # # 开火后不要继续指着敌机飞了
-                    # if min_enm_ATA < np.radians(15):
-                    #     r_shaping += - DENSE_REWARD_WEIGHT
-                    # 改为本机与已发射导弹视线的夹角：仍指向导弹（≈仍指向被攻击的那架敌机）时惩罚
-                    if cos_msl_delta_psi > np.cos(np.radians(15)):
-                         r_shaping += - DENSE_REWARD_WEIGHT
+                    # 开火后不要继续指着敌机飞了
+                    if min_enm_ATA < np.radians(15):
+                        r_shaping += - DENSE_REWARD_WEIGHT
+                    # # 改为本机与已发射导弹视线的夹角：仍指向导弹（≈仍指向被攻击的那架敌机）时惩罚
+                    # if cos_msl_delta_psi > np.cos(np.radians(15)):
+                    #      r_shaping += - DENSE_REWARD_WEIGHT
 
                 # 队友间距分区引导（阶跃，无威胁时）：<40km 鼓励分离，>50km 鼓励靠近，40~50km 不介入，力度为标准密集奖励的 1/3
                 if teammate_dist is not None and teammate_dist_prev is not None and missile_t_fly < 40:
