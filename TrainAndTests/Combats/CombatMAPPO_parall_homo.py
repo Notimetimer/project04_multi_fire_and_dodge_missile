@@ -6,6 +6,7 @@
 import typing
 import os
 import sys
+import csv
 import numpy as np
 import pickle
 import torch
@@ -696,7 +697,7 @@ def run_MLP_simulation(
                 # 阻塞等待全部测试完成后再进入采样
                 test_results = [t.get() for t in test_tasks]
                 outcomes = {rule_num: score for rule_num, score, wins, loses, draws, p_t_ in test_results}
-                outcomes_perish = {rule_num: p_t_ for rule_num, score, wins, loses, draws, p_t_ in test_results}
+                outcomes_perish = {rule_num: p_t_ / num_runs for rule_num, score, wins, loses, draws, p_t_ in test_results}
 
                 for r_num, score in outcomes.items():
                     logger.add(f"test/agent_vs_rule{r_num}", score, total_steps/action_cycle_multiplier)
@@ -707,6 +708,27 @@ def run_MLP_simulation(
                 avg_perish_together = np.mean(list(outcomes_perish.values()))
                 logger.add("test/avg_score", avg_score, total_steps/action_cycle_multiplier)
                 logger.add("test/BVR perish together", avg_perish_together, total_steps/action_cycle_multiplier)
+
+                # 将本次测试的胜负平明细按对手追加到 csv（每 batch 测试一轮，一行一个对手）
+                test_csv_path = os.path.join(log_dir, "test_vs_rules.csv")
+                csv_header = ["batch_idx", "steps", "rule_num",
+                              "wins", "loses", "draws", "score",
+                              "perish_together", "num_runs"]
+                _need_header = not os.path.exists(test_csv_path)
+                with open(test_csv_path, 'a', newline='', encoding='utf-8-sig') as _f:
+                    _w = csv.writer(_f)
+                    if _need_header:
+                        _w.writerow(csv_header)
+                    for rule_num, score, wins, loses, draws, p_t_ in test_results:
+                        _w.writerow([
+                            batch_idx,
+                            int(total_steps / action_cycle_multiplier),
+                            rule_num,
+                            wins, loses, draws,
+                            float(score),
+                            float(p_t_ / num_runs),
+                            num_runs,
+                        ])
 
             # 分发采样任务给 Worker
             worker_metrics_buffer = []
@@ -820,7 +842,7 @@ def run_MLP_simulation(
                 for uid, r_id in metrics.get('return_by_id', {}).items():
                     if uid in batch_return_by_id:
                         batch_return_by_id[uid] += r_id
-                if metrics.get('BVR_perish_together', False):
+                if metrics.get('BVR_perish_together', False) == 1:
                     batch_bvr_perish_together_cnt += 1
 
                 if metrics['win']: batch_wins += 1
