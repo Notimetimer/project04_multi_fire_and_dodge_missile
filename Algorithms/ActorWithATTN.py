@@ -19,22 +19,49 @@ _EVADE_HOR_MASK = torch.tensor([-1, -1, 0, 0, 0, -1, -1], dtype=torch.float32) *
 
 
 # 单头交叉注意力模块：query 来自自身状态，key/value 来自实体序列。
-# 每个实体类型（enm / ally）各持有一份独立实例，参数互不共享。
+# 签名不再单独接收 embed_dim，强制 embed_dim == entity_dim。
+# 仅产生分数（供调用方采样选谁），不负责特征投影；调用方从原值切片。
 class PointerNetAttention(nn.Module):
-    def __init__(self, query_dim, entity_dim, embed_dim):
+    def __init__(self, query_dim, entity_dim):
         super().__init__()
-        self.embed_dim = embed_dim
-        self.scale = embed_dim ** -0.5
-        self.query_proj = nn.Linear(query_dim, embed_dim)
-        self.key_proj = nn.Linear(entity_dim, embed_dim)
+        self.embed_dim = entity_dim
+        self.scale = entity_dim ** -0.5
+        self.query_proj = nn.Linear(query_dim, entity_dim)
+        self.key_proj = nn.Linear(entity_dim, entity_dim)
 
     def forward(self, query_state, entity_seq, mask=None):
+        # query_proj / key_proj 仅用于算 score（query 与 key 的点积），
+        # 第二个返回值不再使用：调用方直接从原值 gather
         query = self.query_proj(query_state)         # (B, E)
         keys = self.key_proj(entity_seq)              # (B, N, E)
         scores = torch.einsum('be,bne->bn', query, keys) * self.scale
         if mask is not None:
             scores = scores.masked_fill(~mask, -_MASK_VAL)
-        return scores, keys
+        return scores
+
+
+# 单头 QKV 交叉注意力聚合模块：query 来自本机状态，key/value 来自实体序列，
+# 输出 softmax 权重对 value 的加权求和，将实体序列池化为单一嵌入 (B, E)。
+# 与 PointerNetAttention（指针网络，输出打分供离散采样）不同，本模块只聚合特征，不产生选择分布。
+# 约定：entity_seq 原值直接作为 values，禁止对 values 做任何投影；
+# embed_dim 强制等于 entity_dim，所以 __init__ 不再单独接收 embed_dim 参数。
+class CrossAttentionPooling(nn.Module):
+    def __init__(self, query_dim, entity_dim):
+        super().__init__()
+        self.embed_dim = entity_dim                          # 强制 embed_dim == entity_dim
+        self.scale = entity_dim ** -0.5
+        self.query_proj = nn.Linear(query_dim, entity_dim)   # 投到 entity_dim
+        self.key_proj = nn.Linear(entity_dim, entity_dim)    # 仅用于 score 计算，与 values 无关
+
+    def forward(self, query_state, entity_seq, mask=None):
+        query = self.query_proj(query_state)              # (B, E)
+        keys = self.key_proj(entity_seq)                  # (B, N, E)
+        values = entity_seq                               # (B, N, E)，原值不动，禁止投影
+        scores = torch.einsum('be,bne->bn', query, keys) * self.scale
+        if mask is not None:
+            scores = scores.masked_fill(~mask, -_MASK_VAL)
+        weights = torch.softmax(scores, dim=-1)           # (B, N)，掩码槽位权重为 0
+        return torch.einsum('bn,bne->be', weights, values)  # (B, E)，加权平均 entity_seq 原值
 
 
 # 异构自注意力模块：fixed / enm / ally 三类实体各自持有独立的 Q/K/V 投影，
@@ -120,14 +147,16 @@ class selector(nn.Module):
         self.fixed_embed = nn.Linear(fixed_dim, embed_dim)
         self.enm_embed = nn.Linear(enm_shape[1], embed_dim)
         self.ally_embed = nn.Linear(ally_shape[1], embed_dim)
+        # enm_chosen 残差支路的嵌入参数 (1, d)：零初始化使支路初始输出为 0，初始前向行为与原计算图一致
+        self.enm_chosen_embed = nn.Parameter(torch.zeros(1, embed_dim))
 
         # 异构自注意力模块：让 fixed/enm/ally 在统一维度上交互
         self.het_attn = HeterogeneousSelfAttention(embed_dim)
 
         # 敌机与友机各自独立的交叉注意力模块：query/key 投影参数互不共享
         # query 来自 e_f' (embed_dim)，entity 来自 e_e'/e_a' (embed_dim)
-        self.enm_attn = PointerNetAttention(embed_dim, embed_dim, embed_dim)
-        self.ally_attn = PointerNetAttention(embed_dim, embed_dim, embed_dim)
+        self.enm_attn = PointerNetAttention(embed_dim, embed_dim)
+        self.ally_attn = CrossAttentionPooling(embed_dim, embed_dim)
 
     def forward(self, agent_inputs, mask_inputs, rule_inputs, enm_idx=None, ally_idx=None, temperature=1.0):
         fixed = agent_inputs['fixed'] # 应该是(batch, fixed_dim)
@@ -146,42 +175,39 @@ class selector(nn.Module):
 
         # e_f' 作为两路交叉注意力的 query（squeeze seq 维），e_e'/e_a' 分别作为 key/value 源
         query_state = e_f_prime.squeeze(1)  # (B, d)
-        # 聚合敌机特征
-        enm_scores, enm_keys = self.enm_attn(query_state, e_e_prime, enm_mask)
-        # 队友信息需要本机query
-        ally_scores, ally_keys = self.ally_attn(query_state, e_a_prime, ally_mask)
+        # enm_chosen 残差支路：存在时 (B, Ne, 1) * (1, d) 广播为 (B, Ne, d) 叠加到 e_e_prime；缺省走原计算图
+        enm_chosen = agent_inputs.get('enm_chosen')
+        if enm_chosen is not None:
+            e_e_prime = e_e_prime + enm_chosen * self.enm_chosen_embed
+        # 池化层只负责产生分数，调用方直接从原值切片
+        enm_scores = self.enm_attn(query_state, e_e_prime, enm_mask)
+        # 队友信息需要本机query（QKV 交叉注意力加权聚合为单一嵌入，不做离散选取）
+        e_ally = self.ally_attn(query_state, e_a_prime, ally_mask)
 
         # 敌人选取分布和队友选取分布（temperature 仅测试时调节采样平滑度，默认1不改变分布）
         # 缩放后重新铺掩码兜底：掩码槽位统一用 -_MASK_VAL（有限值），温度缩放不会溢出为 -inf
+        # 注：ally 已改为聚合嵌入，无选择分布；ally_idx 固定 0 占位，log_prob/熵恒为 0（PPO 比率该项恒为 1）
         enm_scores = enm_scores / temperature
-        ally_scores = ally_scores / temperature
         if enm_mask is not None:
             enm_scores = enm_scores.masked_fill(~enm_mask, -_MASK_VAL)
-        if ally_mask is not None:
-            ally_scores = ally_scores.masked_fill(~ally_mask, -_MASK_VAL)
         enm_dist = Categorical(logits=enm_scores)
-        ally_dist = Categorical(logits=ally_scores)
 
         if enm_idx is None:
             enm_idx = enm_dist.sample()
-        if ally_idx is None:
-            ally_idx = ally_dist.sample()
+
+        batch_size = fixed.shape[0]
+        ally_idx = torch.zeros(batch_size, dtype=torch.long, device=fixed.device)
+        log_prob_ally = torch.zeros(batch_size, device=fixed.device)
+        ent_ally = torch.zeros(batch_size, device=fixed.device)
 
         log_prob_enm = enm_dist.log_prob(enm_idx)
-        log_prob_ally = ally_dist.log_prob(ally_idx)
 
         # 两个选择分布的熵（mask 槽位 logits=-inf，p=0 对熵无贡献），供 evaluate 组装 H(enm)+H(ally)
         ent_enm = enm_dist.entropy()
-        ent_ally = ally_dist.entropy()
 
-        # enm_keys: (B, enm_num, embed_dim)
-        # enm_idx: (B,) -> reshape (-1,1,1) -> (B,1,1) -> expand -> (B, 1, embed_dim)
-        # gather(1, ...): 沿 seq_len 维取被选中的实体嵌入 -> (B, 1, embed_dim)
-        # squeeze(1) -> e_enm: (B, embed_dim)
-        e_enm = enm_keys.gather(1, enm_idx.reshape(-1, 1, 1).expand(-1, 1, self.embed_dim)).squeeze(1)
-        e_ally = ally_keys.gather(1, ally_idx.reshape(-1, 1, 1).expand(-1, 1, self.embed_dim)).squeeze(1)
+        # 直接从原值 gather（不再从 key_proj 投影后的值 gather）
+        e_enm = e_e_prime.gather(1, enm_idx.reshape(-1, 1, 1).expand(-1, 1, self.embed_dim)).squeeze(1)
 
-        
         # selected_info: concat((B, d), (B, d), (B, d)) -> (B, 3*d)
         # e_f' 直接输出给 pilot，e_e'/e_a' 经交叉注意力选中后切片输出给 pilot
         selected_info = torch.cat((query_state, e_enm, e_ally), dim=-1)
