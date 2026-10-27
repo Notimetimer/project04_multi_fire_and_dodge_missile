@@ -353,7 +353,7 @@ class aim9x:
 
         # 矢量方程，脱锁处理
         if off_lock:
-            aN_target_required_ = self.aN_target_required_
+            aN_target_required_ = np.zeros(3) # self.aN_target_required_
         else:
             self.aN_target_required_ = aN_target_required_
         aN1_ = aN_target_required_ + aN_course_required_
@@ -583,17 +583,17 @@ if __name__ == '__main__':
     i_list = np.arange(0, int(t_max / dt), 1)
     t_range = np.round(i_list * dt, 2)
 
-    # 平射
-    p_carrier_ = np.array([0, 5e3, 0])
-    v_carrier_ = np.array([300, 0, 0])
-    list_pt_ = np.array([14e3, 5e3, 0e3])  # 目标
-    list_vt_ = np.array([300, 0, 0])
+    # # 平射
+    # p_carrier_ = np.array([0, 5e3, 0])
+    # v_carrier_ = np.array([300, 0, 0])
+    # list_pt_ = np.array([14e3, 5e3, 0e3])  # 目标
+    # list_vt_ = np.array([300, 0, 0])
 
-    # # 抛射
-    # p_carrier_ = np.array([0, 11e3, 0])
-    # v_carrier_ = np.array([cos(pi/6), sin(pi/6), 0]) * 1.2 *340
-    # list_pt_ = np.array([140e3, 9e3, 0])  # 目标 3e3
-    # list_vt_ = np.array([-300, 0, 40])
+    # 抛射
+    p_carrier_ = np.array([0, 11e3, 0])
+    v_carrier_ = np.array([cos(pi/6), sin(pi/6), 0]) * 1.2 *340
+    list_pt_ = np.array([10e3, 9e3, 0])  # 目标 3e3
+    list_vt_ = np.array([-300, 0, 40])
 
     missile_used = 0
     hit = False
@@ -670,7 +670,7 @@ if __name__ == '__main__':
                     #     pass
                     #     # 假定目标在dt的时间内线性运动，导弹可以以更细分的时间取得观测信息和机动决策
 
-                    hit, _, _ = hit_target(pmt_, vmt_, ptt_, vtt_)
+                    hit, _, _ = hit_target(pmt_, vmt_, ptt_, vtt_, kill_range=missile1.kill_range)
                     if hit:
                         print('Target hit')
                         missile1.dead = True
