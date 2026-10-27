@@ -1093,6 +1093,12 @@ class Battle(object):
         # [存活、相对方位、相对俯仰角、相对距离、速度、航向角、俯仰角]*数量
         ally_uavs = [uav for uav in ego_side_uavs if uav is not ego]
         for ally in ally_uavs:
+            # 死队友直接塞填充值，不浪费计算量
+            if ally.dead: 
+                ally.radar_on = 0
+                ally_infos.append(self.state_init_mod["ally_info"].copy())
+                continue
+            
             # 相对方位角
             L_ = ally.pos_ - ego.pos_
             q_beta = atan2(L_[2], L_[0])
@@ -1110,8 +1116,6 @@ class Battle(object):
             v_ally = ally.speed
             # 队友俯仰角
             theta_ally = ally.theta
-            
-            if ally.dead: ally.radar_on = 0
 
             one_ally_info = {
                 'radar_on': float(ally.radar_on),
@@ -1136,6 +1140,13 @@ class Battle(object):
         enm_info_supplement = []
         enm_uavs = self.RUAVs if ego_side =='b' else self.BUAVs
         for enm in enm_uavs:
+            # 死目标直接塞填充值，不浪费计算量
+            if enm.dead:
+                enm.radar_on=0
+                enm_infos.append(self.state_init_mod["enm_info"].copy())
+                enm_info_supplement.append(self.state_init_mod["enm_info_supplement"].copy())
+                continue
+            
             # 相对方位角
             L_ = enm.pos_ - ego.pos_
             q_beta = atan2(L_[2], L_[0])
@@ -1183,7 +1194,7 @@ class Battle(object):
             else:
                 locked_by_enm = 0
 
-            if enm.dead: enm.radar_on=0
+            
             enm_infos.append({
                 'enm_observable': float(enm_observable),
                 'enm_locked': float(enm_locked),
