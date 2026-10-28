@@ -302,6 +302,11 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                 draw = outcome == 0
                 all_dead = all(uav.dead for uav in env.UAVs)
 
+                # 汇总所有飞机的开火样本
+                fire_hit_records = []
+                for uav in env.UAVs:
+                    fire_hit_records += uav.fire_hit_records
+                
                 pipe.send({
                     'trans': stacked_trans,
                     'metrics': {
@@ -315,6 +320,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                         'BVR_perish_together': all_dead and env.t <= args.max_episode_len - 10,
                     },
                     'opp_name': opp_name,
+                    'fire_hit_records': fire_hit_records,
                 })
             elif cmd == 'EXIT':
                 break
@@ -558,6 +564,29 @@ def run_MLP_simulation(
                              'next_states': [], 'rewards': [], 'dones': [], 'active_masks': []}
     transition_dicts = {uid: copy.deepcopy(empty_transition_dict) for uid in red_student_ids}
 
+    # 开火记录滚动缓冲：跨 batch 累积（FIFO 逐条覆盖），不随 transition_dict 清空重记录
+    fire_records_buffer = collections.deque(maxlen=int(supervised_fire_buffer_size))
+    # 若中断续训，恢复已保存的开火监督 buffer
+    fire_buffer_path = os.path.join(log_dir, "fire_records_buffer.pkl")
+    if os.path.exists(fire_buffer_path):
+        try:
+            with open(fire_buffer_path, "rb") as f:
+                fb_data = pickle.load(f)
+            if isinstance(fb_data, dict):
+                loaded_records = fb_data.get("records", [])
+                loaded_maxlen = fb_data.get("maxlen", int(supervised_fire_buffer_size))
+            elif isinstance(fb_data, collections.deque):
+                loaded_records = list(fb_data)
+                loaded_maxlen = fb_data.maxlen
+            else:
+                loaded_records = list(fb_data)
+                loaded_maxlen = int(supervised_fire_buffer_size)
+            fire_records_buffer.clear()
+            fire_records_buffer.extend(loaded_records[-loaded_maxlen:])
+            print(f"Loaded fire records buffer from {fire_buffer_path}. Size: {len(fire_records_buffer)}")
+        except Exception as e:
+            print(f"Failed to load fire records buffer: {e}")
+    
     # 基于胜率的在线 EMA
     ema_score = 0.5
     ema_step = 0
@@ -728,6 +757,7 @@ def run_MLP_simulation(
             batch_loss_cnt = 0
             batch_draw_cnt = 0
             batch_bvr_perish_together_cnt = 0
+            batch_fire_supervised = 0
             batch_total_return = 0
             batch_return_by_id = {uid: 0 for uid in red_student_ids} # 个体回报累加器
 
@@ -745,7 +775,7 @@ def run_MLP_simulation(
                 for uid, r_id in metrics.get('return_by_id', {}).items():
                     if uid in batch_return_by_id:
                         batch_return_by_id[uid] += r_id
-                if metrics.get('BVR_perish_together', False) == 1:
+                if metrics.get('BVR_perish_together', False):
                     batch_bvr_perish_together_cnt += 1
 
                 if metrics['win']: batch_wins += 1
@@ -759,6 +789,11 @@ def run_MLP_simulation(
                     for k in transition_dicts[uid]:
                         transition_dicts[uid][k] = merge_transition_tree(transition_dicts[uid][k], uid_trans[k])
 
+                # [新增] 收集本回合已结算的开火命中记录，直接拼接入滚动缓冲
+                fire_records = [r for r in res.get('fire_hit_records', []) if r.get('hit_record') is not None]
+                fire_records_buffer.extend(fire_records)
+                batch_fire_supervised += len(fire_records)
+                
                 # ELO 更新
                 actual_score = 0.5
                 if metrics['win']: actual_score = 1.0
@@ -845,7 +880,15 @@ def run_MLP_simulation(
                     # 记录未禁火 mask 内的开火概率极值（全队共享策略，单条曲线）
                     logger.add("train/12 max_fire_prob", m.get('fire_prob_max', float('nan')), total_steps/action_cycle_multiplier)
                     logger.add("train/13 min_fire_prob", m.get('fire_prob_min', float('nan')), total_steps/action_cycle_multiplier)
-
+                    
+                # [新增] 开火命中监督更新：从滚动缓冲采样，仅更新 actor.net.fc_bern，不影响机动策略
+                if use_supervised_fire and len(fire_records_buffer) > 100: #  and\
+                    fire_sl_batch = random.sample(list(fire_records_buffer), min(int(supervised_fire_batch_size), len(fire_records_buffer)))
+                    agent.supervised_fire_update(fire_sl_batch, epochs=1, batch_size=int(supervised_fire_batch_size), fire_lr_ratio=1)
+                    logger.add("train_plus/supervised_fire_buffer_size", len(fire_records_buffer), total_steps)
+                    logger.add("train_plus/supervised_fire_samples", batch_fire_supervised, total_steps)
+                    logger.add("train/supervised_fire_loss", getattr(agent, 'last_supervised_fire_loss', 0.0), total_steps)
+    
                 print(f"Step {total_steps}: Batch WinRate {batch_wins}/{num_workers}, ELO {main_agent_elo:.0f}")
 
                 # A. 保存模型（同构单份，无 _uid 后缀）
@@ -983,6 +1026,14 @@ def run_MLP_simulation(
                     'critic_optimizer': agent.critic_optimizer.state_dict(),
                 }
                 torch.save(opt_save, os.path.join(log_dir, "optimizers_state.pt"))
+                
+                # 保存开火监督数据 buffer
+                if use_supervised_fire:
+                    fire_buffer_path = os.path.join(log_dir, "fire_records_buffer.pkl")
+                    with open(fire_buffer_path, "wb") as f:
+                        pickle.dump({"records": list(fire_records_buffer), "maxlen": fire_records_buffer.maxlen}, f)
+                    print(f"Saved fire records buffer to {fire_buffer_path}. Size: {len(fire_records_buffer)}")
+
 
                 elo_ratings["__LAST_UPDATE_STEP__"] = total_steps
                 elo_ratings["__LAST_UPDATE_BATCH__"] = batch_idx

@@ -48,7 +48,7 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
         MSL_LOCK_WEIGHT = 5         # 导弹锁定
         MISS_WEIGHT = -5            # 脱靶
         ESCAPE_ONCE_WEIGHT = 5      # 逃脱一次
-        FOX3 = -3 # -5                   # 开火惩罚
+        FOX3 = -5                   # 开火惩罚
         
         # 各个分项总奖励
         reward_dict = {
@@ -273,7 +273,7 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 reward_dict["event"] += KILL_WEIGHT
             if getattr(ego, 'whole_cycle_got_a_miss', 0):
                 events_this_cycle.append('导弹脱靶')
-                reward_dict["event"] += MISS_WEIGHT
+                reward_dict["event"] += MISS_WEIGHT * max(0.3, 1-(1-0.3)/(4-1)*ego.ammo)
             if getattr(ego, 'whole_cycle_escape_once', 0):
                 events_this_cycle.append('逃脱导弹攻击')
                 reward_dict["event"] += ESCAPE_ONCE_WEIGHT
@@ -293,7 +293,7 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             if ego.ammo < ego.last_ammo_whole_cycle:
                 current_target_id = ego.launched_aim120s[-1].target_id
                 events_this_cycle.append(f'向{current_target_id}开火')
-                reward_dict["event"] += FOX3
+                reward_dict["event"] += FOX3 * max(0.3, 1-(1-0.3)/(4-1)*ego.ammo)
                 ego.last_ammo_whole_cycle = ego.ammo
 
                  # [新增] 开火记录：快照当前观测，登记最新发射的导弹，等待命中/脱靶回填

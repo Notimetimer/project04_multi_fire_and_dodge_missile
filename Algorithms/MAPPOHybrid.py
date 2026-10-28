@@ -191,3 +191,82 @@ class MAPPOHybrid:
             'samples': ppo_samples_total,
             'valid_samples': ppo_valid_samples_total,
         }
+
+    # 调用evaluate_
+    def supervised_fire_update(self, fire_batch, epochs=1, batch_size=128, max_grad_norm=2.0, fire_lr_ratio=1.0):
+        """用回合结束后收集的 fire_obs/enm_idx/hit_record 样本有监督更新开火分支。
+
+        参考 PPOHybrid23_0.supervised_fire_update：切断开火分支之前的所有梯度——
+        更新前冻结 actor 全部参数、仅放行 pilot.fire_head，并只对 fire_head 建优化器，
+        因此 selector/pilot.backbone/机动头均不受该更新影响。
+        损失由 ActorWithATTN.ActorWrapper.evaluate_fire 计算（BCE-with-logits，带梯度）。
+
+        Args:
+            fire_batch: record 列表，每条含 fire_obs(dict: fixed/enm/ally)、enm_idx、hit_record(0/1)；
+                        也兼容已打包的 dict（fire_obs/enm_idx/hit_record 三组键）
+            fire_lr_ratio: 本次更新学习率相对 fire_head_optimizer 当前 lr 的缩放系数
+        """
+        # 解析样本：record 列表拆成三组同序序列；已打包 dict 直接取
+        if isinstance(fire_batch, dict):
+            fire_obs = fire_batch.get('fire_obs', fire_batch.get('states'))
+            enm_idx = fire_batch.get('enm_idx')
+            labels = fire_batch.get('hit_record', fire_batch.get('labels'))
+        else:
+            records = list(fire_batch or [])
+            fire_obs = [r.get('fire_obs', r.get('state')) for r in records]
+            enm_idx = [r.get('enm_idx') for r in records]
+            labels = [r.get('hit_record', r.get('label')) for r in records]
+        if fire_obs is None or enm_idx is None or labels is None or len(fire_obs) == 0:
+            self.last_supervised_fire_loss = 0.0
+            return 0.0
+
+        # list[dict] -> dict-of-arrays（与 worker 侧 stack_field 同一语义，逐键堆叠）
+        if not isinstance(fire_obs, dict) and isinstance(fire_obs[0], dict):
+            fire_obs = {k: np.stack([o[k] for o in fire_obs]) for k in fire_obs[0]}
+        fire_obs = {k: np.asarray(v) for k, v in fire_obs.items()}
+        enm_idx = np.asarray(enm_idx)
+        labels = np.asarray(labels, dtype=np.float32)
+
+        n = len(labels)
+        if fire_obs['fixed'].shape[0] != n or len(enm_idx) != n:
+            raise ValueError('fire_obs/enm_idx/hit_record must have the same length')
+
+        # 懒创建开火头优化器（首次调用时以 actor 当前 lr 为基准，只含 fire_head 参数）
+        if getattr(self, 'fire_head_optimizer', None) is None:
+            base_lr = self.actor_optimizer.param_groups[0]['lr']
+            self.fire_head_optimizer = torch.optim.Adam(self.actor.pilot.fire_head.parameters(), lr=base_lr)
+
+        # ── 缩放学习率 ────────────────────────────────────────────────────────
+        current_fire_lr = self.fire_head_optimizer.param_groups[0]['lr']
+        self.fire_head_optimizer.param_groups[0]['lr'] = current_fire_lr * fire_lr_ratio
+
+        # ── 切断开火分支之前的梯度：冻结 actor 全部参数，仅放行 fire_head ──
+        params = list(self.actor.parameters())
+        old_requires_grad = [p.requires_grad for p in params]
+        for p in params:
+            p.requires_grad_(False)
+        for p in self.actor.pilot.fire_head.parameters():
+            p.requires_grad_(True)
+
+        losses = []
+        mb_size = max(1, min(int(batch_size), n))
+        for _ in range(max(1, int(epochs))):
+            order = np.random.permutation(n)
+            for start in range(0, n, mb_size):
+                idx = order[start:start + mb_size]
+                mb_obs = {k: v[idx] for k, v in fire_obs.items()}
+                loss = self.actor.evaluate_fire(mb_obs, enm_idx[idx], labels[idx])
+                self.fire_head_optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.actor.pilot.fire_head.parameters(), max_grad_norm)
+                self.fire_head_optimizer.step()
+                losses.append(float(loss.detach().cpu()))
+
+        for p, requires_grad in zip(params, old_requires_grad):
+            p.requires_grad_(requires_grad)
+
+        # ── 还原学习率 ────────────────────────────────────────────────────────
+        self.fire_head_optimizer.param_groups[0]['lr'] = current_fire_lr
+
+        self.last_supervised_fire_loss = float(np.mean(losses)) if losses else 0.0
+        return self.last_supervised_fire_loss

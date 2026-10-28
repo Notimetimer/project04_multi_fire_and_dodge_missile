@@ -479,7 +479,70 @@ class ActorWrapper(nn.Module):
             'fire_prob_max': fire_prob_max,
             'fire_prob_min': fire_prob_min,
         }
+        
+    def evaluate_fire(self, agent_inputs, enm_idx, hit,
+                      mask_inputs=None, rule_inputs=None, ally_idx=0, reduction='mean'):
+        """有监督开火头：按历史观测 + 当时选中的敌机，重算开火概率并与命中标签取交叉熵。
 
+        每条样本的原子输入是 (obs, enm_idx)，标签是 hit（命中=1 / 脱靶=0）。
+        返回值是**带梯度**的二元交叉熵损失张量，梯度会经 fire_head 一路回传到
+        selected_info，因此调用方可自行决定冻结哪些模块。
+
+        mask_inputs / rule_inputs 缺省时的处理：
+          - mask_inputs=None：认为所有敌机/队友槽位都有效（阵容占位槽位也会参与注意力）；
+          - rule_inputs=None：跳过 pilot 的三条禁火规则。监督样本都取自"真实开火"时刻，
+            此刻 不可攻击/刚发射/无弹 三条规则的 delta 恒为 0，故原始 logit 与部署时等价。
+        ally_idx 缺省时由 selector 内部采样（记录里没存队友选择，因此该维度带随机性）。
+        """
+        device = self.device
+        fixed = torch.as_tensor(agent_inputs['fixed'], dtype=torch.float32, device=device)
+        enm = torch.as_tensor(agent_inputs['enm'], dtype=torch.float32, device=device)
+        ally = torch.as_tensor(agent_inputs['ally'], dtype=torch.float32, device=device)
+        # 单样本输入自动补 batch 维，保持与 evaluate_actions 一致的批量语义
+        if fixed.ndim == 1:
+            fixed = fixed.unsqueeze(0)
+        if enm.ndim == 2:
+            enm = enm.unsqueeze(0)
+        if ally.ndim == 2:
+            ally = ally.unsqueeze(0)
+        batch_size = fixed.shape[0]
+
+        enm_idx = torch.as_tensor(np.asarray(enm_idx), dtype=torch.long, device=device).reshape(-1)
+        hit = torch.as_tensor(np.asarray(hit), dtype=torch.float32, device=device).reshape(-1)
+        if enm_idx.numel() != batch_size or hit.numel() != batch_size:
+            raise ValueError('enm_idx/hit 长度必须等于观测 batch：%d/%d vs %d'
+                             % (enm_idx.numel(), hit.numel(), batch_size))
+
+        if mask_inputs is None:
+            enm_mask = torch.ones(batch_size, self.enm_num, dtype=torch.bool, device=device)
+            ally_mask = torch.ones(batch_size, self.ally_num, dtype=torch.bool, device=device)
+        else:
+            enm_mask = torch.as_tensor(np.asarray(mask_inputs['enm']), dtype=torch.bool, device=device)
+            ally_mask = torch.as_tensor(np.asarray(mask_inputs['ally']), dtype=torch.bool, device=device)
+            if enm_mask.ndim == 1:
+                enm_mask = enm_mask.unsqueeze(0).expand(batch_size, -1)
+            if ally_mask.ndim == 1:
+                ally_mask = ally_mask.unsqueeze(0).expand(batch_size, -1)
+
+        rule_inputs = {} if rule_inputs is None else rule_inputs
+        ally_idx = (None if ally_idx is None else
+                    torch.as_tensor(np.asarray(ally_idx), dtype=torch.long, device=device).reshape(-1))
+
+        # 复用 evaluate_actions 路径：enm_idx 由外部给定、不重新采样，保证"当时选了谁"可回放
+        selected_info, _, _, mini_rule_inputs, _, _, _, _ = self.selector(
+            {'fixed': fixed, 'enm': enm, 'ally': ally},
+            {'enm': enm_mask, 'ally': ally_mask},
+            rule_inputs, enm_idx=enm_idx, ally_idx=ally_idx,
+        )
+
+        if rule_inputs:
+            fire_logits = self.pilot(selected_info, mini_rule_inputs)['fire'][:, 0]
+        else:
+            # 只走 fire 分支，不构造 vert/hor 分布，省掉无用计算
+            fire_logits = self.pilot.fire_head(self.pilot.backbone(selected_info))[:, 0]
+
+        return F.binary_cross_entropy_with_logits(fire_logits, hit, reduction=reduction)
+    
     def save(self, path='actor.pt'):
         torch.save({
             'selector': self.selector.state_dict(),
