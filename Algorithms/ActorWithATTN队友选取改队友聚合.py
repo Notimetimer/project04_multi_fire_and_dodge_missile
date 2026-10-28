@@ -170,15 +170,17 @@ class selector(nn.Module):
         e_e = self.enm_embed(enm)                     # (B, Ne, d)
         e_a = self.ally_embed(ally)                   # (B, Na, d)
 
+        # enm_chosen 残差支路：存在时 (B, Ne, 1) * (1, d) 广播为 (B, Ne, d) 叠加到 e_e；
+        # 放在 het_attn 之前，让“已被队友选中”经由 Q/K/V 参与实体间交互；缺省走原计算图
+        enm_chosen = agent_inputs.get('enm_chosen')
+        if enm_chosen is not None:
+            e_e = e_e + enm_chosen * self.enm_chosen_embed
+
         # 异构自注意力：三类实体在统一序列上交互，输出 e_f'/e_e'/e_a'
         e_f_prime, e_e_prime, e_a_prime = self.het_attn(e_f, e_e, e_a, enm_mask, ally_mask)
 
         # e_f' 作为两路交叉注意力的 query（squeeze seq 维），e_e'/e_a' 分别作为 key/value 源
         query_state = e_f_prime.squeeze(1)  # (B, d)
-        # enm_chosen 残差支路：存在时 (B, Ne, 1) * (1, d) 广播为 (B, Ne, d) 叠加到 e_e_prime；缺省走原计算图
-        enm_chosen = agent_inputs.get('enm_chosen')
-        if enm_chosen is not None:
-            e_e_prime = e_e_prime + enm_chosen * self.enm_chosen_embed
         # 池化层只负责产生分数，调用方直接从原值切片
         enm_scores = self.enm_attn(query_state, e_e_prime, enm_mask)
         # 队友信息需要本机query（QKV 交叉注意力加权聚合为单一嵌入，不做离散选取）
@@ -372,6 +374,13 @@ class ActorWrapper(nn.Module):
         fixed = self._to_tensor(agent_inputs['fixed'], torch.float32, (self.fixed_dim,))
         enm = self._to_tensor(agent_inputs['enm'], torch.float32, self.enm_shape)
         ally = self._to_tensor(agent_inputs['ally'], torch.float32, self.ally_shape)
+        # enm_chosen: (N,) -> (B, N, 1)，与 enm_chosen_embed 的 (1, d) 广播成 (B, N, d)；
+        # 环境未提供时用全 0 兜底，此时残差支路输出恒为 0，与原计算图等价
+        enm_chosen = np.asarray(
+            agent_inputs.get('enm_chosen', np.zeros(self.enm_num, dtype=np.float32)), dtype=np.float32
+        ).reshape(-1)
+        enm_chosen = torch.as_tensor(enm_chosen, dtype=torch.float32, device=self.device)
+        enm_chosen = enm_chosen.reshape(1, -1, 1).expand(fixed.shape[0], -1, 1)
 
         enm_mask = np.asarray(mask_inputs.get('enm', []), dtype=bool).reshape(-1)
         if enm_mask.size == 0:
@@ -388,7 +397,7 @@ class ActorWrapper(nn.Module):
             ally_mask = ally_mask.unsqueeze(0).expand(fixed.shape[0], -1)
 
         return (
-            {'fixed': fixed, 'enm': enm, 'ally': ally},
+            {'fixed': fixed, 'enm': enm, 'ally': ally, 'enm_chosen': enm_chosen},
             {'enm': enm_mask, 'ally': ally_mask},
         )
 
@@ -440,6 +449,16 @@ class ActorWrapper(nn.Module):
         ally_mask = torch.as_tensor(np.asarray(mask_inputs['ally']), dtype=torch.bool, device=device)
         packed_agent = {'fixed': fixed, 'enm': enm, 'ally': ally}
         packed_mask = {'enm': enm_mask, 'ally': ally_mask}
+
+        # 回放同样要带上 enm_chosen（B, N），否则采样时有残差支路、更新时没有，新旧策略比率会失真
+        enm_chosen = agent_inputs.get('enm_chosen') if isinstance(agent_inputs, dict) else None
+        if enm_chosen is not None:
+            if not torch.is_tensor(enm_chosen):
+                enm_chosen = torch.as_tensor(np.asarray(enm_chosen), dtype=torch.float32, device=device)
+            enm_chosen = enm_chosen.to(device=device, dtype=torch.float32)
+            if enm_chosen.ndim == 1:
+                enm_chosen = enm_chosen.unsqueeze(0)
+            packed_agent['enm_chosen'] = enm_chosen.unsqueeze(-1)  # (B, N, 1)
 
         # 回放动作键：vert / hor / fire / enm_idx / ally_idx（与采集脚本 last_Actions 一致）
         enm_idx = torch.as_tensor(actions['enm_idx'], dtype=torch.long, device=device)

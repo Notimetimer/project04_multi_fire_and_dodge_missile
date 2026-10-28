@@ -1,0 +1,16 @@
+{
+  "初始弹药数：":{},
+  "red_init_ammo":  4,
+  "blue_init_ammo": 4,
+
+  "环境内飞机数：":{},
+  "red_init_num":   2,
+  "blue_init_num":  2,
+
+  "初始可用飞机数":{},
+  "red_alive_num":  1,
+  "blue_alive_num": 1,
+  
+  "围栏设置":{},
+  "vertices": [[60e3, 60e3], [-60e3, 60e3], [-60e3, -60e3], [60e3, -60e3]]
+}

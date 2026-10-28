@@ -180,6 +180,7 @@ class ChooseStrategyEnv(Battle):
         information_output['fixed'] = flatten_fixed_obs(full_obs)
         information_output['ally'] = ally_array
         information_output['enm'] = enm_array
+        information_output['enm_chosen'] = np.zeros(len(enm_array)) # 占位符，真正填入数据只能在主循环里
         mask_output['ally'] = mask_ally
         mask_output['enm'] = mask_enm
 

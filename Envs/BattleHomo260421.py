@@ -415,18 +415,12 @@ class Battle(object):
             init_states = json.load(f)
         red_alive_num = init_states.get('red_alive_num', self.Rnum)
         blue_alive_num = init_states.get('blue_alive_num', self.Bnum)
-        # 击杀选取复用 seed 机制保证可复现：与位置打乱的 Random 实例相互独立，+2 偏移避免同种子同源
-        if seed is None:
-            red_kill_rng, blue_kill_rng = random, random
-        else:
-            red_seed, blue_seed = seed if isinstance(seed, (tuple, list)) else (seed, seed + 1)
-            red_kill_rng = random.Random(red_seed + 2)
-            blue_kill_rng = random.Random(blue_seed + 2)
-        for side_uavs, alive_num, kill_rng in ((self.RUAVs, red_alive_num, red_kill_rng),
-                                               (self.BUAVs, blue_alive_num, blue_kill_rng)):
+        # 击杀选取改为确定性：按 id 升序保留、id 最大的先杀，存活结果与随机种子无关
+        for side_uavs, alive_num in ((self.RUAVs, red_alive_num),
+                                     (self.BUAVs, blue_alive_num)):
             kill_num = len(side_uavs) - alive_num
             if kill_num > 0:
-                for uav in kill_rng.sample(side_uavs, kill_num):
+                for uav in sorted(side_uavs, key=lambda u: u.id, reverse=True)[:kill_num]:
                     uav.dead = 1
                     uav.radar_on = 0
         # reset后、首个step前就填充存活列表，保证决策循环可访问 alive_*_uavs
@@ -595,6 +589,8 @@ class Battle(object):
             new_missile.side = side
             new_missile.launcher_id = source_id
             new_missile.target_id = target_id
+            new_missile.init_target_id = target_id
+            new_missile.hit_supposed = False
             if side == 'r':
                 self.Rmissiles.append(new_missile)
                 self.r_missile_count += 1
@@ -622,6 +618,8 @@ class Battle(object):
             new_missile.side = side
             new_missile.launcher_id = source_id
             new_missile.target_id = target_id
+            new_missile.init_target_id = target_id
+            new_missile.hit_supposed = False
             if side == 'r':
                 self.Rmissiles.append(new_missile)
                 self.r_missile_count += 1
@@ -882,6 +880,8 @@ class Battle(object):
                         print(target.side, 'is hit')
                         missile.dead = True
                         missile.hit = True
+                        if target.id == missile.init_target_id:
+                            missile.hit_supposed = True
                         missile.pos_ = point_m
                         missile.vel_ = last_vmt_
                         target.pos_ = point_t
