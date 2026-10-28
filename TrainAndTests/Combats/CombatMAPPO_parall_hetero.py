@@ -6,6 +6,7 @@
 import typing
 import os
 import sys
+import csv
 import numpy as np
 import pickle
 import torch
@@ -35,9 +36,10 @@ from VsBaseline_MA import test_worker
     
 dt_move = 0.04
 
-# 测试对战初始弹药（可调）
-test_red_init_ammo = 6
-test_blue_init_ammo = 6
+# 测试对战初始弹药：统一从 init_states.json 读取，避免硬编码与训练配置脱节
+_init_cfg = load_init_states()
+red_init_ammo = _init_cfg['red_init_ammo']
+blue_init_ammo = _init_cfg['blue_init_ammo']
 
 # 周期性测试所对抗的规则对手编号 (仅测试 0, 1, 2, 3)
 TEST_RULE_IDS = [0, 1, 2, 3]
@@ -66,110 +68,7 @@ def summarize(il_dict):
         else:
             print(f"  {k}: shape={getattr(v, 'shape', 'Unknown')}")
 
-
-
-# calculate_expected_score 概率计算
-
-def calculate_expected_score(player_elo, opponent_elo):
-    """计算期望得分"""
-    return 1 / (1 + 10 ** ((opponent_elo - player_elo) / 400)) # 这个数是约定俗成的,别改
-
-def update_elo(player_elo, opponent_elo, score, K_FACTOR):
-    """更新ELO分数. score: 1 for win, 0 for loss, 0.5 for draw."""
-    expected = calculate_expected_score(player_elo, opponent_elo)
-    return player_elo + K_FACTOR * (score - expected)
-
-
-def get_opponent_probabilities(elite_elo_ratings, hall_of_fame=None,
-                               target_elo=None, sigma=400, SP_type='PFSP_with_delta',
-                               compete_old_rate=0.5, deltaFSP_epsilon=0.5,):
-    """
-    优化后的对手采样逻辑：
-    1. 优先判定是否进入“规则复习”分支。
-    2. 若未进入，则根据 SP_type 执行具体的采样策略。
-    """
-    # 【核心修改】在函数内部合并出一个临时的全集字典用于查询分数
-    # 这样 keys 里的任何元素都能在这里找到对应的 ELO
-    
-    if hall_of_fame is not None:
-        candidate_pool = hall_of_fame.copy()
-        candidate_pool.update(elite_elo_ratings)
-    else:
-        candidate_pool = elite_elo_ratings
-    keys = list(candidate_pool.keys())
-    
-    if not keys: return np.array([]), []
-
-    #  第一层判断：规则复习分支 (Epsilon-Greedy 锚点保护)
-    # 只要 compete_old_rate > 0，就有概率强行进入规则池采样，防止“策略遗忘”
-    rule_keys = [k for k in keys if k.startswith('Rule')]
-    if np.random.rand() < compete_old_rate and rule_keys:
-        probs = np.ones(len(rule_keys)) / len(rule_keys)
-        return probs, rule_keys
-    
-    #  第二层判断：进入核心采样逻辑
-    # 【核心修改】统一从 candidate_pool 取分，彻底避免 KeyError
-    elos = np.array([candidate_pool[k] for k in keys], dtype=np.float64)
-    
-    # 1. 处理 PFSP 系列 (高斯核采样)
-    if SP_type.startswith('PFSP'):
-        if SP_type == 'PFSP_challenge':
-            actual_target = min(np.max(elos), float(target_elo) + 300)
-        elif SP_type == 'PFSP_balanced' or SP_type == 'PFSP_with_delta':
-            actual_target = float(target_elo) if target_elo is not None else np.mean(elos)
-        else: # 默认通用的 'PFSP' 逻辑
-            actual_target = float(target_elo) if target_elo is not None else np.mean(elos)
-            # # 你之前的逻辑：取 0.5 均值 + 0.5 最大值，作为一个偏向挑战的平衡点
-            # actual_target = 0.5 * (float(target_elo) if target_elo is not None else np.mean(elos)) + 0.5 * np.max(elos)
-        
-        diffs = elos - actual_target
-        scores = np.exp(-0.5 * (diffs / float(sigma))**2)
-        probs = scores / (scores.sum() + 1e-12)
-        return probs, keys
-
-    # 2. 处理 FSP (全样本均匀分布)
-    elif SP_type == 'FSP':
-        probs = np.ones(len(keys)) / len(keys)
-        return probs, keys
-
-    # 3. 处理 deltaFSP (新旧池切分)
-    elif SP_type == 'deltaFSP':
-        n = len(keys)
-        new_count = max(1, int(np.ceil(n * 0.2)))
-        new_keys = keys[-new_count:]
-        old_keys = keys[:-new_count]
-        
-        # 这里的 deltaFSP_epsilon 建议直接作为参数传入或使用全局变量
-        if np.random.rand() < float(deltaFSP_epsilon) or not old_keys:
-            target_keys = new_keys
-        else:
-            target_keys = old_keys
-            
-        probs = np.ones(len(target_keys)) / len(target_keys)
-        return probs, target_keys
-
-    # 4. 处理 SP (最新历史版本)
-    elif SP_type == 'SP':
-        # rein_keys = [k for k in keys if k.startswith('actor_rein') and '_step_' not in k]
-        # 严格匹配 actor_rein + 数字
-        rein_keys = [k for k in keys if re.match(r'^actor_rein\d+$', k)]
-        if not rein_keys: return np.array([]), []
-        
-        def extract_number(k):
-            # try: return int(k.replace('actor_rein', ''))
-            # except: return -1
-            try: return int(re.search(r'actor_rein(\d+)', k).group(1))
-            except: return -1
-            
-        best_key = max(rein_keys, key=extract_number)
-        return np.array([1.0]), [best_key]
-
-    # 5. 兜底逻辑: Rule 均匀采样 (None)
-    else:
-        if not rule_keys: return np.array([]), []
-        probs = np.ones(len(rule_keys)) / len(rule_keys)
-        return probs, rule_keys
-
+from SelfPlayCalculation import calculate_expected_score, update_elo, get_opponent_probabilities
 
 # 辅助：需要把 create_initial_state 定义在 worker 能访问的地方，或者 copy 进去
 def create_initial_state_worker(randomized=0):
@@ -179,16 +78,24 @@ def create_initial_state_worker(randomized=0):
     if np.random.uniform(0,1) < 0.2 and int(randomized): # 以很低概率在更大的范围随机初始高度
         blue_height = np.random.uniform(4000.0, 12000.0)
     red_height = blue_height
-    # 初始航向随机化
-    red_psi = sub_of_radian(np.pi/2 + np.random.uniform(-np.pi*1/4, np.pi*1/4))
-    blue_psi = sub_of_radian(-np.pi/2 + np.random.uniform(-np.pi*1/4, np.pi*1/4))
+    
     init_North = np.random.uniform(-20e3, 20e3) * int(randomized)
+    # 红方初始化
     red_N = init_North
     red_E = - 55e3 # 45e3
+    red_psi = sub_of_radian(np.pi/2 + np.random.uniform(-np.pi*1/4, np.pi*1/4))
     if np.random.uniform(0,1) < 0.2: # 以低概率随机初始距离
-        red_E = np.random.uniform(40e3,55e3)
+        red_E = np.random.uniform(-40e3, -55e3)
+    # 蓝方对称初始化
     blue_N = init_North
-    blue_E = -red_E
+    blue_E = - red_E
+    blue_psi = sub_of_radian(-np.pi/2 + np.random.uniform(-np.pi*1/4, np.pi*1/4))
+    if np.random.uniform(0,1) < 0.5: # 随机换边
+        red_E = - red_E
+        blue_E = - blue_E
+        red_psi = - red_psi
+        blue_psi = - blue_psi
+
     DEFAULT_RED_BIRTH_STATE = {'position': np.array([red_N, red_height, red_E]),
                             'psi': red_psi
                             }
@@ -459,6 +366,11 @@ def run_MLP_simulation(
     device=torch.device("cpu"),
     vertices=None,
     resume_dir=None,
+    use_supervised_fire = 0, # [新增] 开火命中监督更新开关：仅用 fire_obs->hit_record 监督 fc_bern 头
+    supervised_fire_buffer_size = 1000, # [新增] 开火记录滚动缓冲容量（FIFO，像off-policy一样滚动更新）
+    supervised_fire_batch_size = 128, # [新增] 每次监督更新从缓冲中采样的批大小
+    ppo_with_bern = 1, # [新增] 0 时 PPO 更新跳过开火头 fc_bern（log_prob 不计入 bern 项）
+    sup_on_prob_ratio = 10, # 有监督辅助开关
 ):
     """多智能体 MAPPO 训练主函数。
     异构：每个 UAV id 维护独立的 ActorWrapper/critic_wrapper/MAPPOHybrid。
@@ -686,8 +598,8 @@ def run_MLP_simulation(
                             'action_cycle_multiplier': action_cycle_multiplier,
                             'red_init_num': red_init_num,
                             'blue_init_num': blue_init_num,
-                            'red_init_ammo': test_red_init_ammo,
-                            'blue_init_ammo': test_blue_init_ammo,
+                            'red_init_ammo': red_init_ammo,
+                            'blue_init_ammo': blue_init_ammo,
                             'temperature': 0.3,  # 测试采样温度：<1趋于贪婪决策
                         }
                     )

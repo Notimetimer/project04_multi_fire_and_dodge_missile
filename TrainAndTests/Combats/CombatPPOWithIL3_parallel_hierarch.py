@@ -20,26 +20,26 @@ import torch.multiprocessing as mp  # 使用 torch 的多进程模块
 import traceback # [新增]
 import random
 import collections
-# # 必须在任何 sklearn 导入之前执行！
-# try:
-#     import threadpoolctl
-#     # 彻底让信息查询返回空列表
-#     threadpoolctl.threadpool_info = lambda *args, **kwargs: []
-#     # 核心修复：直接将 threadpool_limits 变为一个什么都不做的空上下文管理器
-#     class DummyContextManager:
-#         def __init__(self, *args, **kwargs): pass
-#         def __enter__(self): return self
-#         def __exit__(self, exc_type, exc_val, exc_tb): pass
-#         def _set_threadpool_limits(self): return []
-#     threadpoolctl.threadpool_limits = DummyContextManager
-#     # 针对 3.x 版本的控制器拦截
-#     if hasattr(threadpoolctl, 'ThreadpoolController'):
-#         threadpoolctl.ThreadpoolController.info = lambda self, *args, **kwargs: []
-#         threadpoolctl.ThreadpoolController.limit = lambda self, *args, **kwargs: DummyContextManager()
-#     print("[Patch] threadpoolctl 全版本上下文拦截补丁已成功强行注入。")
-# except Exception as e:
-#     print(f"[Patch] 补丁注入失败: {e}，尝试继续运行...")
-# from sklearn.cluster import KMeans
+# 必须在任何 sklearn 导入之前执行！
+try:
+    import threadpoolctl
+    # 彻底让信息查询返回空列表
+    threadpoolctl.threadpool_info = lambda *args, **kwargs: []
+    # 核心修复：直接将 threadpool_limits 变为一个什么都不做的空上下文管理器
+    class DummyContextManager:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, exc_type, exc_val, exc_tb): pass
+        def _set_threadpool_limits(self): return []
+    threadpoolctl.threadpool_limits = DummyContextManager
+    # 针对 3.x 版本的控制器拦截
+    if hasattr(threadpoolctl, 'ThreadpoolController'):
+        threadpoolctl.ThreadpoolController.info = lambda self, *args, **kwargs: []
+        threadpoolctl.ThreadpoolController.limit = lambda self, *args, **kwargs: DummyContextManager()
+    print("[Patch] threadpoolctl 全版本上下文拦截补丁已成功强行注入。")
+except Exception as e:
+    print(f"[Patch] 补丁注入失败: {e}，尝试继续运行...")
+from sklearn.cluster import KMeans
 
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(project_root)
@@ -56,8 +56,8 @@ from RewardWeightController import FireRewardWeightController
 dt_move = 0.04
 
 # 测试对战初始弹药（可调）
-test_red_init_ammo = 6
-test_blue_init_ammo = 6
+red_init_ammo = 6
+blue_init_ammo = 6
 
 # 周期性测试所对抗的规则对手编号 (仅测试 0, 1, 2, 3)
 TEST_RULE_IDS = [0, 1, 2, 3]
@@ -239,8 +239,8 @@ def summarize(il_dict):
             
 def append_experience(td, obs, state, action, reward, next_state, done, active_mask):
     """
-    统一把经验追加到 transition_dict。
-
+    统一把一次蓝方经验追加到 transition_dict。
+    修改：增加 obs 输入，用于存储局部观测
     """
     td['obs'].append(obs) # 新增：存储Actor用的局部观测
     td['states'].append(state) # 修改：这里存储Critic用的全局状态
@@ -352,111 +352,9 @@ class IL_transition_buffer:
         buffer = torch.load(path, map_location='cpu')
         print(f"[IL_transition_buffer] Loaded from {path}. Size: {len(buffer.addon_dict['states'])}")
         return buffer
-        
-
 
 # calculate_expected_score 概率计算
-
-def calculate_expected_score(player_elo, opponent_elo):
-    """计算期望得分"""
-    return 1 / (1 + 10 ** ((opponent_elo - player_elo) / 400)) # 这个数是约定俗成的,别改
-
-def update_elo(player_elo, opponent_elo, score, K_FACTOR):
-    """更新ELO分数. score: 1 for win, 0 for loss, 0.5 for draw."""
-    expected = calculate_expected_score(player_elo, opponent_elo)
-    return player_elo + K_FACTOR * (score - expected)
-
-
-def get_opponent_probabilities(elite_elo_ratings, hall_of_fame=None,
-                               target_elo=None, sigma=400, SP_type='PFSP_with_delta',
-                               compete_old_rate=0.5, deltaFSP_epsilon=0.5,):
-    """
-    优化后的对手采样逻辑：
-    1. 优先判定是否进入“规则复习”分支。
-    2. 若未进入，则根据 SP_type 执行具体的采样策略。
-    """
-    # 【核心修改】在函数内部合并出一个临时的全集字典用于查询分数
-    # 这样 keys 里的任何元素都能在这里找到对应的 ELO
-    
-    if hall_of_fame is not None:
-        candidate_pool = hall_of_fame.copy()
-        candidate_pool.update(elite_elo_ratings)
-    else:
-        candidate_pool = elite_elo_ratings
-    keys = list(candidate_pool.keys())
-    
-    if not keys: return np.array([]), []
-
-    # --- 第一层判断：规则复习分支 (Epsilon-Greedy 锚点保护) ---
-    # 只要 compete_old_rate > 0，就有概率强行进入规则池采样，防止“策略遗忘”
-    rule_keys = [k for k in keys if k.startswith('Rule')]
-    if np.random.rand() < compete_old_rate and rule_keys:
-        probs = np.ones(len(rule_keys)) / len(rule_keys)
-        return probs, rule_keys
-    
-    # --- 第二层判断：进入核心采样逻辑 ---
-    # 【核心修改】统一从 candidate_pool 取分，彻底避免 KeyError
-    elos = np.array([candidate_pool[k] for k in keys], dtype=np.float64)
-    
-    # 1. 处理 PFSP 系列 (高斯核采样)
-    if SP_type.startswith('PFSP'):
-        if SP_type == 'PFSP_challenge':
-            actual_target = min(np.max(elos), float(target_elo) + 300)
-        elif SP_type == 'PFSP_balanced' or SP_type == 'PFSP_with_delta':
-            actual_target = float(target_elo) if target_elo is not None else np.mean(elos)
-        else: # 默认通用的 'PFSP' 逻辑
-            actual_target = float(target_elo) if target_elo is not None else np.mean(elos)
-            # # 你之前的逻辑：取 0.5 均值 + 0.5 最大值，作为一个偏向挑战的平衡点
-            # actual_target = 0.5 * (float(target_elo) if target_elo is not None else np.mean(elos)) + 0.5 * np.max(elos)
-        
-        diffs = elos - actual_target
-        scores = np.exp(-0.5 * (diffs / float(sigma))**2)
-        probs = scores / (scores.sum() + 1e-12)
-        return probs, keys
-
-    # 2. 处理 FSP (全样本均匀分布)
-    elif SP_type == 'FSP':
-        probs = np.ones(len(keys)) / len(keys)
-        return probs, keys
-
-    # 3. 处理 deltaFSP (新旧池切分)
-    elif SP_type == 'deltaFSP':
-        n = len(keys)
-        new_count = max(1, int(np.ceil(n * 0.2)))
-        new_keys = keys[-new_count:]
-        old_keys = keys[:-new_count]
-        
-        # 这里的 deltaFSP_epsilon 建议直接作为参数传入或使用全局变量
-        if np.random.rand() < float(deltaFSP_epsilon) or not old_keys:
-            target_keys = new_keys
-        else:
-            target_keys = old_keys
-            
-        probs = np.ones(len(target_keys)) / len(target_keys)
-        return probs, target_keys
-
-    # 4. 处理 SP (最新历史版本)
-    elif SP_type == 'SP':
-        # rein_keys = [k for k in keys if k.startswith('actor_rein') and '_step_' not in k]
-        # 严格匹配 actor_rein + 数字
-        rein_keys = [k for k in keys if re.match(r'^actor_rein\d+$', k)]
-        if not rein_keys: return np.array([]), []
-        
-        def extract_number(k):
-            # try: return int(k.replace('actor_rein', ''))
-            # except: return -1
-            try: return int(re.search(r'actor_rein(\d+)', k).group(1))
-            except: return -1
-            
-        best_key = max(rein_keys, key=extract_number)
-        return np.array([1.0]), [best_key]
-
-    # 5. 兜底逻辑: Rule 均匀采样 (None)
-    else:
-        if not rule_keys: return np.array([]), []
-        probs = np.ones(len(rule_keys)) / len(rule_keys)
-        return probs, rule_keys
-
+from SelfPlayCalculation import calculate_expected_score, update_elo, get_opponent_probabilities
 
 # 辅助：需要把 create_initial_state 定义在 worker 能访问的地方，或者 copy 进去
 def create_initial_state_worker(randomized=0):
@@ -471,7 +369,7 @@ def create_initial_state_worker(randomized=0):
     blue_psi = sub_of_radian(np.pi/2 + np.random.uniform(-pi*2/3, pi*2/3))
     init_North = np.random.uniform(-30e3, 30e3) * int(randomized)
     red_N = init_North
-    red_E = - 55e3 # 45e3
+    red_E = 55e3 # 45e3
     if np.random.uniform(0,1) < 0.2: # 以低概率随机初始距离
         red_E = np.random.uniform(10e3,55e3)
     blue_N = init_North
@@ -1041,7 +939,7 @@ def run_MLP_simulation(
     },
     self_play_type = 'PFSP', # FSP, SP, None 表示非自博弈
     hist_agent_as_opponent = 1, # 是否开始记录历史智能体
-    use_sil = True,
+    use_sil = 0, # FIXME 再也不做自模仿了
     sil_only_maneuver = 1, # 自模仿只包含机动还是也包含开火
     chosen_quantile = 0.2, 
     DARK_SIDE = 1,  # sil默认找最差
@@ -1415,18 +1313,6 @@ def run_MLP_simulation(
         torch.save(student_agent.critic.state_dict(), os.path.join(log_dir, "critic.pt"))
 
 
-    # --- 新增：实例化混合缓冲区 ---
-    il_transition_buffer = None
-    if IL_epoches + use_sil > 0:  # 只要出现模仿学习就得准备好初始的模仿池
-        print("Initializing IL Transition Buffer...")
-        il_buffer_path = os.path.join(log_dir, "il_buffer.pt")
-        if os.path.exists(il_buffer_path):
-            # 中断续训时优先加载已保存的 buffer
-            il_transition_buffer = IL_transition_buffer.load(il_buffer_path)
-        else:
-            original_data_input = original_il_transition_dict0 if use_init_data else None
-            il_transition_buffer = IL_transition_buffer(original_data_input, max_size=il_buffer_max_size)
-
     # ==============================================================================
     # 强化学习 (Self-Play / PFSP) 阶段
     # ==============================================================================
@@ -1617,8 +1503,8 @@ def run_MLP_simulation(
                             'deterministic': False,
                             'restrict_fire': True, # False, 和采样保持一致
                             'vertices': vertices,
-                            'red_init_ammo': test_red_init_ammo,
-                            'blue_init_ammo': test_blue_init_ammo,
+                            'red_init_ammo': red_init_ammo,
+                            'blue_init_ammo': blue_init_ammo,
                         }
                     )
                     test_tasks.append(obj)
@@ -1643,8 +1529,8 @@ def run_MLP_simulation(
                             'deterministic': True,     # 机动动作确定化
                             'restrict_fire': True,      # 动作次序限制打开
                             'vertices': vertices,
-                            'red_init_ammo': test_red_init_ammo,
-                            'blue_init_ammo': test_blue_init_ammo,
+                            'red_init_ammo': red_init_ammo,
+                            'blue_init_ammo': blue_init_ammo,
                         }
                     )
                     test_tasks_no_random.append(obj)
@@ -1656,33 +1542,57 @@ def run_MLP_simulation(
                 # 记录第一种测试结果
                 outcomes = {rule_num: score for rule_num, score, result2, wins, loses, draws, p_t_ in test_results}
                 outcomes_return = {rule_num: result2 for rule_num, score, result2, wins, loses, draws, p_t_ in test_results}
+                outcomes_wins = {rule_num: wins for rule_num, score, result2, wins, loses, draws, p_t_ in test_results}
+                outcomes_loses = {rule_num: loses for rule_num, score, result2, wins, loses, draws, p_t_ in test_results}
+                outcomes_draws = {rule_num: draws for rule_num, score, result2, wins, loses, draws, p_t_ in test_results}
                 outcomes_perish = {rule_num: p_t_ for rule_num, score, result2, wins, loses, draws, p_t_ in test_results}
 
                 for r_num, score in outcomes.items():
                     logger.add(f"test/agent_vs_rule{r_num}", score, total_steps)
+                    logger.add(f"test/agent_vs_rule{r_num}_win_rate", outcomes_wins[r_num], total_steps)
+                    logger.add(f"test/agent_vs_rule{r_num}_lose_rate", outcomes_loses[r_num], total_steps)
+                    logger.add(f"test/agent_vs_rule{r_num}_draw_rate", outcomes_draws[r_num], total_steps)
                     # logger.add(f"test/agent_vs_rule{r_num}_return", outcomes_return[r_num], total_steps)
                     print(f"  [Test Result] Rule_{r_num}: {score} (return: {outcomes_return[r_num]:.2f})")
 
-                # 记录第一种测试的平均指标（所有对手的平均Score和超视距双杀率）
+                # 记录第一种测试的平均指标（所有对手的平均Score、胜负平比例和超视距双杀率）
                 avg_score = np.mean(list(outcomes.values()))
+                avg_win_rate = np.mean(list(outcomes_wins.values()))
+                avg_lose_rate = np.mean(list(outcomes_loses.values()))
+                avg_draw_rate = np.mean(list(outcomes_draws.values()))
                 avg_perish_together = np.mean(list(outcomes_perish.values()))
                 logger.add("test/avg_score", avg_score, total_steps)
+                logger.add("test/avg_win_rate", avg_win_rate, total_steps)
+                logger.add("test/avg_lose_rate", avg_lose_rate, total_steps)
+                logger.add("test/avg_draw_rate", avg_draw_rate, total_steps)
                 logger.add("test/BVR perish together", avg_perish_together, total_steps)
 
                 # 记录第二种测试结果 (test_No_random)
                 outcomes_nr = {rule_num: score for rule_num, score, result2, wins, loses, draws, p_t_ in test_results_no_random}
                 outcomes_return_nr = {rule_num: result2 for rule_num, score, result2, wins, loses, draws, p_t_ in test_results_no_random}
+                outcomes_wins_nr = {rule_num: wins for rule_num, score, result2, wins, loses, draws, p_t_ in test_results_no_random}
+                outcomes_loses_nr = {rule_num: loses for rule_num, score, result2, wins, loses, draws, p_t_ in test_results_no_random}
+                outcomes_draws_nr = {rule_num: draws for rule_num, score, result2, wins, loses, draws, p_t_ in test_results_no_random}
                 outcomes_perish_nr = {rule_num: p_t_ for rule_num, score, result2, wins, loses, draws, p_t_ in test_results_no_random}
 
                 for r_num, score in outcomes_nr.items():
                     logger.add(f"test_No_random/agent_vs_rule{r_num}", score, total_steps)
+                    logger.add(f"test_No_random/agent_vs_rule{r_num}_win_rate", outcomes_wins_nr[r_num], total_steps)
+                    logger.add(f"test_No_random/agent_vs_rule{r_num}_lose_rate", outcomes_loses_nr[r_num], total_steps)
+                    logger.add(f"test_No_random/agent_vs_rule{r_num}_draw_rate", outcomes_draws_nr[r_num], total_steps)
                     # logger.add(f"test_No_random/agent_vs_rule{r_num}_return", outcomes_return_nr[r_num], total_steps)
                     print(f"  [Test No Random] Rule_{r_num}: {score} (return: {outcomes_return_nr[r_num]:.2f})")
 
-                # 记录第二种测试的平均指标（所有对手的平均Score和超视距双杀率）
+                # 记录第二种测试的平均指标（所有对手的平均Score、胜负平比例和超视距双杀率）
                 avg_score_nr = np.mean(list(outcomes_nr.values()))
+                avg_win_rate_nr = np.mean(list(outcomes_wins_nr.values()))
+                avg_lose_rate_nr = np.mean(list(outcomes_loses_nr.values()))
+                avg_draw_rate_nr = np.mean(list(outcomes_draws_nr.values()))
                 avg_perish_together_nr = np.mean(list(outcomes_perish_nr.values()))
                 logger.add("test_No_random/avg_score", avg_score_nr, total_steps)
+                logger.add("test_No_random/avg_win_rate", avg_win_rate_nr, total_steps)
+                logger.add("test_No_random/avg_lose_rate", avg_lose_rate_nr, total_steps)
+                logger.add("test_No_random/avg_draw_rate", avg_draw_rate_nr, total_steps)
                 logger.add("test_No_random/BVR perish together", avg_perish_together_nr, total_steps)
 
                 # 名人堂判定：如果全胜则保存并加入池子
@@ -1966,20 +1876,6 @@ def run_MLP_simulation(
                 for k in transition_dict:
                     transition_dict[k].extend(l_tr[k])
                 
-                # 3.2 SIL 数据收集 (需计算 return)
-                if use_sil:
-                    # ego_tr['returns'] = compute_monte_carlo_returns(gamma, ego_tr['rewards'], ego_tr['dones'])
-                    # il_transition_buffer.add(ego_tr)  # 优化无望，改回原论文做法用来对比
-                    # pass # 只是对比缓慢结束初始模仿的话不需要增添新样本
-
-                    if not metrics['lose']: # 赢或平，学自己
-                        # 计算回报 (Master 端计算)
-                        ego_tr['returns'] = compute_monte_carlo_returns(gamma, ego_tr['rewards'], ego_tr['dones'])
-                        il_transition_buffer.add(ego_tr)
-                    if not metrics['win']: # 输或平，学对手
-                        enm_tr['returns'] = compute_monte_carlo_returns(gamma, enm_tr['rewards'], enm_tr['dones'])
-                        il_transition_buffer.add(enm_tr)
-                
                 # 3.3 ELO 更新 (实时更新)
                 actual_score = 0.5
                 if metrics['win']: actual_score = 1.0
@@ -2200,16 +2096,6 @@ def run_MLP_simulation(
 
                 alpha_il_real = alpha_il #  * np.clip(1 - total_steps/5e6, 0.1, 1)
 
-                # if use_sil and len(il_transition_buffer.addon_dict['states']) >= 2048:
-                #     if int(round(batch_idx - last_il_update_batch_idx)) % 30 == 0 and alpha_il_real > 0:
-                #         student_agent.ADPC_update(il_transition_buffer.read(il_buffer_max_size), batch_size=2048, alpha=alpha_il_real, 
-                #                                   chosen_quantile=chosen_quantile, no_bern=sil_only_maneuver, dark_side=DARK_SIDE,
-                #                                   ppo_grad_val=ppo_grad_ema)
-                #         # 不可以自模仿得过于频繁
-                #         last_il_update_batch_idx = batch_idx
-                
-                # 记录 Log
-
                 # [Modification] 保留原有梯度监控代码
                 actor_pre_clip_grad = student_agent.pre_clip_actor_grad
                 critic_pre_clip_grad = student_agent.pre_clip_critic_grad
@@ -2410,8 +2296,7 @@ def run_MLP_simulation(
                     'rnd_prediction': student_agent.rnd_prediction.state_dict() if student_agent.rnd_prediction is not None else None,
                     'rnd_optimizer': student_agent.rnd_optimizer.state_dict() if student_agent.rnd_optimizer is not None else None,
                 }, os.path.join(log_dir, "optimizers_state.pt"))
-                if il_transition_buffer is not None:
-                    il_transition_buffer.save(os.path.join(log_dir, "il_buffer.pt"))
+
                 
                 # 保存开火监督数据 buffer
                 if use_supervised_fire:

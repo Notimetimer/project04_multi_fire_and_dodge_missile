@@ -41,14 +41,14 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
         self.update_entity_alives() # 更新所有飞机和导弹存活情况
         # 奖励权重预置
         DENSE_REWARD_WEIGHT = 0.2   # 密集奖励参考值
-        END_REWARD_WEIGHT = 3 # 30   # 结果奖励
+        END_REWARD_WEIGHT = 10 # 30   # 结果奖励
         # 事件奖励
         DIE_WEIGHT = -10            # 被击杀
         KILL_WEIGHT = 10            # 拿到击杀
         MSL_LOCK_WEIGHT = 5         # 导弹锁定
         MISS_WEIGHT = -5            # 脱靶
         ESCAPE_ONCE_WEIGHT = 5      # 逃脱一次
-        FOX3 = -5                   # 开火惩罚
+        FOX3 = -3 # -5                   # 开火惩罚
         
         # 各个分项总奖励
         reward_dict = {
