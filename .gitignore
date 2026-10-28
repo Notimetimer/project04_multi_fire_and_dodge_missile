@@ -16,3 +16,5 @@ actor.onnx
 prof.out
 /CalcGraphRecords
 /参考资料
+/结果展示/exp_png_mappo1v1
+TrainAndTests/Combats/probe_test_fire_log.txt
