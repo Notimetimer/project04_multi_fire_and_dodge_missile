@@ -71,7 +71,8 @@ enm_infos: [[
         'enm_dist'
         'enm_ATA'
         'v_enm'
-        'enm_AA'
+        'cos_enm_AA'
+        'sin_enm_AA'
 ]]
 enm_info_supplement:[[
         'enm_q_beta'

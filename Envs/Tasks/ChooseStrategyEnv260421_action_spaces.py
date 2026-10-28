@@ -248,7 +248,7 @@ class ChooseStrategyEnv(Battle):
         enm_locked = ego_state["enm_infos"][enm_index]["enm_locked"]
         ATA = ego_state["enm_infos"][enm_index]["enm_ATA"]
         distance = ego_state["enm_infos"][enm_index]["enm_dist"]
-        AA_hor = ego_state["enm_infos"][enm_index]["enm_AA"]
+        cos_AA_hor = ego_state["enm_infos"][enm_index]["cos_enm_AA"]
 
         # 绝对禁止开火条件
         # 1. 我死了
@@ -309,7 +309,7 @@ class ChooseStrategyEnv(Battle):
         enm_locked = ego_state["enm_infos"][enm_index]["enm_locked"]
         ATA = ego_state["enm_infos"][enm_index]["enm_ATA"]
         distance = ego_state["enm_infos"][enm_index]["enm_dist"]
-        AA_hor = ego_state["enm_infos"][enm_index]["enm_AA"]
+        cos_AA_hor = ego_state["enm_infos"][enm_index]["cos_enm_AA"]
 
         # 绝对禁止开火条件
         # 1. 我死了

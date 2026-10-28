@@ -88,7 +88,7 @@ while steps < round(args.max_episode_len / env.dt_maneuver):
                     info = env.get_state(uid)['enm_infos'][int(out['enm_idx'].item())]
                     print(f't={env.t:6.1f}s rid={uid} 采样fire={fire} 概率={p:.3f} fire_mask={mask_fire} '
                           f'距离={d:6.1f}km locked={info["enm_locked"]:.0f} obs={info["enm_observable"]:.0f} '
-                          f'ATA={np.degrees(info["enm_ATA"]):+6.1f}° AA={info["enm_AA"]:+.3f} '
+                          f'ATA={np.degrees(info["enm_ATA"]):+6.1f}° AA={np.arctan2(info["sin_enm_AA"], info["cos_enm_AA"]):+.3f} '
                           f'R弹数={len(env.RMissileTable)} ammo={uav.ammo}')
                     if fire:
                         try:

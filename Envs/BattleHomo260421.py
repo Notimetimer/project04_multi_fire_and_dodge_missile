@@ -75,7 +75,7 @@ BORDER_KEYS = ['d_hor2border', 'border_LR', 'dist_from_center']
 ALLY_KEYS = ['radar_on', 'cos_ally_delta_psi', 'sin_ally_delta_psi', 'ally_delta_theta',
              'ally_dist', 'v_ally', 'cos_ally_rel_heading', 'sin_ally_rel_heading', 'theta_ally']
 ENM_KEYS = ['enm_observable', 'enm_locked', 'locked_by_enm', 'cos_enm_delta_psi',
-            'sin_enm_delta_psi', 'enm_delta_theta', 'enm_dist', 'enm_ATA', 'v_enm', 'enm_AA']
+            'sin_enm_delta_psi', 'enm_delta_theta', 'enm_dist', 'enm_ATA', 'v_enm', 'cos_enm_AA', 'sin_enm_AA']
 ENM_SUPPLEMENT_KEYS = ['enm_q_beta', 'enm_q_epsilon']
 WEAPON_KEYS = ['missile_t_fly', 'cos_msl_delta_psi', 'sin_msl_delta_psi', 'mid_term']
 RWR_KEYS = ['warning', 'cos_threat_delta_psi', 'sin_threat_delta_psi', 'threat_theta', 'threat_distance']
@@ -955,7 +955,8 @@ class Battle(object):
             'enm_dist': 100e3,
             'enm_ATA': 0,
             'v_enm': 0,
-            'enm_AA': pi,
+            'cos_enm_AA': -1,
+            'sin_enm_AA': 0,
         }
         state_init_mod["enm_info_supplement"] = {
             'enm_q_beta': 0,
@@ -1205,7 +1206,8 @@ class Battle(object):
                 'enm_dist': float(dist),
                 'enm_ATA': float(ATA),
                 'v_enm': float(enm_speed),
-                'enm_AA': float(AA_hor),
+                'cos_enm_AA': float(cos(AA_hor)),
+                'sin_enm_AA': float(sin(AA_hor))
             })
             # 惯性系下的位置关系，进入记忆/规则，不进神经网络
             enm_info_supplement.append({
@@ -1443,7 +1445,8 @@ class Battle(object):
                     state["enm_infos"][i]["enm_observable"] = 1
                     state["enm_infos"][i]["enm_dist"] = memory["enm_infos"][i]["enm_dist"]
                     state["enm_infos"][i]["v_enm"] = memory["enm_infos"][i]["v_enm"]
-                    state["enm_infos"][i]["enm_AA"] = pi
+                    state["enm_infos"][i]["cos_enm_AA"] = -1
+                    state["enm_infos"][i]["sin_enm_AA"] = 0
 
                 else:  # vis_level == 2
                     # 完全可见 -> 不用记忆

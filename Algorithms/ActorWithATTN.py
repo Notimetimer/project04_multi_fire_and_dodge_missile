@@ -144,7 +144,7 @@ class HeterogeneousSelfAttention(nn.Module):
 # 选择器网络：用两个独立的交叉注意力模块分别压缩 enm / ally 的 seq_len 维度，
 # 选出一个敌机一个队友，把它们的嵌入与 fixed 拼接后交给 pilot。
 class selector(nn.Module):
-    def __init__(self, fixed_dim=28, enm_shape=(3, 10), ally_shape=(2, 9), embed_dim=64):
+    def __init__(self, fixed_dim, enm_shape, ally_shape, embed_dim=64):
         super().__init__()
         self.fixed_dim = fixed_dim
         self.enm_shape = enm_shape
@@ -356,7 +356,7 @@ class pilot(nn.Module):
 # 统筹 selector 与 pilot 的 ActorWrapper：
 # 对外接口只有 (agent_inputs, mask_inputs, rule_inputs) → 完整动作与概率。
 class ActorWrapper(nn.Module):
-    def __init__(self, fixed_dim=28, enm_shape=(2, 10), ally_shape=(1, 9),
+    def __init__(self, fixed_dim, enm_shape, ally_shape,
                  embed_dim=64, hidden_dims=(256, 256), device='cpu'):
         super().__init__()
         self.fixed_dim = fixed_dim

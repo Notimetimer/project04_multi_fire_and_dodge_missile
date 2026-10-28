@@ -60,7 +60,7 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
         np.array([e["cos_enm_delta_psi"] for e in enm_info_list]))
     enm_delta_alt_list = enm_distance_list * np.sin(enm_delta_theta_list) # 相对高度
     enm_ATA_list = np.array([e["enm_ATA"] for e in enm_info_list])
-    AA_hor_list = np.array([e["enm_AA"] for e in enm_info_list])
+    cos_AA_hor_list = np.array([e["cos_enm_AA"] for e in enm_info_list])
     enm_locked_list = np.array([e["enm_locked"] for e in enm_info_list])
 
     # 武器信息
@@ -140,14 +140,14 @@ def basic_rules(rule_inputs, mask_inputs, rules_num, p_random=0):
     ATA = enm_ATA_list[selected_index]
     delta_psi = enm_delta_psi_list[selected_index]
     delta_theta = enm_delta_theta_list[selected_index]
-    AA_hor = AA_hor_list[selected_index]
+    cos_AA_hor = cos_AA_hor_list[selected_index]
 
     # 1. 计算初始的开火意图
     fire_120 = 0
     case1 = distance < 70e3 # < 80e3 and (sin_theta >= sin(30*pi/180) or alt >= 9e3) # 60e3
     case2 = distance < 70e3 # 75e3 # 75e3 55e3
     if (case1 or case2) and ATA < 60 * pi/180 and abs(delta_psi) < 30*pi/180:
-        if t_fired >= 40 and not on_guiding and not (distance>12e3 and abs(AA_hor) < 30*pi/180):
+        if t_fired >= 40 and not on_guiding and not (distance>12e3 and np.arccos(cos_AA_hor) < 30*pi/180):
             fire_120 = 1
 
     # 被冷却时间、双方dead限制，驳回开火指令

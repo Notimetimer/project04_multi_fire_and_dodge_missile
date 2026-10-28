@@ -71,12 +71,13 @@ for count in range(500):
             delta_theta = enm_info["enm_delta_theta"]
             delta_psi = np.arctan2(enm_info["sin_enm_delta_psi"], enm_info["cos_enm_delta_psi"])
             ATA = enm_info["enm_ATA"]
-            AA_hor = enm_info["enm_AA"]
+            cos_AA_hor = enm_info["cos_enm_AA"]
+            sin_AA_hor = enm_info["sin_enm_AA"]
             weapon_infos = rule_inputs["weapon_infos"]
             t_fired = weapon_infos["missile_t_fly"]
             on_guiding = weapon_infos["mid_term"]
             
-            print(f"Step {count} UAV {id}: dist={distance/1000:.1f}km, sin_theta={sin_theta:.2f}, ATA={ATA*180/pi:.1f}deg, dPsi={delta_psi*180/pi:.1f}deg, AA={AA_hor*180/pi:.1f}deg, t_fired={t_fired}")
+            print(f"Step {count} UAV {id}: dist={distance/1000:.1f}km, sin_theta={sin_theta:.2f}, ATA={ATA*180/pi:.1f}deg, dPsi={delta_psi*180/pi:.1f}deg, AA={np.arctan2(sin_AA_hor, cos_AA_hor)*180/pi:.1f}deg, t_fired={t_fired}")
             
             fly_action, fire_action, radar_action = basic_rules(rule_inputs, mask_inputs_[id], rules_num=4)
             fly_actions[id] = fly_action

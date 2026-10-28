@@ -27,7 +27,7 @@ class EntityCrossAttention(nn.Module):
 # 用两个独立的多头注意力模块（enm 组 / ally 组）让实体特征扩散，
 # 输出固定结构的特征向量 e、enm_logits、ally_logits。
 class collector(nn.Module):
-    def __init__(self, fixed_dim=28, enm_shape=(2, 10), ally_shape=(1, 9),
+    def __init__(self, fixed_dim, enm_shape, ally_shape,
                  embed_dim=64, num_heads=4):
         super().__init__()
         self.fixed_dim = fixed_dim
@@ -76,7 +76,7 @@ class judge(nn.Module):
 # 统筹 collector 与 judge 的 CriticWrapper：
 # 对外接口为 agent_inputs -> enm_logits / ally_logits / value，并提供 save / load。
 class critic_wrapper(nn.Module):
-    def __init__(self, fixed_dim=28, enm_shape=(2, 10), ally_shape=(1, 9),
+    def __init__(self, fixed_dim, enm_shape, ally_shape,
                  embed_dim=64, num_heads=4, hidden_dims=(256, 256), device='cpu'):
         super().__init__()
         self.fixed_dim = fixed_dim
