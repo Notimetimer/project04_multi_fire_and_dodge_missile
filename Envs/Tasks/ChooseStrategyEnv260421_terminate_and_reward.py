@@ -46,7 +46,7 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
         DIE_WEIGHT = -10            # 被击杀
         KILL_WEIGHT = 10            # 拿到击杀
         MSL_LOCK_WEIGHT = 5         # 导弹锁定
-        MISS_WEIGHT = -5            # 脱靶
+        MISS_WEIGHT = -3 # -5            # 脱靶
         ESCAPE_ONCE_WEIGHT = 5      # 逃脱一次
         FOX3 = -5                   # 开火惩罚
         

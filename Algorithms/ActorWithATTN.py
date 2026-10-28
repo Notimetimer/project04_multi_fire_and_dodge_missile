@@ -1,4 +1,5 @@
 import os
+import json
 from math import *
 import numpy as np
 import torch
@@ -16,6 +17,15 @@ _MASK_VAL = 1e8                   # 掩码填充值（-inf 量级，保证 softm
 _EVADE_HOR_MASK = torch.tensor([-1, -1, 0, 0, 0, -1, -1], dtype=torch.float32) * _MASK_VAL
 # # 安全模式（no_warning_or_enm=True）下，仅允许水平动作索引 {6}，其余维度置为 -1e8
 # _SAFE_HOR_MASK = torch.tensor([-1, -1, -1, -1, -1, -1, 0], dtype=torch.float32) * _MASK_VAL
+
+# mask_config.json 开关：fire_included_in_RL=0 时 RL 的动作 log_prob 与策略熵都不含 fire 分支，
+# PPO 损失对 pilot.fire_head 无依赖（梯度自然切断），开火头只由有监督链路（evaluate_fire）更新
+try:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mask_config.json'),
+              'r', encoding='utf-8') as _f:
+        _FIRE_INCLUDED_IN_RL = bool(json.load(_f).get('fire_included_in_RL', 1))
+except (OSError, ValueError):
+    _FIRE_INCLUDED_IN_RL = True
 
 
 # 单头交叉注意力模块：query 来自自身状态，key/value 来自实体序列。
@@ -417,10 +427,11 @@ class ActorWrapper(nn.Module):
         hor_idx = hor_dist.sample()
         fire = fire_dist.sample().to(torch.long)
 
+        # fire_included_in_RL=0 时采样端 log_prob_act 同步剔除 fire，与 evaluate_actions 口径保持一致
         log_prob_act = (
             vert_dist.log_prob(vert_idx)
             + hor_dist.log_prob(hor_idx)
-            + fire_dist.log_prob(fire.to(torch.float32))
+            + (fire_dist.log_prob(fire.to(torch.float32)) if _FIRE_INCLUDED_IN_RL else 0.0)
         )
 
         return {
@@ -481,7 +492,8 @@ class ActorWrapper(nn.Module):
 
         log_prob_vert = vert_dist.log_prob(vert_idx)
         log_prob_hor = hor_dist.log_prob(hor_idx)
-        log_prob_fire = fire_dist.log_prob(fire.to(torch.float32))
+        # fire_included_in_RL=0 时 fire 不计入动作 log_prob：PPO 新旧比率与火动作解耦，fire_head 收不到 RL 梯度
+        log_prob_fire = fire_dist.log_prob(fire.to(torch.float32)) if _FIRE_INCLUDED_IN_RL else torch.zeros_like(log_prob_vert)
         log_prob_act = log_prob_vert + log_prob_hor + log_prob_fire
 
         # H(act|enm_idx, ally_idx, o)：三路动作条件熵之和；
@@ -489,7 +501,8 @@ class ActorWrapper(nn.Module):
         fire_mask = pilot_logits['fire_mask'].to(torch.float32)
         ent_vert = vert_dist.entropy()
         ent_hor = hor_dist.entropy()
-        ent_fire = fire_dist.entropy() * fire_mask
+        # fire_included_in_RL=0 时火动作熵不并入策略熵，entropy_details['fire'] 同步置 0
+        ent_fire = fire_dist.entropy() * fire_mask if _FIRE_INCLUDED_IN_RL else torch.zeros_like(ent_vert)
         ent_act = ent_vert + ent_hor + ent_fire
 
         # 统计未被禁火样本的开火概率极值（仅记录用，无梯度，mini_batch 级标量）
