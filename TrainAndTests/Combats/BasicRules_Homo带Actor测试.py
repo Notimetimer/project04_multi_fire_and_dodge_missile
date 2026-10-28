@@ -101,6 +101,8 @@ if __name__=='__main__':
         
         # 初始化经验回放池（延后到 reset 之后，因为 env.UAV_ids 在 reset 前为 None）
         LocalTrans = {}
+        # 各机开火-命中记录的跨场次累积表（环境只按场记账，脚本侧汇总后统一落盘）
+        fire_hits_log = {}
         last_Actions = {}
         Rewards = {}
         
@@ -263,19 +265,6 @@ if __name__=='__main__':
                         # 雷达全程开
                         env.radar_action(id, 1)
 
-                        # debug
-                        # if side_word == 'red' and \
-                        #     (
-                        #     # 47 < env.t < 64 or\
-                        #         3*60 < env.t < 3*60+12
-                        #     ):
-                        #     print('id', UAV.id)
-                        #     print('enm_infos', rule_inputs_[id]['enm_infos'][fly_action['at']])
-                        #     print('weapon_infos', rule_inputs_[id]['weapon_infos'])
-                        #     print('RWR_infos', rule_inputs_[id]['RWR_infos'])
-                        #     print('机动动作是：', fly_action)
-                        #     print('开火动作是:', fire_action)
-                        #     print()
                     decide_steps_after_update += 1
 
                 # 循环调用底层控制器，环境更新
@@ -381,6 +370,24 @@ if __name__=='__main__':
                       f"(obs {obs_len} 步, "
                       f"obs.enm {getattr(_obs_enm, 'shape', '?')}, "
                       f"actions.hor {getattr(_act_hor, 'shape', '?')})")
+
+            # 收集并保存各机开火-命中记录（增量覆盖，累积所有 episode）：
+            # 收集点在终局强制结算之后，环境里未分辨命中/脱靶的 None 行已被删除；
+            # fire_obs 为开火瞬间的 agent_input 快照，hit_record 1=命中 0=脱靶
+            for id in env.UAV_ids:
+                UAV = env.find_uav_with_id(id)
+                new_records = getattr(UAV, 'fire_hit_records', [])
+                if new_records:
+                    fire_hits_log.setdefault(id, []).extend(new_records)
+                    UAV.fire_hit_records = []  # 收集后清空，防止 reset 未重建对象时下一场重复收集
+                records = fire_hits_log.get(id)
+                if not records:
+                    continue
+                # 与 LocalTrans 同一套张量化：list[单条记录] -> dict-of-array（fire_obs 递归堆叠）
+                tensor_fh = stack_field(records)
+                save_path = os.path.join(event_log_dir, f'agent{id}_fire_hits.pkl')
+                with open(save_path, 'wb') as f:
+                    pickle.dump(tensor_fh, f)
 
         training_end_time = time.time()  # 记录结束时间
         total_cost = training_end_time - training_start_time

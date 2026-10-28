@@ -41,7 +41,7 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
         self.update_entity_alives() # 更新所有飞机和导弹存活情况
         # 奖励权重预置
         DENSE_REWARD_WEIGHT = 0.2   # 密集奖励参考值
-        END_REWARD_WEIGHT = 30      # 结果奖励
+        END_REWARD_WEIGHT = 3 # 30   # 结果奖励
         # 事件奖励
         DIE_WEIGHT = -10            # 被击杀
         KILL_WEIGHT = 10            # 拿到击杀
@@ -139,7 +139,7 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 m = msl_table.get(rec['msl_id'])
                 if m is None:
                     continue
-                if m.hit:
+                if m.hit_supposed:
                     rec['hit_record'] = 1
                 elif m.dead:
                     rec['hit_record'] = 0
@@ -156,7 +156,7 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             # 密集奖励
             r_shaping = 0
             # 获取信息
-            _ ,_ , ego_full_state = self.get_obs(id, reward_fn=1)
+            agent_input , mask_output, ego_full_state = self.get_obs(id, reward_fn=1)
             RWR_infos = ego_full_state["RWR_infos"]
             warning = RWR_infos["warning"]
             cos_threat_delta_psi = RWR_infos["cos_threat_delta_psi"]
@@ -188,8 +188,10 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             r_shaping += (mach-1.0)*2 * DENSE_REWARD_WEIGHT/2
 
             # 队友间距（直接取观测中已算好的 ally_dist，即本机到各队友的相对距离，无需再自算）差分缓存：每周期都更新，保证差分跨度恰好为一个周期
-            if len(ally_infos) > 0:
-                teammate_dist = float(np.mean([temp["ally_dist"] for temp in ally_infos]))
+            # 死队友在观测里是填充值（ally_dist=100e3），用 mask_output['ally'] 剔除；全部阵亡则 teammate_dist 取 None
+            alive_ally_dists = [temp["ally_dist"] for temp, m in zip(ally_infos, mask_output['ally']) if temp and m > 0.5]
+            if len(alive_ally_dists) > 0:
+                teammate_dist = float(min(alive_ally_dists))
             else:
                 teammate_dist = None
             teammate_dist_prev = getattr(ego, 'last_teammate_dist', None)
@@ -204,6 +206,20 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             else:
                 # 锁定/被锁定
                 r_shaping += (ego_has_lock - ego_is_locked) * DENSE_REWARD_WEIGHT
+                
+                # 密集奖励：如果有alive enm uav没有被己方任何飞机或者导弹选中，全队扣分
+                if ego.side == 'r':
+                    enm_allocatedIDs = self.allocatedIDs_r2b
+                    alive_ally_missiles = self.alive_r_missiles
+                else:
+                    enm_allocatedIDs = self.allocatedIDs_b2r
+                    alive_ally_missiles = self.alive_b_missiles
+                enm_allocateIDs4missile = [missile.target_id for missile in alive_ally_missiles]
+                
+                for enm in enmside_alive_uavs:
+                    if enm.id not in enm_allocatedIDs and\
+                        enm.id not in enm_allocateIDs4missile:
+                        r_shaping -= DENSE_REWARD_WEIGHT * 0.15  # 费了半天劲，其实就是如果有敌机没有被选中就扣一点分
                 
                 # 制导时
                 if missile_t_fly < 40:
@@ -233,8 +249,6 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                         r_shaping += (ego.vu/100) * DENSE_REWARD_WEIGHT
                     else: # 没有弹药，飞5000m
                         r_shaping += (-ego.vu/100) * np.sign(ego.alt-5000) * DENSE_REWARD_WEIGHT
-                
-                # TODO 指向场地中心奖励
             
             
             reward_dict["shaping"] = r_shaping
@@ -288,14 +302,15 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 if len(ego.launched_aim120s) > 0:
                     newest_msl = ego.launched_aim120s[-1]
                     # 死亡清仓惩罚等 shoot>=1 但本步并无新弹发射的情形，避免重复登记同一枚导弹
-                    # if all(rec['msl_id'] != newest_msl.id for rec in ego.fire_hit_records):
+                    if all(rec['msl_id'] != newest_msl.id for rec in ego.fire_hit_records):
                         # TODO 即时获取一次瞬时观测，需要适配环境
-                        # ego_obs, ego_check_obs = self.obs_1v1(ego.side, pomdp=1)
-                        # ego.fire_hit_records.append({
-                        #     "msl_id": newest_msl.id,
-                        #     "fire_obs": copy.deepcopy(ego_obs),
-                        #     "hit_record": None,
-                        # })
+                        ego.fire_hit_records.append({
+                            "msl_id": newest_msl.id,
+                            "init_enm_id": self.id2index(ego.id, newest_msl.target_id),
+                            "fire_obs": copy.deepcopy(agent_input),
+                            "enm_idx": copy.deepcopy(self.id2index(ego.id, newest_msl.target_id)),
+                            "hit_record": None,
+                        })
 
             # 每个结算时间点只写一行：无事件时事件栏为空，三类奖励如实记0
             ego.cycle_events.append((t_now, ego.id,
