@@ -888,7 +888,7 @@ def run_MLP_simulation(
                     logger.add("train_plus/supervised_fire_buffer_size", len(fire_records_buffer), total_steps)
                     logger.add("train_plus/supervised_fire_samples", batch_fire_supervised, total_steps)
                     logger.add("train/supervised_fire_loss", getattr(agent, 'last_supervised_fire_loss', 0.0), total_steps)
-    
+
                 print(f"Step {total_steps}: Batch WinRate {batch_wins}/{num_workers}, ELO {main_agent_elo:.0f}")
 
                 # A. 保存模型（同构单份，无 _uid 后缀）
