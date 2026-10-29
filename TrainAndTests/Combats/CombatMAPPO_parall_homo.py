@@ -979,7 +979,14 @@ def run_MLP_simulation(
                     print('elo分极差：', elo_spread)
                     logger.add("Elo/Spread", elo_spread, total_steps/action_cycle_multiplier)
 
-                    curr_rate = 0.5 if elo_spread == 0 else (main_agent_elo - min_elo) / elo_spread
+                    # 口径：把 main 合入规则池一起归一化（不含历史 RL 对手），
+                    # 0%=最弱 Rule（或 main 自己垫底），100%=最强 Rule（或 main 自己顶位）；
+                    # 规则池只有一个元素或 main 独占时 spread=0，按约定输出 0
+                    ref_values = [main_agent_elo] + list(rule_elos)
+                    ref_min = float(np.min(ref_values))
+                    ref_max = float(np.max(ref_values))
+                    ref_spread = ref_max - ref_min
+                    curr_rate = 0.0 if ref_spread == 0 else (main_agent_elo - ref_min) / ref_spread
 
                     # Elo分数没有稳定不许记录
                     if total_steps >= WARM_UP_STEPS:
