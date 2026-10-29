@@ -30,6 +30,7 @@ from Math_calculates.sub_of_angles import *
 from BasicRules_Homo import basic_rules
 from Algorithms.ActorWithATTN import ActorWrapper
 from _context import take_some_of_rule_inputs, load_obs_dims, stack_field, load_init_states
+from _context import load_obs_dims, load_init_states
 
 use_tacview = 2 # 1 动态显示 2 静默写入 acmi_records
 
@@ -60,6 +61,9 @@ def creat_initial_state():
     return DEFAULT_RED_BIRTH_STATE, DEFAULT_BLUE_BIRTH_STATE
 
 
+# 初始数量/挂载：显式传参优先，否则统一从 init_states.json 读取
+init_cfg = load_init_states()
+
 # ==========================================
 # 多智能体测试 Worker：红方神经网络 vs 蓝方规则
 # ==========================================
@@ -70,8 +74,8 @@ def test_worker(model_state_dict, rules_num,
                 dt_maneuver=0.2,
                 action_cycle_multiplier=10,
                 min_alt_safe=2000,
-                red_init_num=2, blue_init_num=2,
-                red_init_ammo=2, blue_init_ammo=2,
+                red_init_num=init_cfg['red_init_num'], blue_init_num=init_cfg['blue_init_num'],
+                red_init_ammo=init_cfg['red_init_ammo'], blue_init_ammo=init_cfg['blue_init_ammo'],
                 temperature=1.0,  # 玻尔兹曼采样温度，仅本测试函数使用；训练 worker_process 不传此参数
                 ):
     seed = 42
