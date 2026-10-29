@@ -18,14 +18,7 @@ from Utilities.LocateDirAndAgents2 import get_latest_log_dir, find_latest_agent_
 # 模型来源：MAPPO 同构训练产出的 ActorWrapper（dict 观测：fixed/enm/ally）
 from Algorithms.ActorWithATTN import ActorWrapper
 
-# 优先使用 dir_name 指定日志目录；为 None 时用 experiment_name 自动找最新
-# DIR_NAME = "PPO0.3_flymask_v0h0_fireSL-run-20260921-194654"
-# DIR_NAME = "PPO0.3_flymask_v0h0-run-20260921-194617"
-# DIR_NAME = "切断PPObern梯度0.3_flymask_v0h0_fireSL-run-20260921-122428"
-# DIR_NAME = "SAC0.3_flymask_v1h1-run-20260923-213238"
-
-DIR_NAME = 'MAPPO_homo1v1-run-20261028-201129'
-
+DIR_NAME = 'MAPPO_homo1v1-run-20261028-224802'
 
 EXPERIMENT_NAME = None
 
@@ -40,7 +33,7 @@ T_SHOOT = 31.0 if MID_TERM else 120     # r_obs[21] = T_SHOOT / 120
 # 场景参数
 RED_HEIGHT = 2e3
 BLUE_HEIGHT = 2e3
-AA_HOR_DEG = 170
+AA_HOR_DEG = 180
 DEVICE = 'cpu'
 
 # 场地半径：训练用 62km，但 reset 会把超出 R_cage-5km 的出生点按比例缩回场内，
@@ -445,10 +438,10 @@ def main():
             if SAVE_FIG:
                 fig1.savefig(os.path.join(out_dir, base_name + '.png'), dpi=FIG_DPI, bbox_inches='tight')
                 fig1.savefig(os.path.join(out_dir, base_name + '.svg'), bbox_inches='tight')
+                print(f"已保存: {os.path.join(out_dir, base_name)}.png/.svg")
             if SHOW_PLOT:
                 plt.show()
             plt.close(fig1)
-            print(f"已保存: {os.path.join(out_dir, base_name)}.png/.svg")
     
     print("\n全部组合完成！")
 
