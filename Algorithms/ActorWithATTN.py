@@ -1,5 +1,4 @@
 import os
-import json
 from math import *
 import numpy as np
 import torch
@@ -18,15 +17,11 @@ _EVADE_HOR_MASK = torch.tensor([-1, -1, 0, 0, 0, -1, -1], dtype=torch.float32) *
 # # 安全模式（no_warning_or_enm=True）下，仅允许水平动作索引 {6}，其余维度置为 -1e8
 # _SAFE_HOR_MASK = torch.tensor([-1, -1, -1, -1, -1, -1, 0], dtype=torch.float32) * _MASK_VAL
 
-# mask_config.json 开关：fire_included_in_RL=0 时 RL 的动作 log_prob 与策略熵都不含 fire 分支，
-# PPO 损失对 pilot.fire_head 无依赖（梯度自然切断），开火头只由有监督链路（evaluate_fire）更新
-try:
-    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mask_config.json'),
-              'r', encoding='utf-8') as _f:
-        _FIRE_INCLUDED_IN_RL = bool(json.load(_f).get('fire_included_in_RL', 1))
-except (OSError, ValueError):
-    _FIRE_INCLUDED_IN_RL = True
-
+# # 废弃接口：通过json控制开火是否受SLA控制
+# import json
+# with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mask_config.json'),
+#               'r', encoding='utf-8') as _f:
+#         _FIRE_INCLUDED_IN_RL = bool(json.load(_f).get('fire_included_in_RL', 1))
 
 # 单头交叉注意力模块：query 来自自身状态，key/value 来自实体序列。
 # 签名不再单独接收 embed_dim，强制 embed_dim == entity_dim。
@@ -357,9 +352,12 @@ class pilot(nn.Module):
 # 对外接口只有 (agent_inputs, mask_inputs, rule_inputs) → 完整动作与概率。
 class ActorWrapper(nn.Module):
     def __init__(self, fixed_dim, enm_shape, ally_shape,
-                 embed_dim=64, hidden_dims=(256, 256), device='cpu'):
+                 embed_dim=64, hidden_dims=(256, 256), device='cpu', ppo_with_bern=1):
         super().__init__()
         self.fixed_dim = fixed_dim
+        # fire_included_in_rl=0 时 RL 的动作 log_prob 与策略熵都不含 fire 分支，
+        # PPO 损失对 pilot.fire_head 无依赖（梯度自然切断），开火头只由有监督链路（evaluate_fire）更新
+        self.fire_included_in_rl = bool(ppo_with_bern)
         self.enm_shape = enm_shape
         self.ally_shape = ally_shape
         self.enm_num = enm_shape[0]
@@ -431,7 +429,7 @@ class ActorWrapper(nn.Module):
         log_prob_act = (
             vert_dist.log_prob(vert_idx)
             + hor_dist.log_prob(hor_idx)
-            + (fire_dist.log_prob(fire.to(torch.float32)) if _FIRE_INCLUDED_IN_RL else 0.0)
+            + (fire_dist.log_prob(fire.to(torch.float32)) if self.fire_included_in_rl else 0.0)
         )
 
         return {
@@ -493,7 +491,7 @@ class ActorWrapper(nn.Module):
         log_prob_vert = vert_dist.log_prob(vert_idx)
         log_prob_hor = hor_dist.log_prob(hor_idx)
         # fire_included_in_RL=0 时 fire 不计入动作 log_prob：PPO 新旧比率与火动作解耦，fire_head 收不到 RL 梯度
-        log_prob_fire = fire_dist.log_prob(fire.to(torch.float32)) if _FIRE_INCLUDED_IN_RL else torch.zeros_like(log_prob_vert)
+        log_prob_fire = fire_dist.log_prob(fire.to(torch.float32)) if self.fire_included_in_rl else torch.zeros_like(log_prob_vert)
         log_prob_act = log_prob_vert + log_prob_hor + log_prob_fire
 
         # H(act|enm_idx, ally_idx, o)：三路动作条件熵之和；
@@ -502,7 +500,7 @@ class ActorWrapper(nn.Module):
         ent_vert = vert_dist.entropy()
         ent_hor = hor_dist.entropy()
         # fire_included_in_RL=0 时火动作熵不并入策略熵，entropy_details['fire'] 同步置 0
-        ent_fire = fire_dist.entropy() * fire_mask if _FIRE_INCLUDED_IN_RL else torch.zeros_like(ent_vert)
+        ent_fire = fire_dist.entropy() * fire_mask if self.fire_included_in_rl else torch.zeros_like(ent_vert)
         ent_act = ent_vert + ent_hor + ent_fire
 
         # 统计未被禁火样本的开火概率极值（仅记录用，无梯度，mini_batch 级标量）

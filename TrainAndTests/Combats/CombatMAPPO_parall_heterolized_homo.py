@@ -140,6 +140,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed,
                 blue_init_num = settings.get('blue_init_num', init_cfg['blue_init_num'])
                 red_init_ammo = settings.get('red_init_ammo', init_cfg['red_init_ammo'])
                 blue_init_ammo = settings.get('blue_init_ammo', init_cfg['blue_init_ammo'])
+                ppo_with_bern = settings.get('ppo_with_bern', 1)  # 0 时 RL 的 log_prob/熵不含 fire 分支
 
                 # 加载红方学生共享 actor 权重（异构实例加载方式：每个学生 id 各持一份独立 ActorWrapper）
                 # 学生 id 列表在 worker 初始化时由 master 传入，避免 dummy env 探测
@@ -152,7 +153,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed,
                     if id not in actor_dict:
                         actor_dict[id] = ActorWrapper(
                             fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape,
-                            device=device_worker,
+                            device=device_worker, ppo_with_bern=ppo_with_bern,
                         )
                     actor_dict[id].load_state_dict(student_actor_weights)
                     actor_dict[id].eval()
@@ -163,7 +164,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed,
                     if id not in actor_dict:
                         actor_dict[id] = ActorWrapper(
                             fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape,
-                            device=device_worker,
+                            device=device_worker, ppo_with_bern=ppo_with_bern,
                         )
                     actor_dict[id].load_state_dict(sd)
                     actor_dict[id].eval()
@@ -384,7 +385,6 @@ def run_MLP_simulation(
     supervised_fire_buffer_size = 1000, # [新增] 开火记录滚动缓冲容量（FIFO，像off-policy一样滚动更新）
     supervised_fire_batch_size = 128, # [新增] 每次监督更新从缓冲中采样的批大小
     ppo_with_bern = 1, # [新增] 0 时 PPO 更新跳过开火头 fc_bern（log_prob 不计入 bern 项）
-    sup_on_prob_ratio = 10, # 有监督辅助开关
 ):
     """多智能体 MAPPO 训练主函数。
     同构化异构：全队共享一套 actor/critic/MAPPOHybrid，但 worker 侧为每架飞机创建独立 ActorWrapper 实例。
@@ -428,7 +428,8 @@ def run_MLP_simulation(
 
     # 4. 全队共享一套 actor/critic/MAPPOHybrid（同构化异构：单份网络，worker 侧各机独立实例）
     actor = ActorWrapper(
-        fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device=device)
+        fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device=device,
+        ppo_with_bern=ppo_with_bern)
     critic = critic_wrapper(
         fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device=device)
     agent = MAPPOHybrid(
@@ -744,6 +745,7 @@ def run_MLP_simulation(
                     # 红蓝各自独立的位置打乱种子（每 episode 重新生成）
                     'red_shuffle_seed': int(np.random.randint(0, 2**31 - 1)),
                     'blue_shuffle_seed': int(np.random.randint(0, 2**31 - 1)),
+                    'ppo_with_bern': ppo_with_bern,
                 }
 
                 pipes[rank].send(('RUN_EPISODE', (current_actor_weights, opp_info, settings)))

@@ -138,13 +138,14 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                 blue_init_num = settings.get('blue_init_num', init_cfg['blue_init_num'])
                 red_init_ammo = settings.get('red_init_ammo', init_cfg['red_init_ammo'])
                 blue_init_ammo = settings.get('blue_init_ammo', init_cfg['blue_init_ammo'])
+                ppo_with_bern = settings.get('ppo_with_bern', 1)  # 0 时 RL 的 log_prob/熵不含 fire 分支
 
                 # 加载红方学生各 id 的 actor 权重（学生 id 与环境红机 id 一致）
                 for id, sd in student_actor_weights.items():
                     if id not in actor_dict:
                         actor_dict[id] = ActorWrapper(
                             fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape,
-                            device=device_worker,
+                            device=device_worker, ppo_with_bern=ppo_with_bern,
                         )
                     actor_dict[id].load_state_dict(sd)
                     actor_dict[id].eval()
@@ -155,7 +156,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                     if id not in actor_dict:
                         actor_dict[id] = ActorWrapper(
                             fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape,
-                            device=device_worker,
+                            device=device_worker, ppo_with_bern=ppo_with_bern,
                         )
                     actor_dict[id].load_state_dict(sd)
                     actor_dict[id].eval()
@@ -376,7 +377,6 @@ def run_MLP_simulation(
     supervised_fire_buffer_size = 1000, # [新增] 开火记录滚动缓冲容量（FIFO，像off-policy一样滚动更新）
     supervised_fire_batch_size = 128, # [新增] 每次监督更新从缓冲中采样的批大小
     ppo_with_bern = 1, # [新增] 0 时 PPO 更新跳过开火头 fc_bern（log_prob 不计入 bern 项）
-    sup_on_prob_ratio = 10, # 有监督辅助开关
 ):
     """多智能体 MAPPO 训练主函数。
     异构：每个 UAV id 维护独立的 ActorWrapper/critic_wrapper/MAPPOHybrid。
@@ -424,7 +424,8 @@ def run_MLP_simulation(
     agents = {}      # 学生 id -> MAPPOHybrid
     for uid in red_student_ids:
         actors[uid] = ActorWrapper(
-            fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device=device)
+            fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device=device,
+            ppo_with_bern=ppo_with_bern)
         critics[uid] = critic_wrapper(
             fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device=device)
         agents[uid] = MAPPOHybrid(
@@ -741,6 +742,7 @@ def run_MLP_simulation(
                     # 红蓝各自独立的位置打乱种子（每 episode 重新生成）
                     'red_shuffle_seed': int(np.random.randint(0, 2**31 - 1)),
                     'blue_shuffle_seed': int(np.random.randint(0, 2**31 - 1)),
+                    'ppo_with_bern': ppo_with_bern,
                 }
 
                 pipes[rank].send(('RUN_EPISODE', (current_actor_weights, opp_info, settings)))

@@ -139,12 +139,14 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                 blue_init_num = settings.get('blue_init_num', init_cfg['blue_init_num'])
                 red_init_ammo = settings.get('red_init_ammo', init_cfg['red_init_ammo'])
                 blue_init_ammo = settings.get('blue_init_ammo', init_cfg['blue_init_ammo'])
+                enm_chosen_visable = settings.get('enm_chosen_visable', 0)  # 是否接收可见性标记
+                ppo_with_bern = settings.get('ppo_with_bern', 1)  # 0 时 RL 的 log_prob/熵不含 fire 分支
 
                 # 加载红方学生共享 actor 权重（学生 id 与环境红机 id 一致，全队共用一个实例）
                 if student_actor is None:
                     student_actor = ActorWrapper(
                         fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape,
-                        device=device_worker,
+                        device=device_worker, ppo_with_bern=ppo_with_bern,
                     )
                 student_actor.load_state_dict(student_actor_weights)
                 student_actor.eval()
@@ -155,7 +157,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                     if id not in actor_dict:
                         actor_dict[id] = ActorWrapper(
                             fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape,
-                            device=device_worker,
+                            device=device_worker, ppo_with_bern=ppo_with_bern,
                         )
                     actor_dict[id].load_state_dict(sd)
                     actor_dict[id].eval()
@@ -178,6 +180,13 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                 Last_Actions = {id: None for id in student_ids}
                 Rewards = {id: 0.0 for id in student_ids}
 
+                # 预留位置
+                red_enm_index_chosen = set()
+                blue_enm_index_chosen = set()
+                # 队长 = 本队 id 最小者；它做决策时开启新一轮，清空本轮“已被选中”的敌机集合
+                red_leader_id = min(env.RUAV_ids) if env.RUAV_ids else None
+                blue_leader_id = min(env.BUAV_ids) if env.BUAV_ids else None
+                
                 maneuver_cmds_all = {}
                 target_index_all = {}
                 done = False
@@ -201,6 +210,25 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                     if count % action_cycle_multiplier == 0:
                         for id in env.UAV_ids:
                             UAV = env.find_uav_with_id(id)
+                            
+                            # 决策前把“本轮已被队友选中的敌机”写进本机观测；队长决策时先清空本轮记录
+                            if enm_chosen_visable:
+                                if UAV.side == 'r':
+                                    our_enm_index_chosen = red_enm_index_chosen
+                                    if id == red_leader_id:
+                                        our_enm_index_chosen.clear()
+                                        env.allocatedIDs_r2b.clear()
+                                else:
+                                    our_enm_index_chosen = blue_enm_index_chosen
+                                    if id == blue_leader_id:
+                                        our_enm_index_chosen.clear()
+                                        env.allocatedIDs_b2r.clear()
+                                enm_chosen_vec = np.zeros_like(agent_inputs_[id]['enm_chosen'])
+                                for chosen_i in our_enm_index_chosen:
+                                    if 0 <= chosen_i < len(enm_chosen_vec):
+                                        enm_chosen_vec[chosen_i] = 1
+                                agent_inputs_[id]['enm_chosen'] = enm_chosen_vec
+                            
                             is_student = UAV.side == 'r'
                             # 保存上一步经验（仅学生，决策步对齐，统一走 append_experience）
                             if is_student and Last_Obs[id] is not None and count > 0:
@@ -251,6 +279,17 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                                 }
                                 Last_States[id] = Curr_States[id]
 
+                            # 选完后把本机所选目标并入本轮记录，供后面决策的队友看到
+                            enm_idx = target_index_all[id]
+                            if enm_chosen_visable and \
+                                (not UAV.dead) and 0 <= enm_idx < len(enm_chosen_vec):
+                                our_enm_index_chosen.add(enm_idx)
+                            if enm_chosen_visable:
+                                if id == env.RUAV_ids[-1]:
+                                    env.allocatedIDs_r2b = set([env.index2id(id, i) for i in our_enm_index_chosen])
+                                if id == env.BUAV_ids[-1]:
+                                    env.allocatedIDs_b2r = set([env.index2id(id, i) for i in our_enm_index_chosen])
+                            
                             if fire_flag:
                                 try:
                                     env.fire_120(id, fire_target, tabu=0)
@@ -377,7 +416,7 @@ def run_MLP_simulation(
     supervised_fire_buffer_size = 1000, # [新增] 开火记录滚动缓冲容量（FIFO，像off-policy一样滚动更新）
     supervised_fire_batch_size = 128, # [新增] 每次监督更新从缓冲中采样的批大小
     ppo_with_bern = 1, # [新增] 0 时 PPO 更新跳过开火头 fc_bern（log_prob 不计入 bern 项）
-    sup_on_prob_ratio = 10, # 有监督辅助开关
+    enm_chosen_visable = 0, # 是否能看到队友的敌机选取
 ):
     """多智能体 MAPPO 训练主函数。
     同构：全队共享一套 ActorWrapper/critic_wrapper/MAPPOHybrid，经验按学生 id 收集、更新前合并。
@@ -421,7 +460,8 @@ def run_MLP_simulation(
 
     # 4. 全队共享一套 actor/critic/MAPPOHybrid（完全同构）
     actor = ActorWrapper(
-        fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device=device)
+        fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device=device,
+        ppo_with_bern=ppo_with_bern)
     critic = critic_wrapper(
         fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device=device)
     agent = MAPPOHybrid(
@@ -622,6 +662,7 @@ def run_MLP_simulation(
                             'red_init_ammo': red_init_ammo,
                             'blue_init_ammo': blue_init_ammo,
                             'temperature': 0.3,  # 测试采样温度：<1趋于贪婪决策
+                            'enm_chosen_visable': enm_chosen_visable,
                         }
                     )
                     test_tasks.append(obj)
@@ -732,6 +773,8 @@ def run_MLP_simulation(
                     # 红蓝各自独立的位置打乱种子（每 episode 重新生成）
                     'red_shuffle_seed': int(np.random.randint(0, 2**31 - 1)),
                     'blue_shuffle_seed': int(np.random.randint(0, 2**31 - 1)),
+                    'enm_chosen_visable': enm_chosen_visable,
+                    'ppo_with_bern': ppo_with_bern,
                 }
 
                 pipes[rank].send(('RUN_EPISODE', (current_actor_weights, opp_info, settings)))

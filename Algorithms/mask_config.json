@@ -1,7 +1,5 @@
 {
     "ver": 0,
-    "hor": 0,
+    "hor": 0
 
-    "是否允许RL更新开火":{},
-    "fire_included_in_RL": 1
 }
