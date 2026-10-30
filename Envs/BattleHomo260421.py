@@ -232,7 +232,13 @@ class Battle(object):
 
     def reset(self, red_birth_state=None, blue_birth_state=None, 
               red_init_num=2, blue_init_num=2,
-              red_init_ammo=4, blue_init_ammo=4, seed=None, options={"random_pos": True}, ego_side='r'):  # 重置位置和状态
+              red_init_ammo=4, blue_init_ammo=4, 
+              red_init_formation = 'wall', blue_init_formation = 'wall', # 初始队形
+              pomdp=1, seed=None, options={"random_pos": True}, 
+              ego_side='r'):  # 重置位置和状态
+        # 初始编队合法类型：随机、墙、楔、v形
+        check_formation_legal_list = ['random', 'wall', 'wedge', 'v']
+        
         # 红方已取得分配的蓝方id清零
         self.allocatedIDs_r2b = set()
         # 蓝方已取得分配的红方id清零
@@ -425,6 +431,26 @@ class Battle(object):
                     uav.radar_on = 0
         # reset后、首个step前就填充存活列表，保证决策循环可访问 alive_*_uavs
         self.update_entity_alives()
+        
+        # 初始化 last_dead 属性，防止死亡惩罚重复计算
+        for ego in self.UAVsTable.values():
+            ego.last_dead = False
+            # 周期事件缓存：瞬时标志 -> 整周期标志 -> 周期边界统一结算
+            ego.whole_cycle_escape_once = 0
+            ego.whole_cycle_got_a_miss = 0
+            ego.whole_cycle_got_a_kill = 0
+            ego.whole_cycle_can_let_go = 0
+            ego.cycle_events = []          # [(t, id, 事件内容)]
+            ego.last_cycle_t = -1e9        # 本机上次结算周期边界的时间戳
+
+        # [确认存在/修改] 确保每个 Episode 开始时重置 last_obs
+        self.last_obs = None 
+        self.pomdp = pomdp   
+
+        # 开场数据支持，至少背对背决斗时需要知道“对手在后面”
+        for id, uav in self.UAVsTable.items():
+            uav.state_memory = copy.deepcopy(self.get_state(id))
+    
         
     # 更新存活
     def update_entity_alives(self,):
@@ -636,10 +662,8 @@ class Battle(object):
 
     # TODO 输入动作打包为大小不确定的量
     def step(self, flight_cmds):
-        # 红方已取得分配的蓝方id清零
-        self.allocatedIDs_r2b = set()
-        # 蓝方已取得分配的红方id清零
-        self.allocatedIDs_b2r = set()
+        # allocatedIDs_r2b/b2r 不在 step 内清零：此处清零会让随后的 reward 永远读到空集，
+        # 清理由外部决策脚本按决策轮负责（每轮决策时覆盖写入）
         "flight_cmds 为一个list, 用id顺序排列所有飞机"
         # "actions_of_ids: {id: action}"
         report_move_time_rate = int(round(self.dt_maneuver / self.dt_move))

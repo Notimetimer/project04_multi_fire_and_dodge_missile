@@ -149,6 +149,7 @@ if __name__=='__main__':
                                        'next_states': [], 'rewards': [], 'dones': [], 'active_masks': []}
                 last_Actions = {id: None for id in env.UAV_ids}
                 Rewards = {id: None for id in env.UAV_ids}
+
             red_enm_index_chosen = set()
             blue_enm_index_chosen = set()
             # 队长 = 本队 id 最小者；它做决策时开启新一轮，清空本轮“已被选中”的敌机集合
@@ -205,10 +206,12 @@ if __name__=='__main__':
                             our_enm_index_chosen = red_enm_index_chosen
                             if id == red_leader_id:
                                 our_enm_index_chosen.clear()
+                                env.allocatedIDs_r2b.clear()
                         else:
                             our_enm_index_chosen = blue_enm_index_chosen
                             if id == blue_leader_id:
                                 our_enm_index_chosen.clear()
+                                env.allocatedIDs_b2r.clear()
 
                         # 决策前把“本机之前已被选中的敌机”写进本机观测；Obs 是深拷贝，与 agent_inputs_ 不共享内存，两处都写
                         enm_chosen_vec = np.zeros_like(agent_inputs_[id]['enm_chosen'])

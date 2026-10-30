@@ -39,37 +39,6 @@ class ChooseStrategyEnv(Battle):
         # [新增] 初始化 last_obs 属性，用于记录上一帧状态以计算瞬时奖励
         self.last_obs = None
 
-    def reset(self, red_birth_state=None, blue_birth_state=None, red_init_num=2, blue_init_num=2,
-              red_init_ammo=4, blue_init_ammo=4, pomdp=1, seed=None, options={"random_pos": True}, ego_side='r'):
-        # 1. 调用父类 Battle 的 reset 方法，执行所有通用初始化
-        super().reset(red_birth_state=red_birth_state, blue_birth_state=blue_birth_state,
-                      red_init_num=red_init_num, blue_init_num=blue_init_num,
-                      red_init_ammo=red_init_ammo, blue_init_ammo=blue_init_ammo, seed=seed,
-                      options=options, ego_side=ego_side)
-        # # 初始化红蓝远离速度
-        # self.last_dist_dot = None
-        # self.last_dhor = None
-        
-        # [新增] 初始化 last_dead 属性，防止死亡惩罚重复计算
-        for ego in self.UAVsTable.values():
-            ego.last_dead = False
-            # 周期事件缓存：瞬时标志 -> 整周期标志 -> 周期边界统一结算
-            ego.whole_cycle_escape_once = 0
-            ego.whole_cycle_got_a_miss = 0
-            ego.whole_cycle_got_a_kill = 0
-            ego.whole_cycle_can_let_go = 0
-            ego.cycle_events = []          # [(t, id, 事件内容)]
-            ego.last_cycle_t = -1e9        # 本机上次结算周期边界的时间戳
-
-        # [确认存在/修改] 确保每个 Episode 开始时重置 last_obs
-        self.last_obs = None 
-        
-        self.pomdp = pomdp   
-
-        # 开场数据支持，至少背对背决斗时需要知道“对手在后面”
-        for id, uav in self.UAVsTable.items():
-            uav.state_memory = copy.deepcopy(self.get_state(id))
-    
     """
     需要区分目标死活、填充未发射的导弹信息和死掉的敌机/队友信息，
     1、简单起见，告警信息机械筛选距离最近的，武器信息也用机械筛选时间最近的

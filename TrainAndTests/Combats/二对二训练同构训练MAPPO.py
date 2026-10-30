@@ -70,6 +70,11 @@ if __name__=='__main__':
         device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
         vertices = None,
         resume_dir=resume_target_dir, # 指定中断续训目录
+        use_supervised_fire = 0, # [新增] 开火命中监督更新开关：仅用 fire_obs->hit_record 监督 fc_bern 头
+        supervised_fire_buffer_size = 1000, # [新增] 开火记录滚动缓冲容量（FIFO，像off-policy一样滚动更新）
+        supervised_fire_batch_size = 128, # [新增] 每次监督更新从缓冲中采样的批大小
+        ppo_with_bern = 1, # [新增] 0 时 PPO 更新跳过开火头 fc_bern（log_prob 不计入 bern 项）
+        sup_on_prob_ratio = 10, # 有监督辅助开关
     )
     end_time = datetime.now()
     print(f"Simulation end: {end_time.isoformat(sep=' ', timespec='seconds')}")
