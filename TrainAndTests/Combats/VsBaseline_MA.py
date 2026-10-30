@@ -32,7 +32,7 @@ from Algorithms.ActorWithATTN import ActorWrapper
 from _context import take_some_of_rule_inputs, load_obs_dims, stack_field, load_init_states
 from _context import load_obs_dims, load_init_states
 
-use_tacview = 2 # 1 动态显示 2 静默写入 acmi_records
+USE_TACVIEW = 2 # 1 动态显示 2 静默写入 acmi_records
 
 # 是否考虑视野限制
 POMDP = 1
@@ -69,7 +69,7 @@ init_cfg = load_init_states()
 # ==========================================
 def test_worker(model_state_dict, rules_num,
                 env_args, device_name='cpu', num_runs=3,
-                vertices=None, save_record=False,
+                vertices=None, save_record=False, use_tacview=USE_TACVIEW,
                 dt_move=0.07,
                 dt_maneuver=0.2,
                 action_cycle_multiplier=10,
@@ -77,6 +77,7 @@ def test_worker(model_state_dict, rules_num,
                 red_init_num=init_cfg['red_init_num'], blue_init_num=init_cfg['blue_init_num'],
                 red_init_ammo=init_cfg['red_init_ammo'], blue_init_ammo=init_cfg['blue_init_ammo'],
                 temperature=1.0,  # 玻尔兹曼采样温度，仅本测试函数使用；训练 worker_process 不传此参数
+                enm_chosen_visable=0,  # 0 不修改 enm_chosen；1 把“本轮队友已选敌机”写进本机观测
                 ):
     seed = 42
     random.seed(seed)
@@ -150,6 +151,12 @@ def test_worker(model_state_dict, rules_num,
                     actor.eval()
                     actor_dict[rid] = actor
 
+            # 每场重置“本轮已选敌机”集合；队长=本队 id 最小者，它做决策时开启新一轮并清空记录
+            red_enm_index_chosen = set()
+            blue_enm_index_chosen = set()
+            red_leader_id = min(test_env.RUAV_ids) if test_env.RUAV_ids else None
+            blue_leader_id = min(test_env.BUAV_ids) if test_env.BUAV_ids else None
+
             # 各机上一决策步的动作缓存（按 id 保存，供执行阶段逐机取用）
             maneuver_cmds_all = {}
             target_index_all = {}
@@ -200,6 +207,24 @@ def test_worker(model_state_dict, rules_num,
                     for id in test_env.UAV_ids:
                         UAV = test_env.find_uav_with_id(id)
 
+                        # 决策前把“本轮已被队友选中的敌机”写进本机观测；队长决策时先清空本轮记录
+                        if enm_chosen_visable:
+                            if UAV.side == 'r':
+                                our_enm_index_chosen = red_enm_index_chosen
+                                if id == red_leader_id:
+                                    our_enm_index_chosen.clear()
+                                    test_env.allocatedIDs_r2b.clear()
+                            else:
+                                our_enm_index_chosen = blue_enm_index_chosen
+                                if id == blue_leader_id:
+                                    our_enm_index_chosen.clear()
+                                    test_env.allocatedIDs_b2r.clear()
+                            enm_chosen_vec = np.zeros_like(agent_inputs_[id]['enm_chosen'])
+                            for chosen_i in our_enm_index_chosen:
+                                if 0 <= chosen_i < len(enm_chosen_vec):
+                                    enm_chosen_vec[chosen_i] = 1
+                            agent_inputs_[id]['enm_chosen'] = enm_chosen_vec
+
                         # Agent 产生动作：红方走 actor（采样），蓝方走规则
                         if UAV.side == 'r':
                             # rule_inputs 用 take_some_of_rule_inputs 取子集后单样本堆叠成
@@ -225,6 +250,24 @@ def test_worker(model_state_dict, rules_num,
                             fire_target = int(fire_action['at'])
                             fire_flag = bool(fire_action['do'])
 
+                        # 选完后把本机所选目标并入本轮记录，供后面决策的队友看到
+                        enm_idx = target_index_all[id]
+                        if enm_chosen_visable and \
+                            (not UAV.dead) and 0 <= enm_idx < len(enm_chosen_vec):
+                            our_enm_index_chosen.add(enm_idx)
+                        if enm_chosen_visable:
+                            if id == test_env.RUAV_ids[-1]:
+                                test_env.allocatedIDs_r2b = set([test_env.index2id(id, i) for i in our_enm_index_chosen])
+                            if id == test_env.BUAV_ids[-1]:
+                                test_env.allocatedIDs_b2r = set([test_env.index2id(id, i) for i in our_enm_index_chosen])
+                        
+                        # # 【调试】检查状态
+                        # if steps_of_this_eps % (10 * action_cycle_multiplier)==0:
+                        #     print("ID:", id)
+                        #     print("环境侧记录选取结果", test_env.allocatedIDs_r2b if UAV.side == 'r' else test_env.allocatedIDs_b2r)
+                        #     print("enm_index_chosen:", red_enm_index_chosen if UAV.side == 'r' else blue_enm_index_chosen)
+                        #     print()
+                            
                         # 不考虑同时攻击多个目标
                         if fire_flag:
                             try:

@@ -447,13 +447,15 @@ class ChooseStrategyEnv(Battle):
                             
     # 近距杀方法，多对多也能用（加了print）
     def close_range_kill(self,):
+        gun_shot_distance = 3e3
+        gun_shot_angle = np.radians(15) # pi / 3
         for ruav in self.RUAVs:
             if ruav.dead:
                 continue
             for buav in self.BUAVs:
                 if buav.dead:
                     continue
-                elif norm(ruav.pos_ - buav.pos_) >= 8e3:
+                elif norm(ruav.pos_ - buav.pos_) >= gun_shot_distance: # 8e3:
                     continue
                 else:
                     Lbr_ = ruav.pos_ - buav.pos_
@@ -462,22 +464,24 @@ class ChooseStrategyEnv(Battle):
                     # 求解hot-cold关系
                     cos_ATA_r = np.dot(Lrb_, ruav.vel_) / (dist * ruav.speed)
                     cos_ATA_b = np.dot(Lbr_, buav.vel_) / (dist * buav.speed)
-                    # 双杀
-                    if cos_ATA_r >= cos(pi / 3) and cos_ATA_b >= cos(pi / 3):
-                        ruav.dead = True
-                        buav.dead = True
-                        ruav.got_hit = True
-                        buav.got_hit = True
-                        print('近距双杀')
+                    # # 双杀
+                    # if cos_ATA_r >= cos(gun_shot_angle) and cos_ATA_b >= cos(gun_shot_angle):
+                    #     ruav.dead = True
+                    #     buav.dead = True
+                    #     ruav.got_hit = True
+                    #     buav.got_hit = True
+                    #     print('近距双杀')
                     # 单杀
-                    if cos_ATA_r >= cos(pi / 3) and cos_ATA_b < cos(pi / 3):
+                    # 红杀蓝
+                    if cos_ATA_r >= cos(gun_shot_angle) and cos_ATA_b < cos(pi * 2/3):
                         buav.dead = True
                         buav.got_hit = True
-                        print('近距单杀')
-                    if cos_ATA_r < cos(pi / 3) and cos_ATA_b >= cos(pi / 3):
+                        print('红枪杀蓝')
+                    # 蓝杀红
+                    if cos_ATA_r < cos(gun_shot_angle) and cos_ATA_b >= cos(pi * 2/3):
                         ruav.dead = True
                         ruav.got_hit = True
-                        print('近距单杀')
+                        print('蓝枪杀红')
 
     # 近距格斗弹自动发射，多对多也能用（规则控制，不需要RL）
     def close_range_shoot(self, fire_range=10e3, fire_angle=pi/3, cooldown=10):

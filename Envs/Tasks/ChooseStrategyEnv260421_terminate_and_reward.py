@@ -97,7 +97,7 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             enmside_unused_msl_num = self.unused_r_missile_num
 
         # 胜负平续判决
-        # self.close_range_kill() # 允许跑刀
+        self.close_range_kill() # 允许跑刀
         if getattr(self, 'last_shoot_9x_t', None) != self.t: # 同一帧内多机重复调用只执行一次
             self.last_shoot_9x_t = self.t
             self.close_range_shoot() # 近距格斗弹自动发射（规则控制）

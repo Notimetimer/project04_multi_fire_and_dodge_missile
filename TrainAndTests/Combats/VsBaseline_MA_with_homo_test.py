@@ -30,8 +30,11 @@ if __name__=='__main__':
     # 测试配置
     RULES_NUM = 3      # 蓝方规则编号
     N_EPISODES = 3    # 测试场次  10
-    TEMPERATURE = 1 # 0.3  # 采样温度：<1更贪婪（机动/目标选取决策趋于确定）
-
+    TEMPERATURE = 0.3  # 采样温度：<1更贪婪（机动/目标选取决策趋于确定）
+    
+    USE_TACVIEW = 2 # 可视化方式
+    ENM_CHOSEN_VISABLE = 0 # 是否可看到敌机选取结果
+    
     args.max_episode_len = 15*60
     args.R_cage = 60.3e3
 
@@ -41,7 +44,7 @@ if __name__=='__main__':
     # 加载同构训练目录下的单份 actor（CombatMAPPO_parall_homo 产出：actor_rein{batch}.pt）
     upper_log_dir = r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat"
     LOG_DIR = os.path.join(upper_log_dir,
-                           "MAPPO_homo-run-20261029-130540", # "MAPPO_homo1v1-run-20261028-144554" # "MAPPO_homo-run-20261025-105746"
+                           "MAPPO_homo1V1-run-20261029-231006", # "MAPPO_homo1v1-run-20261028-144554" # "MAPPO_homo-run-20261025-105746"
                            )
     actor_files = glob.glob(os.path.join(LOG_DIR, "actor_rein*.pt"))
     if not actor_files:
@@ -65,7 +68,7 @@ if __name__=='__main__':
 
     rules_num, result, wins, loses, draws, perish_togethers = test_worker(
         model_state_dict, RULES_NUM, args, num_runs=N_EPISODES, vertices=vertices,
-        save_record=True, temperature=TEMPERATURE)
+        save_record=True, use_tacview=USE_TACVIEW, temperature=TEMPERATURE, enm_chosen_visable=ENM_CHOSEN_VISABLE)
 
     print(f"\n红方(神经网络) vs 蓝方(规则{rules_num})，共{N_EPISODES}场：")
     print(f"胜 {wins} / 负 {loses} / 平 {draws}，综合得分率 {result:.2%}，死光 {perish_togethers} 场")
