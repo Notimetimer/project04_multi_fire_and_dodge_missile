@@ -14,7 +14,7 @@ collape_recover={ # 是否是崩盘后恢复
             "actor_frozen_batchs": 5,
         }
 
-USE_SUPERVISED_FIRE = 1, # [新增] 开火命中监督更新开关：仅用 fire_obs->hit_record 监督 fc_bern 头
+USE_SUPERVISED_FIRE = 1 # [新增] 开火命中监督更新开关：仅用 fire_obs->hit_record 监督 fc_bern 头
 ENM_CHOSEN_VISABLE = 1 # 是否能看到队友的选择
 PPO_WITH_BERN = 1 # 是否开启PPO的开火训练梯度
 mission_name = f'MAPPO_homo_SLA_{USE_SUPERVISED_FIRE}_blackboard_{ENM_CHOSEN_VISABLE}'

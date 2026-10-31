@@ -44,7 +44,7 @@ if __name__=='__main__':
     # 加载同构训练目录下的单份 actor（CombatMAPPO_parall_homo 产出：actor_rein{batch}.pt）
     upper_log_dir = r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat"
     LOG_DIR = os.path.join(upper_log_dir,
-                           "MAPPO_homo1V1-run-20261029-231006", # "MAPPO_homo1v1-run-20261028-144554" # "MAPPO_homo-run-20261025-105746"
+                           "MAPPO_homo_SLA_1_blackboard_1-run-20261030-222210", # "MAPPO_homo1v1-run-20261028-144554" # "MAPPO_homo-run-20261025-105746"
                            )
     actor_files = glob.glob(os.path.join(LOG_DIR, "actor_rein*.pt"))
     if not actor_files:
