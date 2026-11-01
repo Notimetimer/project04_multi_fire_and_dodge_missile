@@ -77,24 +77,35 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
         if getattr(ego, 'got_a_kill', 0):    ego.whole_cycle_got_a_kill = 1
         if getattr(ego, 'can_let_go', 0):    ego.whole_cycle_can_let_go = 1
 
+        # 当下状态，合并红蓝双方写法
         if side == 'r':
             # 同侧
             egoside_alive_uavs =      self.alive_r_uavs
             egoside_alive_msls =      self.alive_r_missiles
-            egoside_unused_msl_num = self.unused_r_missile_num
+            egoside_unused_msl_num =  self.unused_r_missile_num
+            ego_uav_avg_pos_ =        self.alive_r_uav_avg_pos_
+            alive_ally_missiles =     self.alive_r_missiles
             # 对手侧
             enmside_alive_uavs =      self.alive_b_uavs
             enmside_alive_msls =      self.alive_b_missiles
-            enmside_unused_msl_num = self.unused_b_missile_num
+            enmside_unused_msl_num =  self.unused_b_missile_num
+            enm_allocatedIDs =        self.allocatedIDs_r2b
+            last_surround_angle =     self.last_r2b_surround_angle
+            enm_uav_avg_pos_ =        self.alive_b_uav_avg_pos_
         else: # 'b'
             # 同侧
             egoside_alive_uavs =      self.alive_b_uavs
             egoside_alive_msls =      self.alive_b_missiles
-            egoside_unused_msl_num = self.unused_b_missile_num
+            egoside_unused_msl_num =  self.unused_b_missile_num
+            ego_uav_avg_pos_ =        self.alive_b_uav_avg_pos_
+            alive_ally_missiles =     self.alive_b_missiles
             # 对手侧
             enmside_alive_uavs =      self.alive_r_uavs
             enmside_alive_msls =      self.alive_r_missiles
-            enmside_unused_msl_num = self.unused_r_missile_num
+            enmside_unused_msl_num =  self.unused_r_missile_num
+            enm_allocatedIDs =        self.allocatedIDs_b2r
+            last_surround_angle =     self.last_b2r_surround_angle
+            enm_uav_avg_pos_ =        self.alive_r_uav_avg_pos_
 
         # 胜负平续判决
         self.close_range_kill() # 允许跑刀
@@ -150,7 +161,8 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
 
         # 事件结算 + 奖励：周期边界 或 终局（防止最后一个不完整周期里的事件丢失）
         # 每架飞机在各自的调用里只结算自己，last_cycle_t 防止同一时刻重复结算
-        if event_reward_available or (done and getattr(ego, 'last_cycle_t', -1e9) != self.t):
+        if event_reward_available or \
+            (done and getattr(ego, 'last_cycle_t', -1e9) != self.t):
             ego.last_cycle_t = self.t
             t_now = (int(self.t/60), int(self.t%60))
             # 密集奖励
@@ -208,12 +220,6 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 r_shaping += (ego_has_lock - ego_is_locked) * DENSE_REWARD_WEIGHT
                 
                 # 密集奖励：如果有alive enm uav没有被己方任何飞机或者导弹选中，全队扣分
-                if ego.side == 'r':
-                    enm_allocatedIDs = self.allocatedIDs_r2b
-                    alive_ally_missiles = self.alive_r_missiles
-                else:
-                    enm_allocatedIDs = self.allocatedIDs_b2r
-                    alive_ally_missiles = self.alive_b_missiles
                 enm_allocateIDs4missile = [missile.target_id for missile in alive_ally_missiles]
                 
                 for enm in enmside_alive_uavs:
@@ -228,18 +234,44 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                     # 开火后不要继续指着敌机飞了
                     if min_enm_ATA < np.radians(15):
                         r_shaping += - DENSE_REWARD_WEIGHT
-                    # # 改为本机与已发射导弹视线的夹角：仍指向导弹（≈仍指向被攻击的那架敌机）时惩罚
-                    # if cos_msl_delta_psi > np.cos(np.radians(15)):
-                    #      r_shaping += - DENSE_REWARD_WEIGHT
 
-                # 队友间距分区引导（阶跃，无威胁时）：<40km 鼓励分离，>50km 鼓励靠近，40~50km 不介入，力度为标准密集奖励的 1/3
-                if teammate_dist is not None and teammate_dist_prev is not None and missile_t_fly < 40:
-                    if teammate_dist < 40e3:
-                        # 过近：距离扩大给正奖励，收缩给惩罚
-                        r_shaping += (1.0 if teammate_dist >= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT * 0.75 #/1.2
-                    elif teammate_dist > 60e3:
-                        # 过远：距离收缩给正奖励，扩大给惩罚
-                        r_shaping += (1.0 if teammate_dist <= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT * 0.75 #/1.2
+                # 计算当下包围角，需要双方至少存活一架才算有效
+                if len(egoside_alive_uavs)>0 and len(enmside_alive_uavs)>0:
+                    f2f_line_ = enm_uav_avg_pos_ - ego_uav_avg_pos_
+                    avg_surround_angle = 0
+                    for uav in egoside_alive_uavs:
+                        uav2enm_center_ = enm_uav_avg_pos_ - uav.pos_
+                        avg_surround_angle += 1/len(egoside_alive_uavs) * \
+                                np.arccos(np.dot(f2f_line_, uav2enm_center_)/(norm(f2f_line_) * norm(uav2enm_center_)) * 0.999)
+                else:
+                    avg_surround_angle = 0
+                
+                # 根据我机“包围敌机”的程度变化率给奖励
+                if last_surround_angle is not None:
+                    delta_last_surr_angle = avg_surround_angle - last_surround_angle  # 计算变化量
+                else:
+                    delta_last_surr_angle = 0
+                
+                # 疏开奖励
+                if delta_last_surr_angle > 0:
+                    r_shaping +=  0.4 * DENSE_REWARD_WEIGHT
+                elif delta_last_surr_angle < 0:
+                    r_shaping += -0.4 * DENSE_REWARD_WEIGHT
+                
+                # 复制到上一步记录中
+                if side == 'r':
+                    self.last_r2b_surround_angle = avg_surround_angle
+                else:
+                    self.last_b2r_surround_angle = avg_surround_angle
+                
+                # # 队友间距分区引导（阶跃，无威胁时）：<40km 鼓励分离，>50km 鼓励靠近，40~50km 不介入，力度为标准密集奖励的 1/3
+                # if teammate_dist is not None and teammate_dist_prev is not None and missile_t_fly < 40:
+                #     if teammate_dist < 40e3:
+                #         # 过近：距离扩大给正奖励，收缩给惩罚
+                #         r_shaping += (1.0 if teammate_dist >= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT * 0.75 #/1.2
+                #     elif teammate_dist > 60e3:
+                #         # 过远：距离收缩给正奖励，扩大给惩罚
+                #         r_shaping += (1.0 if teammate_dist <= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT * 0.75 #/1.2
                 
                 # 没有导弹处于中制导阶段
                 if (not missile_in_mid_term):

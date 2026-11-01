@@ -323,6 +323,8 @@ class Battle(object):
                 random.Random(blue_seed).shuffle(blue_birth_positions)
         
         # 无人机统一初始化
+        self.alive_r_uav_avg_pos_ = None # 平均位置
+        self.alive_b_uav_avg_pos_ = None # 平均位置
         for i in range(self.Rnum + self.Bnum):
             is_red = i < self.Rnum
             index_in_side = i if is_red else i - self.Rnum
@@ -442,6 +444,10 @@ class Battle(object):
             ego.whole_cycle_can_let_go = 0
             ego.cycle_events = []          # [(t, id, 事件内容)]
             ego.last_cycle_t = -1e9        # 本机上次结算周期边界的时间戳
+        
+        # 初始化包围角
+        self.last_r2b_surround_angle = None
+        self.last_b2r_surround_angle = None
 
         # [确认存在/修改] 确保每个 Episode 开始时重置 last_obs
         self.last_obs = None 
@@ -457,6 +463,12 @@ class Battle(object):
         # 更新飞机存活状态
         alive_r_uavs = [u for u in self.RUAVs if not u.dead]
         alive_b_uavs = [u for u in self.BUAVs if not u.dead]
+        self.alive_r_uav_avg_pos_ = np.zeros(3)
+        self.alive_b_uav_avg_pos_ = np.zeros(3)
+        for u in alive_r_uavs:
+           self.alive_r_uav_avg_pos_ += u.pos_ / len(alive_r_uavs)
+        for u in alive_b_uavs:
+           self.alive_b_uav_avg_pos_ += u.pos_ / len(alive_b_uavs)
         self.alive_r_uavs = alive_r_uavs
         self.alive_b_uavs = alive_b_uavs
         self.alive_uavs = alive_r_uavs + alive_b_uavs
