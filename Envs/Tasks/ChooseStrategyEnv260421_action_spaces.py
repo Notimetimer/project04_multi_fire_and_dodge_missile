@@ -447,7 +447,7 @@ class ChooseStrategyEnv(Battle):
                             
     # 近距杀方法，多对多也能用（加了print）
     def close_range_kill(self,):
-        gun_shot_distance = 3e3
+        gun_shot_distance = 2e3
         gun_shot_angle = np.radians(15) # pi / 3
         for ruav in self.RUAVs:
             if ruav.dead:
@@ -473,12 +473,12 @@ class ChooseStrategyEnv(Battle):
                     #     print('近距双杀')
                     # 单杀
                     # 红杀蓝
-                    if cos_ATA_r >= cos(gun_shot_angle) and cos_ATA_b < cos(pi * 2/3):
+                    if cos_ATA_r >= cos(gun_shot_angle) and cos_ATA_b < cos(pi-gun_shot_angle):
                         buav.dead = True
                         buav.got_hit = True
                         print('红枪杀蓝')
                     # 蓝杀红
-                    if cos_ATA_r < cos(gun_shot_angle) and cos_ATA_b >= cos(pi * 2/3):
+                    if cos_ATA_r < cos(pi-gun_shot_angle) and cos_ATA_b >= cos(gun_shot_angle):
                         ruav.dead = True
                         ruav.got_hit = True
                         print('蓝枪杀红')
