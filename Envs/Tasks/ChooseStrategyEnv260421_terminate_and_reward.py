@@ -219,14 +219,18 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 # 锁定/被锁定
                 r_shaping += (ego_has_lock - ego_is_locked) * DENSE_REWARD_WEIGHT
                 
-                # 密集奖励：如果有alive enm uav没有被己方任何飞机或者导弹选中，全队扣分
+                # 未选取惩罚：如果有alive enm uav没有被己方任何飞机或者导弹选中，全队扣分
                 enm_allocateIDs4missile = [missile.target_id for missile in alive_ally_missiles]
-                
+                ignored_enm_num = 0
                 for enm in enmside_alive_uavs:
                     if enm.id not in enm_allocatedIDs and\
                         enm.id not in enm_allocateIDs4missile:
                         r_shaping -= DENSE_REWARD_WEIGHT * 0.15  # 费了半天劲，其实就是如果有敌机没有被选中就扣一点分
-                
+                        ignored_enm_num += 1
+                # 所有敌机都被选中有奖励
+                if ignored_enm_num == 0:
+                    r_shaping += DENSE_REWARD_WEIGHT * 0.15
+                    
                 # 制导时
                 if missile_t_fly < 40:
                     # 开火后下高
