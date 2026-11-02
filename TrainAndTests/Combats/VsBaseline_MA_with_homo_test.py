@@ -31,7 +31,7 @@ if __name__=='__main__':
     RULES_NUM = 3      # 蓝方规则编号
     N_EPISODES = 3    # 测试场次  10
     TEMPERATURE = 0.3  # 采样温度：<1更贪婪（机动/目标选取决策趋于确定）
-    TEST_INIT_NUM = 3 # 初始每边飞机数目 None 为默认
+    TEST_INIT_NUM = 5 # 初始每边飞机数目 None 为默认
     USE_TACVIEW = 2 # 可视化方式
     ENM_CHOSEN_VISABLE = 1 # 是否可看到敌机选取结果
     

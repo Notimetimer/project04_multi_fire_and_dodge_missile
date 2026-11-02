@@ -25,7 +25,7 @@ import collections
 from _context import *
 import BasicRules_Homo
 # 必须先import环境再import算法，否则算法可能无法指向设置的算法模块
-from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import ChooseStrategyEnv
+from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward import ChooseStrategyEnv
 from Algorithms.ActorWithATTN import ActorWrapper
 from Algorithms.CriticWrapper import critic_wrapper
 from Algorithms.MAPPOHybrid import MAPPOHybrid
@@ -112,7 +112,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed,
     team_ids_map: 初始化时传入的 {team_name: [id_list]}，如 {'F16': [1, 2]}。"""
     import torch
     import numpy as np
-    from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import ChooseStrategyEnv
+    from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward import ChooseStrategyEnv
     from Algorithms.ActorWithATTN import ActorWrapper
     from BasicRules_Homo import basic_rules
     from _context import take_some_of_rule_inputs, stack_field, load_obs_dims, load_init_states, append_experience

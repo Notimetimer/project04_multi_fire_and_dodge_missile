@@ -14,7 +14,7 @@ sys.path.insert(0, script_dir)
 sys.path.insert(0, project_root)
 
 from VsBaseline_MA import creat_initial_state, POMDP
-from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import ChooseStrategyEnv
+from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward import ChooseStrategyEnv
 from BasicRules_Homo import basic_rules
 from Algorithms.ActorWithATTN import ActorWrapper
 from _context import take_some_of_rule_inputs, load_obs_dims, stack_field, load_init_states

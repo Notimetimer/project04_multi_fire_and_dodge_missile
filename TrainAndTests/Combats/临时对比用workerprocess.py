@@ -3,7 +3,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
     经验只按学生 id 分组保存在内存，堆叠后通过 pipe 传回 master，不写磁盘。"""
     import torch
     import numpy as np
-    from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import ChooseStrategyEnv
+    from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward import ChooseStrategyEnv
     from Algorithms.ActorWithATTN import ActorWrapper
     from BasicRules_Homo import basic_rules
     from _context import take_some_of_rule_inputs, stack_field, load_obs_dims, load_init_states, append_experience

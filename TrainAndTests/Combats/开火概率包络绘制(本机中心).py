@@ -10,7 +10,7 @@ from math import pi, sin, cos
 from itertools import product
 from _context import *
 
-from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import ChooseStrategyEnv
+from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward import ChooseStrategyEnv
 from Math_calculates.sub_of_angles import sub_of_radian
 from Utilities.LocateDirAndAgents2 import get_latest_log_dir, find_latest_agent_path
 

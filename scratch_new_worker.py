@@ -3,7 +3,7 @@ def worker_process(worker_id, pipe, args, device_worker, num_workers, shared_dic
     import numpy as np
     from Algorithms.ActorMLPHeads import ActorMLPWrapper
     from Algorithms.MLP_heads import ValueNet
-    from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import ChooseStrategyEnv
+    from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward import ChooseStrategyEnv
     from copy import deepcopy
 
     env = ChooseStrategyEnv(args, tacview_show=False)

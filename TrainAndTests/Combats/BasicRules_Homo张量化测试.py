@@ -10,7 +10,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.append(project_root)
 
 
-from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import *
+from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward import *
 from Math_calculates.sub_of_angles import *
 import re
 import csv

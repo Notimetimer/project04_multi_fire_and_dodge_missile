@@ -16,7 +16,7 @@ sys.path.append(project_root)
 
 from _context import load_init_states
 
-from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import *
+from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward import *
 
 
 if __name__ == '__main__':

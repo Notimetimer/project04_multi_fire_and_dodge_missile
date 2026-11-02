@@ -6,7 +6,7 @@ from math import *
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(project_root)
 
-from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import ChooseStrategyEnv
+from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward import ChooseStrategyEnv
 from BasicRules_Homo import basic_rules
 import argparse
 

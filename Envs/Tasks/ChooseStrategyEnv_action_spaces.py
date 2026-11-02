@@ -24,7 +24,7 @@ def get_current_file_dir():
 current_dir = get_current_file_dir()
 sys.path.append(os.path.dirname(os.path.dirname(current_dir)))
 
-from Envs.BattleHomo260421 import *
+from Envs.BattleHomo import *
 
 
 # 通过继承构建观测空间、奖励函数和终止条件
@@ -39,37 +39,6 @@ class ChooseStrategyEnv(Battle):
         # [新增] 初始化 last_obs 属性，用于记录上一帧状态以计算瞬时奖励
         self.last_obs = None
 
-    def reset(self, red_birth_state=None, blue_birth_state=None, red_init_num=2, blue_init_num=2,
-              red_init_ammo=4, blue_init_ammo=4, pomdp=1, seed=None, options={"random_pos": True}, ego_side='r'):
-        # 1. 调用父类 Battle 的 reset 方法，执行所有通用初始化
-        super().reset(red_birth_state=red_birth_state, blue_birth_state=blue_birth_state,
-                      red_init_num=red_init_num, blue_init_num=blue_init_num,
-                      red_init_ammo=red_init_ammo, blue_init_ammo=blue_init_ammo, seed=seed,
-                      options=options, ego_side=ego_side)
-        # # 初始化红蓝远离速度
-        # self.last_dist_dot = None
-        # self.last_dhor = None
-        
-        # [新增] 初始化 last_dead 属性，防止死亡惩罚重复计算
-        for ego in self.UAVsTable.values():
-            ego.last_dead = False
-            # 周期事件缓存：瞬时标志 -> 整周期标志 -> 周期边界统一结算
-            ego.whole_cycle_escape_once = 0
-            ego.whole_cycle_got_a_miss = 0
-            ego.whole_cycle_got_a_kill = 0
-            ego.whole_cycle_can_let_go = 0
-            ego.cycle_events = []          # [(t, id, 事件内容)]
-            ego.last_cycle_t = -1e9        # 本机上次结算周期边界的时间戳
-
-        # [确认存在/修改] 确保每个 Episode 开始时重置 last_obs
-        self.last_obs = None 
-        
-        self.pomdp = pomdp   
-
-        # 开场数据支持，至少背对背决斗时需要知道“对手在后面”
-        for id, uav in self.UAVsTable.items():
-            uav.state_memory = copy.deepcopy(self.get_state(id))
-    
     """
     需要区分目标死活、填充未发射的导弹信息和死掉的敌机/队友信息，
     1、简单起见，告警信息机械筛选距离最近的，武器信息也用机械筛选时间最近的
@@ -180,6 +149,7 @@ class ChooseStrategyEnv(Battle):
         information_output['fixed'] = flatten_fixed_obs(full_obs)
         information_output['ally'] = ally_array
         information_output['enm'] = enm_array
+        information_output['enm_chosen'] = np.zeros(len(enm_array)) # 占位符，真正填入数据只能在主循环里
         mask_output['ally'] = mask_ally
         mask_output['enm'] = mask_enm
 
@@ -337,73 +307,6 @@ class ChooseStrategyEnv(Battle):
             print(f"{ego.id}向{enm_id}发射一枚中距弹")
         return new_missile_id
 
-    def maneuver_TIM(self, id, enm_idx, action, full_obs_at_the_moment):
-        """
-        action在这里是一维的
-        0、左上
-        1、上
-        2、右上
-        3、左
-        4、中
-        5、右
-        6、坐下
-        7、下
-        8、右下
-        9、向上半筋斗
-        10、破S
-        """
-        # 速度指令，锁定340
-        speed_cmd = 340
-        ego = self.find_uav_with_id(id)
-        theta_desired = 0
-        delta_psi_cmd = 0
-        vice_uav_states = self.unscale_processed_obs(full_obs_at_the_moment)
-        delta_psi_threat = atan2(vice_uav_states["RWR_infos"]["sin_threat_delta_psi"], vice_uav_states["RWR_infos"]["cos_threat_delta_psi"])
-        warning = vice_uav_states["RWR_infos"]["warning"]
-        if action == 0:
-            theta_desired = np.radians(60)
-            delta_psi_cmd = -pi/2
-        if action == 1:
-            theta_desired = np.radians(60)
-            delta_psi_cmd = 0
-        if action == 2:
-            theta_desired = np.radians(60)
-            delta_psi_cmd = pi/2
-        if action == 3:
-            theta_desired = 0
-            delta_psi_cmd = -pi/2
-        if action == 4:
-            theta_desired = 0
-            delta_psi_cmd = 0
-        if action == 5:
-            theta_desired = 0
-            delta_psi_cmd = pi/2
-        if action == 6:
-            theta_desired = np.radians(-60)
-            delta_psi_cmd = -pi/2
-        if action == 7:
-            theta_desired = np.radians(-60)
-            delta_psi_cmd = 0
-        if action == 8:
-            theta_desired = np.radians(-60)
-            delta_psi_cmd = pi/2
-        if action == 9:
-            theta_desired = np.radians(60)
-            delta_psi_temp = delta_psi_threat if warning else pi
-            delta_psi_cmd = np.clip(sub_of_radian(delta_psi_temp, pi), -pi/2, pi/2)
-        if action == 10:
-            theta_desired = np.radians(-60)
-            delta_psi_temp = delta_psi_threat if warning else pi
-            delta_psi_cmd = np.clip(sub_of_radian(delta_psi_temp, pi), -pi/2, pi/2)
-        
-        # 不能出安全高度范围
-        delta_height_cmd = np.clip(theta_desired/pi*2*5000, 
-                                    self.min_alt_safe-ego.alt, 
-                                    self.max_alt_safe-ego.alt)
-
-        return np.array([delta_height_cmd, delta_psi_cmd, speed_cmd])
-        
-    
     # 只针对一个敌机的动作空间（不考虑队友也不考虑综合情况）
     "动作空间留多一个槽位，用来接住null_token输出的index"
     def maneuver_for_1_enm(self, id, enm_index, action, full_obs_at_the_moment):
@@ -544,13 +447,15 @@ class ChooseStrategyEnv(Battle):
                             
     # 近距杀方法，多对多也能用（加了print）
     def close_range_kill(self,):
+        gun_shot_distance = 2e3
+        gun_shot_angle = np.radians(15) # pi / 3
         for ruav in self.RUAVs:
             if ruav.dead:
                 continue
             for buav in self.BUAVs:
                 if buav.dead:
                     continue
-                elif norm(ruav.pos_ - buav.pos_) >= 8e3:
+                elif norm(ruav.pos_ - buav.pos_) >= gun_shot_distance: # 8e3:
                     continue
                 else:
                     Lbr_ = ruav.pos_ - buav.pos_
@@ -559,22 +464,24 @@ class ChooseStrategyEnv(Battle):
                     # 求解hot-cold关系
                     cos_ATA_r = np.dot(Lrb_, ruav.vel_) / (dist * ruav.speed)
                     cos_ATA_b = np.dot(Lbr_, buav.vel_) / (dist * buav.speed)
-                    # 双杀
-                    if cos_ATA_r >= cos(pi / 3) and cos_ATA_b >= cos(pi / 3):
-                        ruav.dead = True
-                        buav.dead = True
-                        ruav.got_hit = True
-                        buav.got_hit = True
-                        print('近距双杀')
+                    # # 双杀
+                    # if cos_ATA_r >= cos(gun_shot_angle) and cos_ATA_b >= cos(gun_shot_angle):
+                    #     ruav.dead = True
+                    #     buav.dead = True
+                    #     ruav.got_hit = True
+                    #     buav.got_hit = True
+                    #     print('近距双杀')
                     # 单杀
-                    if cos_ATA_r >= cos(pi / 3) and cos_ATA_b < cos(pi / 3):
+                    # 红杀蓝
+                    if cos_ATA_r >= cos(gun_shot_angle) and cos_ATA_b < cos(pi-gun_shot_angle):
                         buav.dead = True
                         buav.got_hit = True
-                        print('近距单杀')
-                    if cos_ATA_r < cos(pi / 3) and cos_ATA_b >= cos(pi / 3):
+                        print('红枪杀蓝')
+                    # 蓝杀红
+                    if cos_ATA_r < cos(pi-gun_shot_angle) and cos_ATA_b >= cos(gun_shot_angle):
                         ruav.dead = True
                         ruav.got_hit = True
-                        print('近距单杀')
+                        print('蓝枪杀红')
 
     # 近距格斗弹自动发射，多对多也能用（规则控制，不需要RL）
     def close_range_shoot(self, fire_range=10e3, fire_angle=np.radians(50), cooldown=10): # pi/3

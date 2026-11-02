@@ -23,8 +23,8 @@ def get_current_file_dir():
 current_dir = get_current_file_dir()
 sys.path.append(os.path.dirname(os.path.dirname(current_dir)))
 
-from Envs.BattleHomo260421 import *
-from .ChooseStrategyEnv260421_action_spaces import ChooseStrategyEnv as BaseChooseStrategyEnv
+from Envs.BattleHomo import *
+from .ChooseStrategyEnv_action_spaces import ChooseStrategyEnv as BaseChooseStrategyEnv
 
 # 通过继承构建观测空间、奖励函数和终止条件
 # 通过类的组合获取各子策略的观测量裁剪

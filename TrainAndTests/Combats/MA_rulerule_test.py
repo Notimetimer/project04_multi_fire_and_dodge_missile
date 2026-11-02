@@ -23,7 +23,7 @@ from math import *
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(project_root)
 
-from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import *
+from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward import *
 from Math_calculates.sub_of_angles import *
 from BasicRules_Homo import basic_rules
 from _context import load_init_states

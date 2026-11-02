@@ -4,7 +4,7 @@ import argparse
 import torch
 
 sys.path.append(r'd:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile')
-from Envs.Tasks.ChooseStrategyEnv260421_terminate_and_reward import ChooseStrategyEnv
+from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward import ChooseStrategyEnv
 from Algorithms.ActorMLPHeads import ActorMLPWrapper
 
 args = argparse.Namespace(max_episode_len=3000)

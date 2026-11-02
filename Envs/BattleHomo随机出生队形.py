@@ -237,9 +237,9 @@ class Battle(object):
             # 构造一个0, 1, -1, 2，-2 的函数
             # temp = (-1)**index_in_side * int((index_in_side+1)/2)
             # 1/2, -1/2, 3/2, -3/2, 5/2, -5/2...
-            temp = (-1)**index_in_side * (np.floor(index_in_side/2) + 1) / 2
+            temp = (-1)**(index_in_side) * (np.floor(index_in_side/2 + 0.5))
             # 出生点间距ally_dist_init，南北排开
-            positions.append(birth_state['position'].copy() + np.array([1, 0, 0]) * temp * 2 * ally_dist_init)
+            positions.append(birth_state['position'].copy() + np.array([1, 0, 0]) * temp * ally_dist_init)
         if random_pos:
             # 红蓝双方分别用不同的随机种子打乱队内初始位置排序（局部Random实例，None则从系统熵播种）
             if shuffle_seed is None:
@@ -253,31 +253,47 @@ class Battle(object):
         positions = []
         # 小id永远更靠近中心，大id更靠后面
         if birth_state['position'][2] > 0: 
-            # 东侧出生，id小则靠西
-            for index_in_side in range(num):
-                positions.append(birth_state['position'].copy() + np.array([0, 0, -1]) * ally_dist_init * (
-                    num - (index_in_side+1)
-                ))
+            side_word = -1 # 东侧出生，id小则靠西
         else:
-            # 西侧出生，id小则靠东
-            for index_in_side in range(num):
-                positions.append(birth_state['position'].copy() + np.array([0, 0, 1]) * ally_dist_init * (
-                    num - (index_in_side+1)
-                ))
+            side_word = 1 # 西侧出生，id小则靠东
+        for index_in_side in range(num):
+            positions.append(birth_state['position'].copy() + np.array([0, 0, side_word]) * ally_dist_init * (
+                num - (index_in_side+1)
+            ))
         return positions
 
     def _v_birth_positions(self, birth_state, num, random_pos, shuffle_seed, ally_dist_init=5e3):
         """v 队形出生点列表（接口预留，待实现）"""
-        raise NotImplementedError('v 队形出生点偏移待实现')
+        positions = []
+        # 小id永远更靠近中心，大id更靠后面
+        if birth_state['position'][2] > 0: 
+            side_word = -1 # 东侧出生，id小则靠西
+        else:
+            side_word = 1 # 西侧出生，id小则靠东
+        if random_pos:
+            temp = random.choice([0,1]) # 提供南北的随机性
+        else:
+            temp = 0
+        for index_in_side in range(num):
+            # 出生点 (注意：使用 copy 防止修改外部传入的字典数据)
+            # 构造一个0, 1, -1, 2，-2 的函数
+            # temp = (-1)^(t)*floor((t+1)/2)
+            temp_NS = (-1)**(index_in_side + temp) * np.ceil(index_in_side/2)
+            temp_EW = np.ceil((num-1)/2) - np.ceil(index_in_side/2)
+            # 出生点间距ally_dist_init，南北排开
+            positions.append(birth_state['position'].copy() + ally_dist_init/np.sqrt(2) * \
+                (np.array([1, 0, 0]) * temp_NS + np.array([0, 0, side_word]) * temp_EW))
+        return positions
 
     def reset(self, red_birth_state=None, blue_birth_state=None, 
               red_init_num=2, blue_init_num=2,
               red_init_ammo=4, blue_init_ammo=4, 
-              red_init_formation = 'wedge', blue_init_formation = 'wall', # 初始队形
-              pomdp=1, seed=None, options={"random_pos": True}, 
+              red_alive_num=None, blue_alive_num=None,
+              red_init_formation = 'random', blue_init_formation = 'random', # 初始队形
+              pomdp=1, seed=None, options={"random_pos": True},
               ego_side='r'):  # 重置位置和状态
         # 初始编队合法类型：随机、墙、楔、v形
-        check_formation_legal_list = ['wall', 'wedge', 'v']
+        check_formation_legal_list = ['wall', 'wedge', 'v'] # random
         
         # 随机初始化处理
         if red_init_formation == 'random': # not in check_formation_legal_list
@@ -454,12 +470,16 @@ class Battle(object):
         self.RMissileTable = {}
         self.BMissileTable = {}
         self.MissileTable = {}
-        # 按 init_states.json 的 alive_num 随机击杀差额飞机，直到该方剩余 alive_num 架存活
-        init_states_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'TrainAndTests', 'Combats', 'init_states.json')
-        with open(init_states_path, 'r', encoding='utf-8') as f:
-            init_states = json.load(f)
-        red_alive_num = init_states.get('red_alive_num', self.Rnum)
-        blue_alive_num = init_states.get('blue_alive_num', self.Bnum)
+        # alive_num 优先级：reset 显式传入 > init_states.json 读取
+        if red_alive_num is None or blue_alive_num is None:
+            # 按 init_states.json 的 alive_num 随机击杀差额飞机，直到该方剩余 alive_num 架存活
+            init_states_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'TrainAndTests', 'Combats', 'init_states.json')
+            with open(init_states_path, 'r', encoding='utf-8') as f:
+                init_states = json.load(f)
+            if red_alive_num is None:
+                red_alive_num = init_states.get('red_alive_num', self.Rnum)
+            if blue_alive_num is None:
+                blue_alive_num = init_states.get('blue_alive_num', self.Bnum)
         # 击杀选取改为确定性：按 id 升序保留、id 最大的先杀，存活结果与随机种子无关
         for side_uavs, alive_num in ((self.RUAVs, red_alive_num),
                                      (self.BUAVs, blue_alive_num)):
