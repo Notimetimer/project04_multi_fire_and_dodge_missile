@@ -52,7 +52,7 @@ class collector(nn.Module):
 
         # e 固定结构：cat((B, fixed_dim), 聚合enm (B, E), 聚合ally (B, E))
         e = torch.cat((fixed, agg_enm, agg_ally), dim=-1)    # (B, fixed_dim + 2*E)
-        return e, enm_logits, ally_logits
+        return e
 
 
 # 评估器网络：单线性输出头的 MLP，输入固定维度特征向量 e，输出 V(s) 值。
@@ -106,12 +106,10 @@ class critic_wrapper(nn.Module):
         enm = self._to_tensor(agent_inputs['enm'], torch.float32, self.enm_shape)
         ally = self._to_tensor(agent_inputs['ally'], torch.float32, self.ally_shape)
 
-        e, enm_logits, ally_logits = self.collector({'fixed': fixed, 'enm': enm, 'ally': ally})
+        e = self.collector({'fixed': fixed, 'enm': enm, 'ally': ally})
         value = self.judge(e)
 
         return {
-            'enm_logits': enm_logits,
-            'ally_logits': ally_logits,
             'value': value,
         }
 

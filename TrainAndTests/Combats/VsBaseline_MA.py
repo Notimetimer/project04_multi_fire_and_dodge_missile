@@ -342,12 +342,26 @@ def test_worker(model_state_dict, rules_num,
                         writer.writerows(event_rows)
 
         result = (wins + 0.5 * draws) / num_runs
-        return rules_num, result, wins, loses, draws, perish_togethers
+        return {
+            'rules_num': rules_num,
+            'result': result,
+            'wins': wins,
+            'loses': loses,
+            'draws': draws,
+            'perish_togethers': perish_togethers,
+        }
 
     except KeyboardInterrupt:
         print("\n检测到 KeyboardInterrupt")
         result = (wins + 0.5 * draws) / max(len(episode_times), 1)
-        return rules_num, result, wins, loses, draws, perish_togethers
+        return {
+            'rules_num': rules_num,
+            'result': result,
+            'wins': wins,
+            'loses': loses,
+            'draws': draws,
+            'perish_togethers': perish_togethers,
+        }
     finally:
         test_env.end_render() # 停止发送
 
@@ -393,9 +407,9 @@ if __name__=='__main__':
     }
     print(f"加载最新 actor：batch={loaded_version}，红机 id={sorted(model_state_dict.keys())}")
 
-    rules_num, result, wins, loses, draws, perish_togethers = test_worker(
+    stats = test_worker(
         model_state_dict, RULES_NUM, args, num_runs=N_EPISODES, vertices=vertices,
         save_record=True, temperature=TEMPERATURE)
 
-    print(f"\n红方(神经网络) vs 蓝方(规则{rules_num})，共{N_EPISODES}场：")
-    print(f"胜 {wins} / 负 {loses} / 平 {draws}，综合得分率 {result:.2%}，死光 {perish_togethers} 场")
+    print(f"\n红方(神经网络) vs 蓝方(规则{stats['rules_num']})，共{N_EPISODES}场：")
+    print(f"胜 {stats['wins']} / 负 {stats['loses']} / 平 {stats['draws']}，综合得分率 {stats['result']:.2%}，死光 {stats['perish_togethers']} 场")

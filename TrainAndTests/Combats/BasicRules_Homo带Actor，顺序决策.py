@@ -511,7 +511,7 @@ if __name__=='__main__':
             def forward(self, agent_inputs):
                 out = self.critic.get_value(agent_inputs)
                 # trace 输出用 tuple（同 ActorGraphWrapper，dict 输出会被 torch 1.11 tracer 拒绝）
-                return (out['enm_logits'], out['ally_logits'], out['value'])
+                return (out['value'])
 
         # 递归把 numpy 数组转为 tensor（追踪时 dict 内非 tensor 值不会被记录为图输入）
         def to_tensor_tree(x):

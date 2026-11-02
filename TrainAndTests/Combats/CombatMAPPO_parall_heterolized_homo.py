@@ -637,8 +637,8 @@ def run_MLP_simulation(
 
                 # 阻塞等待全部测试完成后再进入采样
                 test_results = [t.get() for t in test_tasks]
-                outcomes = {rule_num: score for rule_num, score, wins, loses, draws, p_t_ in test_results}
-                outcomes_perish = {rule_num: p_t_ / num_runs for rule_num, score, wins, loses, draws, p_t_ in test_results}
+                outcomes = {r['rules_num']: r['result'] for r in test_results}
+                outcomes_perish = {r['rules_num']: r['perish_togethers'] / num_runs for r in test_results}
 
                 for r_num, score in outcomes.items():
                     logger.add(f"test/agent_vs_rule{r_num}", score, total_steps/action_cycle_multiplier)
@@ -660,14 +660,14 @@ def run_MLP_simulation(
                     _w = csv.writer(_f)
                     if _need_header:
                         _w.writerow(csv_header)
-                    for rule_num, score, wins, loses, draws, p_t_ in test_results:
+                    for r in test_results:
                         _w.writerow([
                             batch_idx,
                             int(total_steps / action_cycle_multiplier),
-                            rule_num,
-                            wins, loses, draws,
-                            float(score),
-                            float(p_t_ / num_runs),
+                            r['rules_num'],
+                            r['wins'], r['loses'], r['draws'],
+                            float(r['result']),
+                            float(r['perish_togethers'] / num_runs),
                             num_runs,
                         ])
 

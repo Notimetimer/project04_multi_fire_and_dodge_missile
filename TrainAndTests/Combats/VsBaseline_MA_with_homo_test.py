@@ -66,15 +66,15 @@ if __name__=='__main__':
     model_state_dict = torch.load(homo[loaded_version], map_location='cpu')
     print(f"加载同构 actor：batch={loaded_version}（单份，全队共享）")
 
-    rules_num, result, wins, loses, draws, perish_togethers = test_worker(
+    stats = test_worker(
         model_state_dict, RULES_NUM, args, num_runs=N_EPISODES, vertices=vertices,
         save_record=True, use_tacview=USE_TACVIEW, 
         red_init_num=TEST_INIT_NUM, blue_init_num=TEST_INIT_NUM,
         red_alive_num=TEST_INIT_NUM, blue_alive_num=TEST_INIT_NUM,
         temperature=TEMPERATURE, enm_chosen_visable=ENM_CHOSEN_VISABLE)
 
-    print(f"\n红方(神经网络) vs 蓝方(规则{rules_num})，共{N_EPISODES}场：")
-    print(f"胜 {wins} / 负 {loses} / 平 {draws}，综合得分率 {result:.2%}，死光 {perish_togethers} 场")
+    print(f"\n红方(神经网络) vs 蓝方(规则{stats['rules_num']})，共{N_EPISODES}场：")
+    print(f"胜 {stats['wins']} / 负 {stats['loses']} / 平 {stats['draws']}，综合得分率 {stats['result']:.2%}，死光 {stats['perish_togethers']} 场")
 
     # 红、蓝方 1 号奖励的折扣蒙特卡洛回报曲线（数据来自 test_worker 落盘的 uav_{id}_events.csv）
     # plt.subplots 每次调用都会新建窗口：红方 1 号是 Figure 1，蓝方 1 号（id 从 201 起）是 Figure 2
