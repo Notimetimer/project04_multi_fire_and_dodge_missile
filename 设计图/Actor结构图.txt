@@ -5,9 +5,7 @@ flowchart LR
     rule_inputs --> selector
     selector --> selected_info
     selector --> enm_idx
-    selector --> ally_idx
     selector --> log_prob_enm
-    selector --> log_prob_ally
     selector --> mini_rule_input
     selected_info --> pilot
     mini_rule_input --> pilot

@@ -31,7 +31,7 @@ if __name__=='__main__':
     RULES_NUM = 3      # 蓝方规则编号
     N_EPISODES = 3    # 测试场次  10
     TEMPERATURE = 0.3  # 采样温度：<1更贪婪（机动/目标选取决策趋于确定）
-    TEST_INIT_NUM = 10 # 初始每边飞机数目 None 为默认
+    TEST_INIT_NUM = 3 # 初始每边飞机数目 None 为默认
     USE_TACVIEW = 2 # 可视化方式
     ENM_CHOSEN_VISABLE = 1 # 是否可看到敌机选取结果
     
@@ -44,7 +44,7 @@ if __name__=='__main__':
     # 加载同构训练目录下的单份 actor（CombatMAPPO_parall_homo 产出：actor_rein{batch}.pt）
     upper_log_dir = r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat"
     LOG_DIR = os.path.join(upper_log_dir,
-                           "MAPPO_homo_SLA_1_blackboard_0-run-20261101-220353", # "MAPPO_homo1v1-run-20261028-144554" # "MAPPO_homo-run-20261025-105746"
+                           "MAPPO_homo_SLA_1_blackboard_0-run-20261030-222318", # "MAPPO_homo1v1-run-20261028-144554" # "MAPPO_homo-run-20261025-105746"
                            )
     actor_files = glob.glob(os.path.join(LOG_DIR, "actor_rein*.pt"))
     if not actor_files:

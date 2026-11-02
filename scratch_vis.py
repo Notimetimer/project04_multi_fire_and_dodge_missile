@@ -26,19 +26,19 @@ class TraceWrapper(torch.nn.Module):
         self.actor = actor
 
     def forward(self, fixed, enm, ally, enm_mask, ally_mask,
-                enm_idx, ally_idx, hor, vert, fire):
+                enm_idx, hor, vert, fire):
         # 直接调用 selector / pilot，绕过 pack_inputs 中的 numpy 转换
         # （trace/onnx 要求纯 tensor 路径）
         packed_agent = {'fixed': fixed, 'enm': enm, 'ally': ally}
         packed_mask = {'enm': enm_mask, 'ally': ally_mask}
-        selected_info, enm_idx_o, ally_idx_o, log_prob_enm, log_prob_ally = \
-            self.actor.selector(packed_agent, packed_mask,
-                                enm_idx=enm_idx, ally_idx=ally_idx)
+        selected_info, enm_idx_o, mini_rule_inputs, log_prob_enm, ent_enm = \
+            self.actor.selector(packed_agent, packed_mask, {},
+                                enm_idx=enm_idx)
         # pilot 只输出 logits，不含随机算子，可直接 trace
-        pilot_logits = self.actor.pilot(selected_info, rule_inputs={})
+        pilot_logits = self.actor.pilot(selected_info, mini_rule_inputs)
         return (
             pilot_logits['hor'], pilot_logits['vert'], pilot_logits['fire'],
-            enm_idx_o, ally_idx_o, log_prob_enm, log_prob_ally,
+            enm_idx_o, log_prob_enm,
         )
 
 
@@ -52,7 +52,6 @@ def make_dummy(batch=2, enm_shape=(3, 10), ally_shape=(2, 9), fixed_dim=28):
         'ally': torch.ones(batch, ally_shape[0], dtype=torch.bool),
     }, {
         'enm_idx': torch.zeros(batch, dtype=torch.long),
-        'ally_idx': torch.zeros(batch, dtype=torch.long),
         'hor': torch.zeros(batch, dtype=torch.long),
         'vert': torch.zeros(batch, dtype=torch.long),
         'fire': torch.zeros(batch, dtype=torch.long),
@@ -65,7 +64,7 @@ def export_tensorboard(trace_model, agent, mask, actions, log_dir='runs/actor_gr
     dummy = (
         agent['fixed'], agent['enm'], agent['ally'],
         mask['enm'], mask['ally'],
-        actions['enm_idx'], actions['ally_idx'],
+        actions['enm_idx'],
         actions['hor'], actions['vert'], actions['fire'],
     )
     # add_graph 对 dict 输入/动态图支持有限，用 trace wrapper 规避
@@ -80,16 +79,16 @@ def export_onnx(trace_model, agent, mask, actions, path='actor.onnx'):
     dummy = (
         agent['fixed'], agent['enm'], agent['ally'],
         mask['enm'], mask['ally'],
-        actions['enm_idx'], actions['ally_idx'],
+        actions['enm_idx'],
         actions['hor'], actions['vert'], actions['fire'],
     )
     input_names = [
         'fixed', 'enm', 'ally', 'enm_mask', 'ally_mask',
-        'enm_idx', 'ally_idx', 'hor', 'vert', 'fire',
+        'enm_idx', 'hor', 'vert', 'fire',
     ]
     output_names = [
         'hor_logits', 'vert_logits', 'fire_logits',
-        'enm_idx', 'ally_idx', 'log_prob_enm', 'log_prob_ally',
+        'enm_idx', 'log_prob_enm',
     ]
     dynamic_axes = {name: {0: 'batch'} for name in input_names + output_names}
     # dynamo=False 使用 legacy torch.jit.trace，能处理 torch.distributions

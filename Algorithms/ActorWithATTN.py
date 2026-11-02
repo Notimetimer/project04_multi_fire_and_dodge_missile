@@ -163,7 +163,7 @@ class selector(nn.Module):
         self.enm_attn = PointerNetAttention(embed_dim, embed_dim)
         self.ally_attn = CrossAttentionPooling(embed_dim, embed_dim)
 
-    def forward(self, agent_inputs, mask_inputs, rule_inputs, enm_idx=None, ally_idx=None, temperature=1.0):
+    def forward(self, agent_inputs, mask_inputs, rule_inputs, enm_idx=None, temperature=1.0):
         fixed = agent_inputs['fixed'] # 应该是(batch, fixed_dim)
         enm = agent_inputs['enm'] # 应该是(batch, enm_num, enm_shape[1])
         ally = agent_inputs['ally'] # 应该是(batch, ally_num, ally_shape[1])
@@ -193,7 +193,6 @@ class selector(nn.Module):
 
         # 敌人选取分布和队友选取分布（temperature 仅测试时调节采样平滑度，默认1不改变分布）
         # 缩放后重新铺掩码兜底：掩码槽位统一用 -_MASK_VAL（有限值），温度缩放不会溢出为 -inf
-        # 注：ally 已改为聚合嵌入，无选择分布；ally_idx 固定 0 占位，log_prob/熵恒为 0（PPO 比率该项恒为 1）
         enm_scores = enm_scores / temperature
         if enm_mask is not None:
             enm_scores = enm_scores.masked_fill(~enm_mask, -_MASK_VAL)
@@ -201,11 +200,6 @@ class selector(nn.Module):
 
         if enm_idx is None:
             enm_idx = enm_dist.sample()
-
-        batch_size = fixed.shape[0]
-        ally_idx = torch.zeros(batch_size, dtype=torch.long, device=fixed.device)
-        log_prob_ally = torch.zeros(batch_size, device=fixed.device)
-        ent_ally = torch.zeros(batch_size, device=fixed.device)
 
         log_prob_enm = enm_dist.log_prob(enm_idx)
 
@@ -234,7 +228,7 @@ class selector(nn.Module):
             v_t = torch.as_tensor(v, device=enm_idx.device)
             mini_rule_inputs['enm_info'][k] = v_t.gather(1, enm_idx_col).squeeze(1)  # (B,)
             # 输出[b, 0] = v_t[b, enm_idx_col[b, 0]] = v_t[b, enm_idx[b]]
-        return selected_info, enm_idx, ally_idx, mini_rule_inputs, log_prob_enm, log_prob_ally, ent_enm, ent_ally
+        return selected_info, enm_idx, mini_rule_inputs, log_prob_enm, ent_enm
 
 
 # 飞行员网络：接收 selector 选出的信息，输出 vert/hor/fire 三路逻辑值。
@@ -412,7 +406,7 @@ class ActorWrapper(nn.Module):
     def get_action(self, agent_inputs, mask_inputs, rule_inputs, h=None, temperature=1.0):
         # temperature：玻尔兹曼采样温度，仅测试时使用；训练采样走默认值1，分布不变
         packed_agent, packed_mask = self.pack_inputs(agent_inputs, mask_inputs)
-        selected_info, enm_idx, ally_idx, mini_rule_inputs, log_prob_enm, log_prob_ally, _, _ = self.selector(
+        selected_info, enm_idx, mini_rule_inputs, log_prob_enm, _ = self.selector(
             packed_agent, packed_mask, rule_inputs, temperature=temperature,
         )
         pilot_logits = self.pilot(selected_info, mini_rule_inputs)
@@ -434,13 +428,11 @@ class ActorWrapper(nn.Module):
 
         return {
             'enm_idx': enm_idx,
-            'ally_idx': ally_idx,
             'fire': fire,
             'hor_idx': hor_idx,
             'vert_idx': vert_idx,
             'fire_mask': pilot_logits['fire_mask'],
             'log_prob_enm': log_prob_enm,
-            'log_prob_ally': log_prob_ally,
             'log_prob_act': log_prob_act,
         }
 
@@ -469,20 +461,19 @@ class ActorWrapper(nn.Module):
                 enm_chosen = enm_chosen.unsqueeze(0)
             packed_agent['enm_chosen'] = enm_chosen.unsqueeze(-1)  # (B, N, 1)
 
-        # 回放动作键：vert / hor / fire / enm_idx / ally_idx（与采集脚本 last_Actions 一致）
+        # 回放动作键：vert / hor / fire / enm_idx（与采集脚本 last_Actions 一致）
         enm_idx = torch.as_tensor(actions['enm_idx'], dtype=torch.long, device=device)
-        ally_idx = torch.as_tensor(actions['ally_idx'], dtype=torch.long, device=device)
         vert_idx = torch.as_tensor(actions['vert'], dtype=torch.long, device=device)
         hor_idx = torch.as_tensor(actions['hor'], dtype=torch.long, device=device)
         fire = torch.as_tensor(actions['fire'], dtype=torch.long, device=device)
 
-        # selector 传入回放中的 enm_idx/ally_idx：只算这两个已选样本的 log_prob 与选定 embedding，
-        # ent_enm/ent_ally 是遍历全部槽位的 Categorical 熵 H(enm)、H(ally)
-        selected_info, _, _, mini_rule_inputs, log_prob_enm, log_prob_ally, ent_enm, ent_ally = self.selector(
-            packed_agent, packed_mask, rule_inputs, enm_idx=enm_idx, ally_idx=ally_idx,
+        # selector 传入回放中的 enm_idx：只算这两个已选样本的 log_prob 与选定 embedding，
+        # ent_enm 是遍历全部槽位的 Categorical 熵 H(enm)
+        selected_info, _, mini_rule_inputs, log_prob_enm, ent_enm = self.selector(
+            packed_agent, packed_mask, rule_inputs, enm_idx=enm_idx,
         )
 
-        # pilot 在"给定敌人与队友选取"下重放三路分布（条件策略 act|enm_idx, ally_idx, o）
+        # pilot 在"给定敌人与队友选取"下重放三路分布（条件策略 act|enm_idx, o）
         pilot_logits = self.pilot(selected_info, mini_rule_inputs)
         vert_dist = Categorical(logits=pilot_logits['vert'])
         hor_dist = Categorical(logits=pilot_logits['hor'])
@@ -494,7 +485,7 @@ class ActorWrapper(nn.Module):
         log_prob_fire = fire_dist.log_prob(fire.to(torch.float32)) if self.fire_included_in_rl else torch.zeros_like(log_prob_vert)
         log_prob_act = log_prob_vert + log_prob_hor + log_prob_fire
 
-        # H(act|enm_idx, ally_idx, o)：三路动作条件熵之和；
+        # H(act|enm_idx, o)：三路动作条件熵之和；
         # fire_mask=0 的样本开火被规则禁死，Bernoulli 退化，不贡献火动作熵
         fire_mask = pilot_logits['fire_mask'].to(torch.float32)
         ent_vert = vert_dist.entropy()
@@ -514,20 +505,18 @@ class ActorWrapper(nn.Module):
                 fire_prob_max = float('nan')
                 fire_prob_min = float('nan')
 
-        # 联合策略：H = H(enm) + H(ally) + H(act|enm_idx, ally_idx, o)
-        entropy = ent_enm + ent_ally + ent_act
+        # 联合策略：H = H(enm) + H(act|enm_idx, o)
+        entropy = ent_enm + ent_act
         # 联合 log_prob：PPO 新旧策略比的分子（分母用回放中存的旧 log_prob_*）
-        log_prob = log_prob_enm + log_prob_ally + log_prob_act
+        log_prob = log_prob_enm + log_prob_act
 
         return {
             'log_prob': log_prob,
             'log_prob_enm': log_prob_enm,
-            'log_prob_ally': log_prob_ally,
             'log_prob_act': log_prob_act,
             'entropy': entropy,
             'entropy_details': {
                 'enm': ent_enm,
-                'ally': ent_ally,
                 'vert': ent_vert,
                 'hor': ent_hor,
                 'fire': ent_fire,
@@ -538,7 +527,7 @@ class ActorWrapper(nn.Module):
         }
         
     def evaluate_fire(self, agent_inputs, enm_idx, hit,
-                      mask_inputs=None, rule_inputs=None, ally_idx=0, reduction='mean'):
+                      mask_inputs=None, rule_inputs=None, reduction='mean'):
         """有监督开火头：按历史观测 + 当时选中的敌机，重算开火概率并与命中标签取交叉熵。
 
         每条样本的原子输入是 (obs, enm_idx)，标签是 hit（命中=1 / 脱靶=0）。
@@ -549,7 +538,6 @@ class ActorWrapper(nn.Module):
           - mask_inputs=None：认为所有敌机/队友槽位都有效（阵容占位槽位也会参与注意力）；
           - rule_inputs=None：跳过 pilot 的三条禁火规则。监督样本都取自"真实开火"时刻，
             此刻 不可攻击/刚发射/无弹 三条规则的 delta 恒为 0，故原始 logit 与部署时等价。
-        ally_idx 缺省时由 selector 内部采样（记录里没存队友选择，因此该维度带随机性）。
         """
         device = self.device
         fixed = torch.as_tensor(agent_inputs['fixed'], dtype=torch.float32, device=device)
@@ -582,14 +570,12 @@ class ActorWrapper(nn.Module):
                 ally_mask = ally_mask.unsqueeze(0).expand(batch_size, -1)
 
         rule_inputs = {} if rule_inputs is None else rule_inputs
-        ally_idx = (None if ally_idx is None else
-                    torch.as_tensor(np.asarray(ally_idx), dtype=torch.long, device=device).reshape(-1))
 
         # 复用 evaluate_actions 路径：enm_idx 由外部给定、不重新采样，保证"当时选了谁"可回放
-        selected_info, _, _, mini_rule_inputs, _, _, _, _ = self.selector(
+        selected_info, _, mini_rule_inputs, _, _ = self.selector(
             {'fixed': fixed, 'enm': enm, 'ally': ally},
             {'enm': enm_mask, 'ally': ally_mask},
-            rule_inputs, enm_idx=enm_idx, ally_idx=ally_idx,
+            rule_inputs, enm_idx=enm_idx,
         )
 
         if rule_inputs:

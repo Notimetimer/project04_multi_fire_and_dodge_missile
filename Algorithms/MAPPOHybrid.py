@@ -86,11 +86,10 @@ class MAPPOHybrid:
                 advantage = compute_advantage(self.gamma, self.lmbda, td_delta.cpu(), dones.cpu(), truncs.cpu() if truncs is not None else None).to(self.device)
 
         with torch.no_grad():
-            # [修改] old_log_prob 直接读取采样时存储的行为策略 log_prob（joint = enm + ally + act，
+            # [修改] old_log_prob 直接读取采样时存储的行为策略 log_prob（joint = enm + act，
             # 与 evaluate_actions['log_prob'] 同一联合语义），不再重算
             old_log_probs = (
                 to_tensor(actions['log_prob_enm'], torch.float)
-                + to_tensor(actions['log_prob_ally'], torch.float)
                 + to_tensor(actions['log_prob_act'], torch.float)
             ).view(-1, 1)
             v_pred_old = self.critic.get_value(critic_inputs)['value'].view(-1, 1)

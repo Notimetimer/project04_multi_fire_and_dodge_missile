@@ -214,9 +214,7 @@ if __name__=='__main__':
                             hor = int(actor_out['hor_idx'].item())
                             fire = int(actor_out['fire'].item())
                             enm_idx = int(actor_out['enm_idx'].item())
-                            ally_idx = int(actor_out['ally_idx'].item())
                             log_prob_enm = float(actor_out['log_prob_enm'].item())
-                            log_prob_ally = float(actor_out['log_prob_ally'].item())
                             log_prob_act = float(actor_out['log_prob_act'].item())
                             maneuver_cmds_all[id] = [vert, hor]
                             target_index_all[id] = enm_idx
@@ -229,9 +227,7 @@ if __name__=='__main__':
                             hor = int(fly_action["do"][1])
                             fire = int(bool(fire_action["do"]))
                             enm_idx = int(fly_action["at"])
-                            ally_idx = 0
                             log_prob_enm = -1e-6
-                            log_prob_ally = -1e-6
                             log_prob_act = -1e-6
                             maneuver_cmds_all[id] = fly_action['do']
                             target_index_all[id] = enm_idx
@@ -246,9 +242,7 @@ if __name__=='__main__':
                                 "hor":  hor ,
                                 "fire": fire,
                                 "enm_idx": enm_idx,
-                                "ally_idx": ally_idx,
                                 "log_prob_enm": log_prob_enm,
-                                "log_prob_ally": log_prob_ally,
                                 "log_prob_act": log_prob_act,
                             })
                         
@@ -468,8 +462,8 @@ if __name__=='__main__':
                 # 摊平 entropy_details 后按固定键序返回 tuple
                 flat = {k: v for k, v in out.items() if torch.is_tensor(v)}
                 flat.update({f'entropy_{k}': v for k, v in out['entropy_details'].items()})
-                key_order = ['log_prob', 'log_prob_enm', 'log_prob_ally', 'log_prob_act', 'entropy',
-                             'entropy_enm', 'entropy_ally', 'entropy_vert', 'entropy_hor', 'entropy_fire',
+                key_order = ['log_prob', 'log_prob_enm', 'log_prob_act', 'entropy',
+                             'entropy_enm', 'entropy_vert', 'entropy_hor', 'entropy_fire',
                              'entropy_act']
                 return tuple(flat[k] for k in key_order)
 

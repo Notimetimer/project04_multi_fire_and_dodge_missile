@@ -236,9 +236,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed,
                                     Last_Actions[id] = {
                                         "vert": vert, "hor": hor, "fire": fire,
                                         "enm_idx": enm_idx,
-                                        "ally_idx": int(actor_out['ally_idx'].item()),
                                         "log_prob_enm": float(actor_out['log_prob_enm'].item()),
-                                        "log_prob_ally": float(actor_out['log_prob_ally'].item()),
                                         "log_prob_act": float(actor_out['log_prob_act'].item()),
                                     }
                             else:

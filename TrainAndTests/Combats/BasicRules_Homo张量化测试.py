@@ -189,9 +189,7 @@ if __name__=='__main__':
                             hor = int(fly_action["do"][1])
                             fire = int(bool(fire_action["do"]))
                             enm_idx = int(fly_action["at"])
-                            ally_idx = 0
                             log_prob_enm = -1e-6
-                            log_prob_ally = -1e-6
                             log_prob_act = -1e-6
                         else:
                             # 如果类型是神经网络
@@ -205,9 +203,7 @@ if __name__=='__main__':
                                 "hor":  hor ,
                                 "fire": fire,
                                 "enm_idx": enm_idx,
-                                "ally_idx": ally_idx,
                                 "log_prob_enm": log_prob_enm,
-                                "log_prob_ally": log_prob_ally,
                                 "log_prob_act": log_prob_act,
                             })
                         
