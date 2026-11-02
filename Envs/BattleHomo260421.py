@@ -233,8 +233,9 @@ class Battle(object):
     def reset(self, red_birth_state=None, blue_birth_state=None, 
               red_init_num=2, blue_init_num=2,
               red_init_ammo=4, blue_init_ammo=4, 
+              red_alive_num=None, blue_alive_num=None,
               red_init_formation = 'wall', blue_init_formation = 'wall', # 初始队形
-              pomdp=1, seed=None, options={"random_pos": True}, 
+              pomdp=1, seed=None, options={"random_pos": True},
               ego_side='r'):  # 重置位置和状态
         # 初始编队合法类型：随机、墙、楔、v形
         check_formation_legal_list = ['random', 'wall', 'wedge', 'v']
@@ -417,12 +418,16 @@ class Battle(object):
         self.RMissileTable = {}
         self.BMissileTable = {}
         self.MissileTable = {}
-        # 按 init_states.json 的 alive_num 随机击杀差额飞机，直到该方剩余 alive_num 架存活
-        init_states_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'TrainAndTests', 'Combats', 'init_states.json')
-        with open(init_states_path, 'r', encoding='utf-8') as f:
-            init_states = json.load(f)
-        red_alive_num = init_states.get('red_alive_num', self.Rnum)
-        blue_alive_num = init_states.get('blue_alive_num', self.Bnum)
+        # alive_num 优先级：reset 显式传入 > init_states.json 读取
+        if red_alive_num is None or blue_alive_num is None:
+            # 按 init_states.json 的 alive_num 随机击杀差额飞机，直到该方剩余 alive_num 架存活
+            init_states_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'TrainAndTests', 'Combats', 'init_states.json')
+            with open(init_states_path, 'r', encoding='utf-8') as f:
+                init_states = json.load(f)
+            if red_alive_num is None:
+                red_alive_num = init_states.get('red_alive_num', self.Rnum)
+            if blue_alive_num is None:
+                blue_alive_num = init_states.get('blue_alive_num', self.Bnum)
         # 击杀选取改为确定性：按 id 升序保留、id 最大的先杀，存活结果与随机种子无关
         for side_uavs, alive_num in ((self.RUAVs, red_alive_num),
                                      (self.BUAVs, blue_alive_num)):
