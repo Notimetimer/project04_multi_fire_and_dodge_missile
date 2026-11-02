@@ -484,7 +484,7 @@ class ChooseStrategyEnv(Battle):
                         print('蓝枪杀红')
 
     # 近距格斗弹自动发射，多对多也能用（规则控制，不需要RL）
-    def close_range_shoot(self, fire_range=10e3, fire_angle=pi/3, cooldown=10):
+    def close_range_shoot(self, fire_range=10e3, fire_angle=np.radians(50), cooldown=10): # pi/3
         # fire_angle只能比导弹允许角度小
         if aim9x.sight_angle_max < fire_angle:
             fire_angle = aim9x.sight_angle_max
