@@ -37,6 +37,73 @@ class PointerNetAttention(nn.Module):
         return scores, keys
 
 
+# 异构自注意力模块：fixed / enm / ally 三类实体各自持有独立的 Q/K/V 投影，
+# 拼接成统一序列后做一次 scaled dot-product 自注意力，再按原 seq 切分回三类。
+# key 侧支持 enm / ally 掩码（fixed 槽位始终有效，保证每行 softmax 不退化）。
+class HeterogeneousSelfAttention(nn.Module):
+    def __init__(self, embed_dim):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.scale = embed_dim ** -0.5
+        # fixed 类独立投影
+        self.w_q_f = nn.Linear(embed_dim, embed_dim)
+        self.w_k_f = nn.Linear(embed_dim, embed_dim)
+        self.w_v_f = nn.Linear(embed_dim, embed_dim)
+        # enm 类独立投影
+        self.w_q_e = nn.Linear(embed_dim, embed_dim)
+        self.w_k_e = nn.Linear(embed_dim, embed_dim)
+        self.w_v_e = nn.Linear(embed_dim, embed_dim)
+        # ally 类独立投影
+        self.w_q_a = nn.Linear(embed_dim, embed_dim)
+        self.w_k_a = nn.Linear(embed_dim, embed_dim)
+        self.w_v_a = nn.Linear(embed_dim, embed_dim)
+
+    def forward(self, e_f, e_e, e_a, enm_mask=None, ally_mask=None):
+        # e_f: (B, 1, D), e_e: (B, Ne, D), e_a: (B, Na, D)
+        Q_f = self.w_q_f(e_f)
+        K_f = self.w_k_f(e_f)
+        V_f = self.w_v_f(e_f)
+        
+        Q_e = self.w_q_e(e_e)
+        K_e = self.w_k_e(e_e)
+        V_e = self.w_v_e(e_e)
+        
+        Q_a = self.w_q_a(e_a)
+        K_a = self.w_k_a(e_a)
+        V_a = self.w_v_a(e_a)
+
+        # 沿 seq 维拼接为统一序列 s = 1 + Ne + Na
+        Q = torch.cat((Q_f, Q_e, Q_a), dim=1)   # (B, s, D)
+        K = torch.cat((K_f, K_e, K_a), dim=1)
+        V = torch.cat((V_f, V_e, V_a), dim=1)
+
+        scores = torch.matmul(Q, K.transpose(-2, -1)) * self.scale  # (B, s, s)
+
+        # key 侧掩码：fixed 槽位始终有效，enm / ally 按各自 mask 屏蔽
+        if enm_mask is not None or ally_mask is not None:
+            B, s, _ = Q.shape
+            N_e = e_e.shape[1]
+            N_a = e_a.shape[1]
+            key_valid = torch.ones(B, s, dtype=torch.bool, device=Q.device)
+            if enm_mask is not None:
+                key_valid[:, 1:1 + N_e] = enm_mask
+            if ally_mask is not None:
+                key_valid[:, 1 + N_e:1 + N_e + N_a] = ally_mask
+            scores = scores.masked_fill(~key_valid.unsqueeze(1), -_MASK_VAL)
+
+        attn = torch.softmax(scores, dim=-1)
+        e_prime = torch.matmul(attn, V)  # (B, s, D)
+
+        # 按原 seq 切回三类
+        N_e = e_e.shape[1]
+        N_a = e_a.shape[1]
+        e_f_prime = e_prime[:, 0:1, :]                      # (B, 1, D)
+        e_e_prime = e_prime[:, 1:1 + N_e, :]                # (B, Ne, D)
+        e_a_prime = e_prime[:, 1 + N_e:1 + N_e + N_a, :]    # (B, Na, D)
+        return e_f_prime, e_e_prime, e_a_prime
+
+
+
 # 选择器网络：用两个独立的交叉注意力模块分别压缩 enm / ally 的 seq_len 维度，
 # 选出一个敌机一个队友，把它们的嵌入与 fixed 拼接后交给 pilot。
 class selector(nn.Module):
@@ -49,9 +116,18 @@ class selector(nn.Module):
         self.ally_num = ally_shape[0]
         self.embed_dim = embed_dim
 
-        # 敌机与友机各自独立的注意力模块：query/key 投影参数互不共享
-        self.enm_attn = PointerNetAttention(fixed_dim, enm_shape[1], embed_dim)
-        self.ally_attn = PointerNetAttention(fixed_dim, ally_shape[1], embed_dim)
+        # 三类输入各自的 embedding 层，投影到统一的 embed_dim
+        self.fixed_embed = nn.Linear(fixed_dim, embed_dim)
+        self.enm_embed = nn.Linear(enm_shape[1], embed_dim)
+        self.ally_embed = nn.Linear(ally_shape[1], embed_dim)
+
+        # 异构自注意力模块：让 fixed/enm/ally 在统一维度上交互
+        self.het_attn = HeterogeneousSelfAttention(embed_dim)
+
+        # 敌机与友机各自独立的交叉注意力模块：query/key 投影参数互不共享
+        # query 来自 e_f' (embed_dim)，entity 来自 e_e'/e_a' (embed_dim)
+        self.enm_attn = PointerNetAttention(embed_dim, embed_dim, embed_dim)
+        self.ally_attn = PointerNetAttention(embed_dim, embed_dim, embed_dim)
 
     def forward(self, agent_inputs, mask_inputs, rule_inputs, enm_idx=None, ally_idx=None, temperature=1.0):
         fixed = agent_inputs['fixed'] # 应该是(batch, fixed_dim)
@@ -60,15 +136,20 @@ class selector(nn.Module):
         enm_mask = mask_inputs.get('enm') # 应该是(batch, enm_num)
         ally_mask = mask_inputs.get('ally') # 应该是(batch, ally_num)
 
-        # 两个独立的交叉注意力：各自的 query/key 投影产生打分与嵌入
-        # type A 变量query
-        query_enm = fixed
-        # # type B 常数query
-        # query_enm = torch.zeros_like(fixed)
+        # 三类输入各自 embedding 到统一维度 d；fixed 补 seq 维以便与实体序列对齐
+        e_f = self.fixed_embed(fixed.unsqueeze(1))   # (B, 1, d)
+        e_e = self.enm_embed(enm)                     # (B, Ne, d)
+        e_a = self.ally_embed(ally)                   # (B, Na, d)
+
+        # 异构自注意力：三类实体在统一序列上交互，输出 e_f'/e_e'/e_a'
+        e_f_prime, e_e_prime, e_a_prime = self.het_attn(e_f, e_e, e_a, enm_mask, ally_mask)
+
+        # e_f' 作为两路交叉注意力的 query（squeeze seq 维），e_e'/e_a' 分别作为 key/value 源
+        query_state = e_f_prime.squeeze(1)  # (B, d)
         # 聚合敌机特征
-        enm_scores, enm_keys = self.enm_attn(query_enm, enm, enm_mask)
+        enm_scores, enm_keys = self.enm_attn(query_state, e_e_prime, enm_mask)
         # 队友信息需要本机query
-        ally_scores, ally_keys = self.ally_attn(fixed, ally, ally_mask)
+        ally_scores, ally_keys = self.ally_attn(query_state, e_a_prime, ally_mask)
 
         # 敌人选取分布和队友选取分布（temperature 仅测试时调节采样平滑度，默认1不改变分布）
         # 缩放后重新铺掩码兜底：掩码槽位统一用 -_MASK_VAL（有限值），温度缩放不会溢出为 -inf
@@ -100,8 +181,10 @@ class selector(nn.Module):
         e_enm = enm_keys.gather(1, enm_idx.reshape(-1, 1, 1).expand(-1, 1, self.embed_dim)).squeeze(1)
         e_ally = ally_keys.gather(1, ally_idx.reshape(-1, 1, 1).expand(-1, 1, self.embed_dim)).squeeze(1)
 
-        # selected_info: concat((B, fixed_dim), (B, embed_dim), (B, embed_dim)) -> (B, fixed_dim + 2*embed_dim)
-        selected_info = torch.cat((fixed, e_enm, e_ally), dim=-1)
+        
+        # selected_info: concat((B, d), (B, d), (B, d)) -> (B, 3*d)
+        # e_f' 直接输出给 pilot，e_e'/e_a' 经交叉注意力选中后切片输出给 pilot
+        selected_info = torch.cat((query_state, e_enm, e_ally), dim=-1)
         
         # rule_inputs 处理：按 enm_idx 抽取对应敌机信息，组装 mini_rule_inputs
         # 输入 rule_inputs 维度结构（张量化后）：
@@ -243,7 +326,8 @@ class ActorWrapper(nn.Module):
         self.ally_shape = ally_shape
         self.enm_num = enm_shape[0]
         self.ally_num = ally_shape[0]
-        self.input_dim = fixed_dim + 2 * embed_dim
+        # selector 输出：e_f'(d) + 选中 e_e'(d) + 选中 e_a'(d) = 3*d
+        self.input_dim = 3 * embed_dim
 
         self.selector = selector(fixed_dim, enm_shape, ally_shape, embed_dim).to(device)
         self.pilot = pilot(self.input_dim, hidden_dims).to(device)
@@ -396,7 +480,70 @@ class ActorWrapper(nn.Module):
             'fire_prob_max': fire_prob_max,
             'fire_prob_min': fire_prob_min,
         }
+        
+    def evaluate_fire(self, agent_inputs, enm_idx, hit,
+                      mask_inputs=None, rule_inputs=None, ally_idx=0, reduction='mean'):
+        """有监督开火头：按历史观测 + 当时选中的敌机，重算开火概率并与命中标签取交叉熵。
 
+        每条样本的原子输入是 (obs, enm_idx)，标签是 hit（命中=1 / 脱靶=0）。
+        返回值是**带梯度**的二元交叉熵损失张量，梯度会经 fire_head 一路回传到
+        selected_info，因此调用方可自行决定冻结哪些模块。
+
+        mask_inputs / rule_inputs 缺省时的处理：
+          - mask_inputs=None：认为所有敌机/队友槽位都有效（阵容占位槽位也会参与注意力）；
+          - rule_inputs=None：跳过 pilot 的三条禁火规则。监督样本都取自"真实开火"时刻，
+            此刻 不可攻击/刚发射/无弹 三条规则的 delta 恒为 0，故原始 logit 与部署时等价。
+        ally_idx 缺省时由 selector 内部采样（记录里没存队友选择，因此该维度带随机性）。
+        """
+        device = self.device
+        fixed = torch.as_tensor(agent_inputs['fixed'], dtype=torch.float32, device=device)
+        enm = torch.as_tensor(agent_inputs['enm'], dtype=torch.float32, device=device)
+        ally = torch.as_tensor(agent_inputs['ally'], dtype=torch.float32, device=device)
+        # 单样本输入自动补 batch 维，保持与 evaluate_actions 一致的批量语义
+        if fixed.ndim == 1:
+            fixed = fixed.unsqueeze(0)
+        if enm.ndim == 2:
+            enm = enm.unsqueeze(0)
+        if ally.ndim == 2:
+            ally = ally.unsqueeze(0)
+        batch_size = fixed.shape[0]
+
+        enm_idx = torch.as_tensor(np.asarray(enm_idx), dtype=torch.long, device=device).reshape(-1)
+        hit = torch.as_tensor(np.asarray(hit), dtype=torch.float32, device=device).reshape(-1)
+        if enm_idx.numel() != batch_size or hit.numel() != batch_size:
+            raise ValueError('enm_idx/hit 长度必须等于观测 batch：%d/%d vs %d'
+                             % (enm_idx.numel(), hit.numel(), batch_size))
+
+        if mask_inputs is None:
+            enm_mask = torch.ones(batch_size, self.enm_num, dtype=torch.bool, device=device)
+            ally_mask = torch.ones(batch_size, self.ally_num, dtype=torch.bool, device=device)
+        else:
+            enm_mask = torch.as_tensor(np.asarray(mask_inputs['enm']), dtype=torch.bool, device=device)
+            ally_mask = torch.as_tensor(np.asarray(mask_inputs['ally']), dtype=torch.bool, device=device)
+            if enm_mask.ndim == 1:
+                enm_mask = enm_mask.unsqueeze(0).expand(batch_size, -1)
+            if ally_mask.ndim == 1:
+                ally_mask = ally_mask.unsqueeze(0).expand(batch_size, -1)
+
+        rule_inputs = {} if rule_inputs is None else rule_inputs
+        ally_idx = (None if ally_idx is None else
+                    torch.as_tensor(np.asarray(ally_idx), dtype=torch.long, device=device).reshape(-1))
+
+        # 复用 evaluate_actions 路径：enm_idx 由外部给定、不重新采样，保证"当时选了谁"可回放
+        selected_info, _, _, mini_rule_inputs, _, _, _, _ = self.selector(
+            {'fixed': fixed, 'enm': enm, 'ally': ally},
+            {'enm': enm_mask, 'ally': ally_mask},
+            rule_inputs, enm_idx=enm_idx, ally_idx=ally_idx,
+        )
+
+        if rule_inputs:
+            fire_logits = self.pilot(selected_info, mini_rule_inputs)['fire'][:, 0]
+        else:
+            # 只走 fire 分支，不构造 vert/hor 分布，省掉无用计算
+            fire_logits = self.pilot.fire_head(self.pilot.backbone(selected_info))[:, 0]
+
+        return F.binary_cross_entropy_with_logits(fire_logits, hit, reduction=reduction)
+    
     def save(self, path='actor.pt'):
         torch.save({
             'selector': self.selector.state_dict(),
