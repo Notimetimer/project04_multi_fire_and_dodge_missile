@@ -6,8 +6,8 @@ from prepare_il_datas_hierarchical import run_rules
 
 # 指定中断续训的目录。如果为 None，则正常开启新训练。
 resume_target_dir = None
-resume_target_dir = os.path.join(r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat",
-    r"MAPPO_homo_SLA_1_blackboard_0-run-20261030-222318")
+# resume_target_dir = os.path.join(r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat",
+#     r"MAPPO_homo_SLA_1_blackboard_0-run-20261030-222318")
 collape_recover={ # 是否是崩盘后恢复
             "collapsed": False,
             "best_actor_name": None,
@@ -15,7 +15,7 @@ collape_recover={ # 是否是崩盘后恢复
         }
 
 USE_SUPERVISED_FIRE = 1 # [新增] 开火命中监督更新开关：仅用 fire_obs->hit_record 监督 fc_bern 头
-ENM_CHOSEN_VISABLE = 1 # 是否能看到队友的选择
+ENM_CHOSEN_VISABLE = 0 # 是否能看到队友的选择 1
 PPO_WITH_BERN = 1 # 是否开启PPO的开火训练梯度
 mission_name = f'MAPPO_homo_SLA_{USE_SUPERVISED_FIRE}_blackboard_{ENM_CHOSEN_VISABLE}'
 
@@ -23,6 +23,8 @@ mission_name = f'MAPPO_homo_SLA_{USE_SUPERVISED_FIRE}_blackboard_{ENM_CHOSEN_VIS
 dt_decide = 2 # 2 # 6
 dt_maneuver = 0.2
 action_cycle_multiplier = int(round(dt_decide /dt_maneuver)) # 6s 决策一次
+MAX_DEC_STEPS = 1e6  # 按决策步定训练开支
+
 # 仿真环境参数
 max_episode_duration = 15*60 # 回合最长时间，单位s
 dt_action_cycle = dt_maneuver * action_cycle_multiplier
@@ -38,7 +40,7 @@ if __name__=='__main__':
         mission_name=mission_name,
         actor_lr = 1e-4,
         critic_lr = 5e-4,
-        max_steps = 20e6,
+        max_steps = MAX_DEC_STEPS*action_cycle_multiplier,  # 20e3
         gamma=0.97,
         lmbda=0.985,
         epochs=4,
