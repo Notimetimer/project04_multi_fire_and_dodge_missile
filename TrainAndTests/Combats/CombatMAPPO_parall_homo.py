@@ -682,6 +682,12 @@ def run_MLP_simulation(
                 logger.add("test/avg_score", avg_score, total_steps/action_cycle_multiplier)
                 logger.add("test/BVR perish together", avg_perish_together, total_steps/action_cycle_multiplier)
 
+                # 当前策略的 KD 比统计（跨全部对手汇总击杀/死亡，不分对手编号）
+                total_kills = sum(r['kill_count'] for r in test_results)
+                total_dies = sum(r['die_count'] for r in test_results)
+                log_10_KD = np.log10(np.clip(total_kills / (total_dies + 1e-6), 1/20, 20))
+                logger.add("test/log_10_KD", log_10_KD, total_steps/action_cycle_multiplier)
+
                 # 将本次测试的胜负平明细按对手追加到 csv（每 batch 测试一轮，一行一个对手）
                 test_csv_path = os.path.join(log_dir, "test_vs_rules.csv")
                 csv_header = ["batch_idx", "steps", "rule_num",

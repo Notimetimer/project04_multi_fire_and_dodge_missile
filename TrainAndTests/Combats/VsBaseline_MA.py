@@ -110,7 +110,9 @@ def test_worker(model_state_dict, rules_num,
     perish_togethers = 0
     episode_times = []  # 记录每场耗时
     t_bias = 0
-
+    R_kill_count = 0
+    B_kill_count = 0
+    
     try:
         for i_episode in range(num_runs):
             ep_start = time.time()
@@ -124,6 +126,9 @@ def test_worker(model_state_dict, rules_num,
                 # 红蓝各自独立的位置打乱种子（np.random 已在函数入口固定，序列可复现且场间不同）
                 seed=(int(np.random.randint(0, 2**31 - 1)), int(np.random.randint(0, 2**31 - 1))),
                 )
+            # 初始存活的飞机数量
+            initial_alive_r = len(test_env.alive_r_uavs)
+            initial_alive_b = len(test_env.alive_b_uavs)
 
             # 首场 reset 后为每架红机各建一个独立 ActorWrapper 并加载权重，按 id 索引
             if actor_dict is None:
@@ -310,6 +315,10 @@ def test_worker(model_state_dict, rules_num,
                 draws += 1
             perish_togethers += all(uav.dead for uav in test_env.UAVs) and test_env.t <= env_args.max_episode_len - 10
 
+            # 记录测试方击杀/死亡数
+            R_kill_count += initial_alive_b - len(test_env.alive_b_uavs)
+            B_kill_count += initial_alive_r - len(test_env.alive_r_uavs)
+            
             # 仿真残余清理
             test_env.clear_render(t_bias=t_bias)
             t_bias += test_env.t
@@ -349,6 +358,8 @@ def test_worker(model_state_dict, rules_num,
             'loses': loses,
             'draws': draws,
             'perish_togethers': perish_togethers,
+            'kill_count': R_kill_count,
+            'die_count': B_kill_count,
         }
 
     except KeyboardInterrupt:
@@ -361,6 +372,8 @@ def test_worker(model_state_dict, rules_num,
             'loses': loses,
             'draws': draws,
             'perish_togethers': perish_togethers,
+            'kill_count': R_kill_count,
+            'die_count': B_kill_count,
         }
     finally:
         test_env.end_render() # 停止发送
