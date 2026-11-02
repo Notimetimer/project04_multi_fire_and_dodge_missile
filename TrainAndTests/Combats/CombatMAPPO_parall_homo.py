@@ -473,6 +473,8 @@ def run_MLP_simulation(
 
     # 日志记录
     logs_dir = os.path.join(project_root, "logs/combat")
+    if resume_dir is not None and not os.path.exists(resume_dir):
+        raise FileNotFoundError(f"resume_dir 不存在，已中止以防静默新训：{resume_dir}")
     if resume_dir is not None and os.path.exists(resume_dir):
         log_dir = resume_dir
         print(f"Resuming from directory: {log_dir}")
