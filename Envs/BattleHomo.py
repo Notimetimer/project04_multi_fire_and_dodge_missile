@@ -357,6 +357,9 @@ class Battle(object):
         self.win = 0
         self.lose = 0
         self.draw = 0
+        # 目标漏选计数
+        self.r_ignored_enm_num = 0
+        self.b_ignored_enm_num = 0
         # 打乱编队内位置顺序（目前只在 wall 队形内部生效）
         formation_position_funcs = {
             'wall': self._wall_birth_positions,
