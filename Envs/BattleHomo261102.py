@@ -296,6 +296,9 @@ class Battle(object):
         self.win = 0
         self.lose = 0
         self.draw = 0
+        # 目标漏选计数
+        self.r_ignored_enm_num = 0
+        self.b_ignored_enm_num = 0
         # 打乱编队内位置顺序
         red_birth_positions = []
         blue_birth_positions = []
