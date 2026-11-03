@@ -89,6 +89,13 @@ def test_worker(model_state_dict, rules_num,
     """
     device = torch.device(device_name)
 
+    # 防止传入None
+    if None in [red_init_num, blue_init_num, red_alive_num, blue_alive_num]:
+        red_init_num = init_cfg['red_init_num']
+        blue_init_num = init_cfg['blue_init_num']
+        red_alive_num = init_cfg['red_alive_num']
+        blue_alive_num = init_cfg['blue_alive_num']
+    
     # save_record=False 时不向硬盘写任何东西：tacview 强制关闭、不清空也不生成 pkl/csv
     test_env = ChooseStrategyEnv(env_args, tacview_show=use_tacview if save_record else 0, vertices=vertices)
     test_env.dt_move = dt_move
