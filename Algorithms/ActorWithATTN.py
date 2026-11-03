@@ -403,11 +403,14 @@ class ActorWrapper(nn.Module):
             {'enm': enm_mask, 'ally': ally_mask},
         )
 
-    def get_action(self, agent_inputs, mask_inputs, rule_inputs, h=None, temperature=1.0):
+    def get_action(self, agent_inputs, mask_inputs, rule_inputs, h=None, temperature=1.0, enm_idx=None):
         # temperature：玻尔兹曼采样温度，仅测试时使用；训练采样走默认值1，分布不变
+        # enm_idx：外部集中指派的敌机槽位，仅部署/测试使用；为 None 时由 selector 自行采样（训练路径必须保持 None）
         packed_agent, packed_mask = self.pack_inputs(agent_inputs, mask_inputs)
+        if enm_idx is not None:
+            enm_idx = torch.as_tensor(enm_idx, dtype=torch.long, device=self.device).reshape(-1)
         selected_info, enm_idx, mini_rule_inputs, log_prob_enm, _ = self.selector(
-            packed_agent, packed_mask, rule_inputs, temperature=temperature,
+            packed_agent, packed_mask, rule_inputs, enm_idx=enm_idx, temperature=temperature,
         )
         pilot_logits = self.pilot(selected_info, mini_rule_inputs)
 
