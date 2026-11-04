@@ -216,7 +216,6 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 r_shaping += (-ego.vu/100) * np.sign(threat_theta-(-pi/4)) * DENSE_REWARD_WEIGHT
                 # 三九和拖尾机动的奖励在动作mask面前很微弱，不写了
             else:
-                # 未受到威胁，此时可以干任何事，但最好能帮助赢
                 # 锁定/被锁定
                 r_shaping += (ego_has_lock - ego_is_locked) * DENSE_REWARD_WEIGHT
                 
@@ -235,12 +234,11 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 #         r_shaping -= DENSE_REWARD_WEIGHT * 0.15  # 费了半天劲，其实就是如果有敌机没有被选中就扣一点分
                 #         ignored_enm_num += 1
                 
-                # TODO 测试漏选惩罚的消融
                 # # 所有敌机都被选中有奖励
-                # if ignored_enm_num == 0:
-                #     r_shaping += DENSE_REWARD_WEIGHT * 0.15
-                # else:
-                #     r_shaping -= DENSE_REWARD_WEIGHT * 0.15
+                if ignored_enm_num == 0:
+                    r_shaping += DENSE_REWARD_WEIGHT * 0.15
+                else:
+                    r_shaping -= DENSE_REWARD_WEIGHT * 0.15
                 if side == 'r':
                     self.r_ignored_enm_num = ignored_enm_num
                 else:
@@ -254,33 +252,35 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                     if min_enm_ATA < np.radians(15):
                         r_shaping += - DENSE_REWARD_WEIGHT
 
-                # FIXME 包围奖励不起效果
-                # # 计算当下包围角，需要双方至少存活一架才算有效
-                # if len(egoside_alive_uavs)>0 and len(enmside_alive_uavs)>0:
-                #     f2f_line_ = enm_uav_avg_pos_ - ego_uav_avg_pos_
-                #     avg_surround_angle = 0
-                #     for uav in egoside_alive_uavs:
-                #         uav2enm_center_ = enm_uav_avg_pos_ - uav.pos_
-                #         avg_surround_angle += 1/len(egoside_alive_uavs) * \
-                #                 np.arccos(np.dot(f2f_line_, uav2enm_center_)/(norm(f2f_line_) * norm(uav2enm_center_)) * 0.999)
-                # else:
-                #     avg_surround_angle = 0
-                # # 根据我机“包围敌机”的程度变化率给奖励
-                # if last_surround_angle is not None:
-                #     delta_last_surr_angle = avg_surround_angle - last_surround_angle  # 计算变化量
-                # else:
-                #     delta_last_surr_angle = 0
-                # # 疏开奖励
-                # if delta_last_surr_angle > 0:
-                #     r_shaping +=  0.4 * DENSE_REWARD_WEIGHT
-                # elif delta_last_surr_angle < 0:
-                #     r_shaping += -0.4 * DENSE_REWARD_WEIGHT
-                # # 复制到上一步记录中
-                # if side == 'r':
-                #     self.last_r2b_surround_angle = avg_surround_angle
-                # else:
-                #     self.last_b2r_surround_angle = avg_surround_angle
-                # FIXME 距离变化量不完善
+                # 计算当下包围角，需要双方至少存活一架才算有效
+                if len(egoside_alive_uavs)>0 and len(enmside_alive_uavs)>0:
+                    f2f_line_ = enm_uav_avg_pos_ - ego_uav_avg_pos_
+                    avg_surround_angle = 0
+                    for uav in egoside_alive_uavs:
+                        uav2enm_center_ = enm_uav_avg_pos_ - uav.pos_
+                        avg_surround_angle += 1/len(egoside_alive_uavs) * \
+                                np.arccos(np.dot(f2f_line_, uav2enm_center_)/(norm(f2f_line_) * norm(uav2enm_center_)) * 0.999)
+                else:
+                    avg_surround_angle = 0
+                
+                # 根据我机“包围敌机”的程度变化率给奖励
+                if last_surround_angle is not None:
+                    delta_last_surr_angle = avg_surround_angle - last_surround_angle  # 计算变化量
+                else:
+                    delta_last_surr_angle = 0
+                
+                # 疏开奖励
+                if delta_last_surr_angle > 0:
+                    r_shaping +=  0.4 * DENSE_REWARD_WEIGHT
+                elif delta_last_surr_angle < 0:
+                    r_shaping += -0.4 * DENSE_REWARD_WEIGHT
+                
+                # 复制到上一步记录中
+                if side == 'r':
+                    self.last_r2b_surround_angle = avg_surround_angle
+                else:
+                    self.last_b2r_surround_angle = avg_surround_angle
+                
                 # # 队友间距分区引导（阶跃，无威胁时）：<40km 鼓励分离，>50km 鼓励靠近，40~50km 不介入，力度为标准密集奖励的 1/3
                 # if teammate_dist is not None and teammate_dist_prev is not None and missile_t_fly < 40:
                 #     if teammate_dist < 40e3:
@@ -290,18 +290,6 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 #         # 过远：距离收缩给正奖励，扩大给惩罚
                 #         r_shaping += (1.0 if teammate_dist <= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT * 0.75 #/1.2
                 
-                # TODO 根据和队友之间的差角给散开奖励
-                # 散开奖励：与敌机最小距离 > 80km 时启用；
-                # 取距离最近的存活队友（死队友填充值用 mask 剔除），增量正比于 -cos_ally_delta_psi：
-                # 队友方位角为钝角（我机背向队友、正在远离）给正奖励，锐角（指向队友、航向可能交叉）给惩罚；
-                # cos ∈ [-1,1] 直接乘 DENSE_REWARD_WEIGHT，单项幅值上限 0.2，不压过锁定奖励
-                alive_allys = [(temp["ally_dist"], temp["cos_ally_delta_psi"]) for temp, m in zip(ally_infos, mask_output['ally']) if temp and m > 0.5]
-                min_enm_dist = min((temp["enm_dist"] for temp in enm_infos), default=None)
-                if alive_allys and min_enm_dist is not None and min_enm_dist > 80e3:
-                    _, nearest_cos_ally_delta_psi = min(alive_allys, key=lambda x: x[0])
-                    r_shaping += (-nearest_cos_ally_delta_psi) * DENSE_REWARD_WEIGHT
-
-
                 # 没有导弹处于中制导阶段
                 if (not missile_in_mid_term):
                     # 奖励指向任何一个目标
