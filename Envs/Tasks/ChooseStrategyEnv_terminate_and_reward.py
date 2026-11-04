@@ -228,17 +228,17 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                     ignored_enm_num = min(len(egoside_alive_uavs), len(enmside_alive_uavs)) - len(selected_enm_id)
                 
                 # FIXME 有问题，重写这段
-                # for enm in enmside_alive_uavs:
-                #     if enm.id not in enm_allocatedIDs and\
-                #         enm.id not in enm_allocateIDs4missile:
-                #         r_shaping -= DENSE_REWARD_WEIGHT * 0.15  # 费了半天劲，其实就是如果有敌机没有被选中就扣一点分
-                #         ignored_enm_num += 1
+                for enm in enmside_alive_uavs:
+                    if enm.id not in enm_allocatedIDs and\
+                        enm.id not in enm_allocateIDs4missile:
+                        r_shaping -= DENSE_REWARD_WEIGHT * 0.15  # 费了半天劲，其实就是如果有敌机没有被选中就扣一点分
+                        ignored_enm_num += 1
                 
-                # # 所有敌机都被选中有奖励
-                if ignored_enm_num == 0:
-                    r_shaping += DENSE_REWARD_WEIGHT * 0.15
-                else:
-                    r_shaping -= DENSE_REWARD_WEIGHT * 0.15
+                # # # 所有敌机都被选中有奖励
+                # if ignored_enm_num == 0:
+                #     r_shaping += DENSE_REWARD_WEIGHT * 0.15
+                # else:
+                #     r_shaping -= DENSE_REWARD_WEIGHT * 0.15
                 if side == 'r':
                     self.r_ignored_enm_num = ignored_enm_num
                 else:
@@ -281,14 +281,14 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 else:
                     self.last_b2r_surround_angle = avg_surround_angle
                 
-                # # 队友间距分区引导（阶跃，无威胁时）：<40km 鼓励分离，>50km 鼓励靠近，40~50km 不介入，力度为标准密集奖励的 1/3
-                # if teammate_dist is not None and teammate_dist_prev is not None and missile_t_fly < 40:
-                #     if teammate_dist < 40e3:
-                #         # 过近：距离扩大给正奖励，收缩给惩罚
-                #         r_shaping += (1.0 if teammate_dist >= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT * 0.75 #/1.2
-                #     elif teammate_dist > 60e3:
-                #         # 过远：距离收缩给正奖励，扩大给惩罚
-                #         r_shaping += (1.0 if teammate_dist <= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT * 0.75 #/1.2
+                # 队友间距分区引导（阶跃，无威胁时）：<40km 鼓励分离，>50km 鼓励靠近，40~50km 不介入，力度为标准密集奖励的 1/3
+                if teammate_dist is not None and teammate_dist_prev is not None and missile_t_fly < 40:
+                    if teammate_dist < 40e3:
+                        # 过近：距离扩大给正奖励，收缩给惩罚
+                        r_shaping += (1.0 if teammate_dist >= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT * 0.75 #/1.2
+                    elif teammate_dist > 60e3:
+                        # 过远：距离收缩给正奖励，扩大给惩罚
+                        r_shaping += (1.0 if teammate_dist <= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT * 0.75 #/1.2
                 
                 # 没有导弹处于中制导阶段
                 if (not missile_in_mid_term):
