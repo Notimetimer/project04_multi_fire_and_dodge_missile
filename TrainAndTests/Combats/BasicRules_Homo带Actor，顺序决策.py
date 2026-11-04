@@ -150,11 +150,11 @@ if __name__=='__main__':
                 last_Actions = {id: None for id in env.UAV_ids}
                 Rewards = {id: None for id in env.UAV_ids}
 
-            red_enm_index_chosen = set()
-            blue_enm_index_chosen = set()
-            # 队长 = 本队 id 最小者；它做决策时开启新一轮，清空本轮“已被选中”的敌机集合
-            red_leader_id = min(env.RUAV_ids) if env.RUAV_ids else None
-            blue_leader_id = min(env.BUAV_ids) if env.BUAV_ids else None
+            # red_enm_index_chosen = set()
+            # blue_enm_index_chosen = set()
+            # # 队长 = 本队 id 最小者；它做决策时开启新一轮，清空本轮“已被选中”的敌机集合
+            # red_leader_id = min(env.RUAV_ids) if env.RUAV_ids else None
+            # blue_leader_id = min(env.BUAV_ids) if env.BUAV_ids else None
             done = False
             Last_Obs = {id: None for id in env.UAV_ids}
             Last_States = {id: None for id in env.UAV_ids}
@@ -203,17 +203,24 @@ if __name__=='__main__':
 
                         # 本轮已被选中的敌机集合：队长决策时清空，其余时刻沿用上一轮；用 clear() 而非重建 set，避免引用失效
                         if UAV.side == 'r':
-                            our_enm_index_chosen = red_enm_index_chosen
-                            if id == red_leader_id:
-                                our_enm_index_chosen.clear()
-                                env.allocatedIDs_r2b.clear()
+                            our_alive_msl = env.alive_r_missiles
+                            # our_enm_index_chosen = red_enm_index_chosen
+                            # if id == red_leader_id:
+                            #     our_enm_index_chosen.clear()
+                            #     env.allocatedIDs_r2b.clear()
                         else:
-                            our_enm_index_chosen = blue_enm_index_chosen
-                            if id == blue_leader_id:
-                                our_enm_index_chosen.clear()
-                                env.allocatedIDs_b2r.clear()
-
-                        # 决策前把“本机之前已被选中的敌机”写进本机观测；Obs 是深拷贝，与 agent_inputs_ 不共享内存，两处都写
+                            our_alive_msl = env.alive_b_missiles
+                            # our_enm_index_chosen = blue_enm_index_chosen
+                            # if id == blue_leader_id:
+                            #     our_enm_index_chosen.clear()
+                            #     env.allocatedIDs_b2r.clear()
+                        our_enm_index_chosen = set()
+                        our_enm_index_chosen.clear()
+                        # 把在途导弹的目标index写入集合
+                        for msl in our_alive_msl:
+                            our_enm_index_chosen.add(env.id2index(UAV.id, msl.target_id))
+                        
+                        # 决策前把“本机之前已被导弹选中的敌机”写进本机观测；Obs 是深拷贝，与 agent_inputs_ 不共享内存，两处都写
                         enm_chosen_vec = np.zeros_like(agent_inputs_[id]['enm_chosen'])
                         for chosen_i in our_enm_index_chosen:
                             if 0 <= chosen_i < len(enm_chosen_vec):
@@ -260,10 +267,10 @@ if __name__=='__main__':
                             fire_target = int(fire_action['at'])
                             fire_flag = bool(fire_action['do'])
                         
-                        # 选完改变后续观测，表示有些目标已经被选了，后续决策的时候能看到对应位置的enm_chosen发生变化
-                        # enm_idx 可能等于 enm_num（规则智能体的虚目标/null_token 槽位），越界的不计入
-                        if not UAV.dead and 0 <= enm_idx < len(enm_chosen_vec):
-                            our_enm_index_chosen.add(enm_idx)
+                        # # 选完改变后续观测，表示有些目标已经被选了，后续决策的时候能看到对应位置的enm_chosen发生变化
+                        # # enm_idx 可能等于 enm_num（规则智能体的虚目标/null_token 槽位），越界的不计入
+                        # if not UAV.dead and 0 <= enm_idx < len(enm_chosen_vec):
+                        #     our_enm_index_chosen.add(enm_idx)
                         if id == env.RUAV_ids[-1]:
                             env.allocatedIDs_r2b = set([env.index2id(id, i) for i in our_enm_index_chosen])
                         if id == env.BUAV_ids[-1]:
