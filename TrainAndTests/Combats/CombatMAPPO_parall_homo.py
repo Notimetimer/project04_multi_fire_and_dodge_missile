@@ -326,10 +326,10 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                             Rewards[id] = sum(reward_dict.values())
                             ep_return += Rewards[id]
                             ep_return_by_id[id] += Rewards[id]
-                    # 记录训练方漏选状况
-                    if whole_sec and len(env.alive_r_uavs) > 0:
-                        ignore_num_count += 1
-                        ignore_enm_num_sum += env.r_ignored_enm_num
+                    # # 记录训练方漏选状况
+                    # if whole_sec and len(env.alive_r_uavs) > 0:
+                    #     ignore_num_count += 1
+                        # ignore_enm_num_sum += env.r_ignored_enm_num
                     
                     # 记录当前状态
                     for id in env.UAV_ids:
@@ -371,7 +371,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                         'lose': lose,
                         'draw': draw,
                         'BVR_perish_together': all_dead and env.t <= args.max_episode_len - 10,
-                        'ignored_enm_num': ignore_enm_num_sum / max(ignore_num_count, 1)
+                        # 'ignored_enm_num': ignore_enm_num_sum / max(ignore_num_count, 1)
                     },
                     'opp_name': opp_name,
                     'fire_hit_records': fire_hit_records,
@@ -844,7 +844,7 @@ def run_MLP_simulation(
                         batch_return_by_id[uid] += r_id
                 if metrics.get('BVR_perish_together', False):
                     batch_bvr_perish_together_cnt += 1
-                batch_ignored_enm_sum += metrics.get('ignored_enm_num', 0.0)
+                # batch_ignored_enm_sum += metrics.get('ignored_enm_num', 0.0)
 
                 if metrics['win']: batch_wins += 1
                 elif metrics['lose']: batch_loss_cnt += 1
@@ -913,7 +913,7 @@ def run_MLP_simulation(
             logger.add("train/2 draw", batch_draw_cnt / num_workers, total_steps/action_cycle_multiplier)
             logger.add("train/2 BVR perish together", batch_bvr_perish_together_cnt / num_workers, total_steps/action_cycle_multiplier)
             logger.add("train/2 BVR not end", (batch_draw_cnt-batch_bvr_perish_together_cnt) / num_workers, total_steps/action_cycle_multiplier)
-            logger.add("train/2 ignored_enm_num", batch_ignored_enm_sum / num_workers, total_steps/action_cycle_multiplier)
+            # logger.add("train/2 ignored_enm_num", batch_ignored_enm_sum / num_workers, total_steps/action_cycle_multiplier)
             logger.add("agent/ episode_step", batch_idx * num_workers, total_steps/action_cycle_multiplier)
             logger.add("agent/ batch_step", batch_idx, total_steps/action_cycle_multiplier)
 
