@@ -28,6 +28,8 @@ from torch.utils.tensorboard import SummaryWriter
 
 # 是否考虑视野限制
 POMDP = 1
+# 是否使用黑板记录“正在攻击的目标”
+USE_BLACKBOARD = 1
 
 if __name__=='__main__':
     print("\n根目录为：", project_root, "\n")
@@ -150,10 +152,18 @@ if __name__=='__main__':
                 last_Actions = {id: None for id in env.UAV_ids}
                 Rewards = {id: None for id in env.UAV_ids}
 
+            # red_enm_index_chosen = set()
+            # blue_enm_index_chosen = set()
+            # # 队长 = 本队 id 最小者；它做决策时开启新一轮，清空本轮“已被选中”的敌机集合
+            # red_leader_id = min(env.RUAV_ids) if env.RUAV_ids else None
+            # blue_leader_id = min(env.BUAV_ids) if env.BUAV_ids else None
             done = False
             Last_Obs = {id: None for id in env.UAV_ids}
             Last_States = {id: None for id in env.UAV_ids}
             Curr_States = {id: None for id in env.UAV_ids}
+            # 每个决策时刻的导弹攻击计时记录（attacking_id2times / t_fly_list），回合末统一写盘
+            attacking_records = {id: [] for id in env.UAV_ids}
+            tfly_records = {id: [] for id in env.UAV_ids}
             
             env.dt_move = 0.07
             env.dt_maneuver = 0.2
@@ -195,6 +205,34 @@ if __name__=='__main__':
                     for id in env.UAV_ids:
                         # debug
                         UAV = env.find_uav_with_id(id)
+                        if USE_BLACKBOARD:
+                            # 本轮已被选中的敌机集合：队长决策时清空，其余时刻沿用上一轮；用 clear() 而非重建 set，避免引用失效
+                            if UAV.side == 'r':
+                                our_alive_msl = env.alive_r_missiles
+                                # our_enm_index_chosen = red_enm_index_chosen
+                                # if id == red_leader_id:
+                                #     our_enm_index_chosen.clear()
+                                #     env.allocatedIDs_r2b.clear()
+                            else:
+                                our_alive_msl = env.alive_b_missiles
+                                # our_enm_index_chosen = blue_enm_index_chosen
+                                # if id == blue_leader_id:
+                                #     our_enm_index_chosen.clear()
+                                #     env.allocatedIDs_b2r.clear()
+                            our_enm_index_chosen = set()
+                            our_enm_index_chosen.clear()
+                            # 把在途导弹的目标index写入集合
+                            for msl in our_alive_msl:
+                                our_enm_index_chosen.add(env.id2index(UAV.id, msl.target_id))
+                            
+                            # 决策前把“本机之前已被导弹选中的敌机”写进本机观测；Obs 是深拷贝，与 agent_inputs_ 不共享内存，两处都写
+                            enm_chosen_vec = np.zeros_like(agent_inputs_[id]['enm_chosen'])
+                            for chosen_i in our_enm_index_chosen:
+                                if 0 <= chosen_i < len(enm_chosen_vec):
+                                    enm_chosen_vec[chosen_i] = 1
+                            agent_inputs_[id]['enm_chosen'] = enm_chosen_vec
+                            Obs[id]['agent_input']['enm_chosen'] = enm_chosen_vec
+
                         # side_word = 'red' if UAV.side == 'r' else 'blue'
                         # num_word = id if UAV.side == 'r' else id-200
                         # print("我是", side_word, num_word)
@@ -234,6 +272,16 @@ if __name__=='__main__':
                             fire_target = int(fire_action['at'])
                             fire_flag = bool(fire_action['do'])
                         
+                        if USE_BLACKBOARD:
+                            # # 选完改变后续观测，表示有些目标已经被选了，后续决策的时候能看到对应位置的enm_chosen发生变化
+                            # # enm_idx 可能等于 enm_num（规则智能体的虚目标/null_token 槽位），越界的不计入
+                            # if not UAV.dead and 0 <= enm_idx < len(enm_chosen_vec):
+                            #     our_enm_index_chosen.add(enm_idx)
+                            if id == env.RUAV_ids[-1]:
+                                env.allocatedIDs_r2b = set([env.index2id(id, i) for i in our_enm_index_chosen])
+                            if id == env.BUAV_ids[-1]:
+                                env.allocatedIDs_b2r = set([env.index2id(id, i) for i in our_enm_index_chosen])
+                        
                         # 决策瞬间的states和obs
                         Last_Obs[id] = copy.deepcopy(Obs[id])
                         Last_States[id] = copy.deepcopy(Curr_States[id])
@@ -258,6 +306,12 @@ if __name__=='__main__':
 
                         # 雷达全程开
                         env.radar_action(id, 1)
+
+                    # 记录本决策时刻各机的导弹攻击计时（get_obs 已在前面逐机刷新这两个属性）
+                    for id in env.UAV_ids:
+                        UAV = env.find_uav_with_id(id)
+                        attacking_records[id].append((env.t, dict(getattr(UAV, 'attacking_id2times', {}))))
+                        tfly_records[id].append((env.t, list(getattr(UAV, 't_fly_list', []))))
 
                     decide_steps_after_update += 1
 
@@ -344,6 +398,26 @@ if __name__=='__main__':
                         writer.writerow(['time', 'id', 'dense_reward', 'end_reward', 'event_reward', 'event',
                                          'mask_ally', 'mask_enm'])
                     writer.writerows(event_rows)
+
+            # 保存本回合各机的导弹攻击计时（每个决策时刻一行），每架飞机两个csv
+            # t_fly_list 的列序与对侧 id 表一致（id2index 即敌机 id 在表中的位置）
+            for id in env.UAV_ids:
+                if not attacking_records[id]:
+                    continue
+                uav = env.find_uav_with_id(id)
+                enemy_ids = env.BUAV_ids if uav.side == 'r' else env.RUAV_ids
+                for tag, records, get_row in (
+                    ('Attacking_time_counts', attacking_records[id], lambda rec: [rec.get(tid, '') for tid in enemy_ids]),
+                    ('T_fly_list', tfly_records[id], lambda rec: list(rec)),
+                ):
+                    csv_path = os.path.join(event_log_dir, f'{tag}{id}.csv')
+                    write_header = not os.path.exists(csv_path)
+                    with open(csv_path, 'a', newline='', encoding='utf-8-sig') as f:
+                        writer = csv.writer(f)
+                        if write_header:
+                            writer.writerow(['time'] + [f'target_{tid}' for tid in enemy_ids])
+                        for t_rec, rec in records:
+                            writer.writerow([t_rec] + get_row(rec))
 
             # 保存本回合各 agent 的 LocalTrans 张量化版本（增量覆盖，累积所有 episode）
             for id in env.UAV_ids:

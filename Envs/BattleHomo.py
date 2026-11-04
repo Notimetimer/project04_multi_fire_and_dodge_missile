@@ -1227,6 +1227,19 @@ class Battle(object):
             }
 
             ally_infos.append(one_ally_info)
+        
+        # 已发射导弹的信息
+        alive_ally_missiles = self.alive_r_missiles if ego_side=='r' else self.alive_b_missiles
+        alive_ego_missiles = [m for m in alive_ally_missiles if m.launcher_id == ego.id]
+        # 记录对每个目标的开火后累计时长(取最小)
+        temp = np.ones(self.Bnum) if ego.side == 'r' else np.ones(self.Rnum)  # 我机发射的导弹对应每个目标分别的计时情况
+        ego.t_fly_list = temp * 120  # 初始都没有发射，默认记为120
+        ego.attacking_id2times = {}
+        for msl in alive_ego_missiles:
+            current_target_index = self.id2index(ego.id, msl.target_id)
+            if msl.t < ego.t_fly_list[current_target_index]:
+                ego.t_fly_list[current_target_index] = msl.t  # 对应到目标index的开火累计时间
+                ego.attacking_id2times[msl.target_id] = msl.t  # 对应到目标id的开火累计时间
 
         #------------------------
         # 3. 敌机信息:
@@ -1314,8 +1327,6 @@ class Battle(object):
         #------------------------
         # 导弹信息向量，协同制导我还没想清楚要如何做，先按不做的来
         #------------------------
-        alive_ally_missiles = self.alive_r_missiles if ego_side=='r' else self.alive_b_missiles
-        alive_ego_missiles = [m for m in alive_ally_missiles if m.launcher_id == ego.id]
         ally_missile_info = []
         # 看不到队友发射的导弹，只看到自己的，协同制导时改变处理方式
         for missile in alive_ego_missiles:
