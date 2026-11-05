@@ -18,21 +18,21 @@ from Utilities.LocateDirAndAgents2 import get_latest_log_dir, find_latest_agent_
 # 模型来源：MAPPO 同构训练产出的 ActorWrapper（dict 观测：fixed/enm/ally）
 from Algorithms.ActorWithATTN import ActorWrapper
 
-DIR_NAME = 'MAPPO_homo1v1-run-20261028-224802'
+DIR_NAME = 'MAPPO_homo_SLA_1_blackboard_1-run-20261104-105610'
 
 EXPERIMENT_NAME = None
 
 # 抽取进度为几%的actor参数 / 弹药量（循环遍历所有组合）
 PROGRESS_LIST = [100]  # select_progress_percentage (%)
-AMMO_LIST = [2]            # ammo 初始弹药量（训练 red_init_ammo=4）
+AMMO_LIST = [4]        # ammo 4 初始弹药量（训练 red_init_ammo=4）
 
 # 观测覆盖：中制导标志 / 自发射以来的等待时间
 MID_TERM = 0      # r_obs[3]  missile_in_mid_term
 T_SHOOT = 31.0 if MID_TERM else 120     # r_obs[21] = T_SHOOT / 120
 
 # 场景参数
-RED_HEIGHT = 2e3
-BLUE_HEIGHT = 2e3
+RED_HEIGHT = 8e3
+BLUE_HEIGHT = 8e3
 AA_HOR_DEG = 180
 DEVICE = 'cpu'
 
@@ -208,7 +208,7 @@ def run_single_step_firing_probability(actor, env, red_height, blue_height, dist
         # 1v1 只有一个存活敌机：直接用掩码选出它，不采样，避免同一点结果随机抖动
         enm_idx = torch.as_tensor([int(np.argmax(mask_input['enm']))],
                                   dtype=torch.long, device=device)
-        selected_info, _, _, mini_rule_inputs, _, _, _, _ = actor.selector(
+        selected_info, _, mini_rule_inputs, _, _ = actor.selector(
             packed_agent, packed_mask, actor_rule, enm_idx=enm_idx
         )
         pilot_logits = actor.pilot(selected_info, mini_rule_inputs)

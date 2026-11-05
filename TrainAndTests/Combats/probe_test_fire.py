@@ -70,7 +70,7 @@ while steps < round(args.max_episode_len / env.dt_maneuver):
                         # 同步用同一条前向路径算有效开火概率（含禁火规则 delta）
                         pa, pm = actor.pack_inputs(agent_inputs_[uid], mask_inputs_[uid])
                         enm_idx = out['enm_idx'].reshape(-1)
-                        sel, _, _, mini, _, _, _, _ = actor.selector(pa, pm, actor_rule, enm_idx=enm_idx)
+                        sel, _, mini, _, _ = actor.selector(pa, pm, actor_rule, enm_idx=enm_idx)
                         logits = actor.pilot(sel, mini)
                         p = torch.sigmoid(logits['fire'].squeeze(-1))[0].item()
                         mask_fire = int(logits['fire_mask'][0])
