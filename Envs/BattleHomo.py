@@ -1670,8 +1670,7 @@ class Battle(object):
 
                 else:
                     data_to_send += f"#{send_t:.2f}\n-{UAV.id}\n"
-                    # # data_to_send += f"#-{UAV.id+1000}\n"
-                    # data_to_send += f"#{send_t:.2f}\n-{UAV.id + 1000}\n"
+                    data_to_send += f"#{send_t:.2f}\n-{UAV.id + 1000}\n"
 
             # 传输导弹信息
             for missile in self.missiles:
