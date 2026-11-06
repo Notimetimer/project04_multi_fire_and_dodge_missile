@@ -1717,7 +1717,9 @@ class Battle(object):
                             data_to_send += (
                                 f"{missile.id+1000},T={loc_m[0]:.6f}|{loc_m[1]:.6f}|{loc_m[2]:.6f}|"
                                 f"0|{missile.theta * 180 / pi:.6f}|{missile.psi * 180 / pi:.6f},"
-                                f"Type=Beam, Color={color},Visible=0.3,Radius=0.0,RadarMode=1,RadarRange={missile.detect_range:.1f}, RadarHorizontalBeamwidth=80, RadarVerticalBeamwidth=80\n"
+                                f"Type=Beam, Color={color},Visible=0.3,Radius=0.0,RadarMode=1,RadarRange={missile.detect_range:.1f}, \
+                                    RadarHorizontalBeamwidth={2*np.degrees(missile.sight_angle_max)}, \
+                                        RadarVerticalBeamwidth={2*np.degrees(missile.sight_angle_max)}\n"
                             )
                     else:
                         # 导弹存活但雷达关闭/红外弹，移除可能残留的雷达波束可视

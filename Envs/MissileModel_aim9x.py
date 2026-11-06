@@ -47,7 +47,7 @@ def calc_mach(v, height):
     return v / sound_speed, sound_speed
 
 # 计算命中情况
-def hit_target(pmt_1, vmt_1, ptt_1, vtt_1, dt=0.02, kill_range=85):
+def hit_target(pmt_1, vmt_1, ptt_1, vtt_1, dt=0.02, kill_range = 85):
     # # 计算点与点距离
     # distance1 = np.linalg.norm(pmt_ - ptt_)
     # return distance1 <= kill_range, pmt_
