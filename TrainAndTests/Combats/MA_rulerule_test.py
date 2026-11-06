@@ -68,7 +68,7 @@ def rulerule_worker(red_rules_num, blue_rules_num,
                     dt_move=0.07,
                     dt_maneuver=0.2,
                     action_cycle_multiplier=10,
-                    min_alt_safe=2000,
+                    min_alt_safe=1000,
                     red_init_num=2, blue_init_num=2,
                     red_init_ammo=4, blue_init_ammo=4,
                     ):

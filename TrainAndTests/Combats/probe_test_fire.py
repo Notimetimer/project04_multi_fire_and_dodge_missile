@@ -26,7 +26,7 @@ vertices = load_init_states()['vertices']
 env = ChooseStrategyEnv(args, tacview_show=0, vertices=vertices)
 env.dt_move = 0.07
 env.dt_maneuver = 0.2
-env.min_alt_safe = 2000
+env.min_alt_safe=1000
 
 fixed_dim, enm_shape, ally_shape = load_obs_dims()
 actor = ActorWrapper(fixed_dim, enm_shape, ally_shape, device='cpu')

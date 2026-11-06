@@ -422,7 +422,7 @@ if __name__=='__main__':
             
             env.dt_move = 0.07
             env.dt_maneuver = 0.2
-            env.min_alt_safe = 2000
+            env.min_alt_safe=1000
             
             episode_start_time = time.time()
 
