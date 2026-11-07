@@ -317,7 +317,6 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                     env.step(flight_cmds.values())
 
                     # 奖励结算（combat_terminate_and_reward 每机都要调，回报只按学生累计）
-                    ep_return = 0.0
                     Curr_States = {}
                     for id in env.UAV_ids:
                         done, reward_dict = env.combat_terminate_and_reward(
@@ -401,7 +400,7 @@ def run_MLP_simulation(
     epochs=4,
     eps=0.2,
     k_entropy=0.001,
-    action_cycle_multiplier=10,
+    action_cycle_multiplier=1,
     dt_move=0.07,
     dt_maneuver=0.2,
     max_episode_duration=15*60,
@@ -672,7 +671,7 @@ def run_MLP_simulation(
                             'num_runs': num_runs,
                             'vertices': vertices,
                             'dt_move': dt_move,
-                            'dt_maneuver': dt_maneuver,
+                            'dt_maneuver': 0.2, # dt_maneuver,
                             'action_cycle_multiplier': action_cycle_multiplier,
                             'red_init_num': red_init_num,
                             'blue_init_num': blue_init_num,

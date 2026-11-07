@@ -19,7 +19,7 @@ import glob
 import pickle
 
 use_tacview = 2 # 1 动态显示 2 静默写入 acmi_records
-action_cycle_multiplier = 10
+action_cycle_multiplier = 1
 
 # 是否考虑视野限制
 POMDP = 1
@@ -421,8 +421,8 @@ if __name__=='__main__':
             done = False
             
             env.dt_move = 0.07
-            env.dt_maneuver = 0.2
-            env.min_alt_safe=1000
+            env.dt_maneuver = 2 # 0.2
+            env.min_alt_safe=2000
             
             episode_start_time = time.time()
 

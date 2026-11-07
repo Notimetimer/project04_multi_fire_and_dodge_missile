@@ -18,7 +18,7 @@ import glob
 import pickle
 
 use_tacview = 2 # 1 动态显示 2 静默写入 acmi_records
-action_cycle_multiplier = 10
+action_cycle_multiplier = 1
 
 from BasicRules_Homo import basic_rules
 from _context import take_some_of_rule_inputs, stack_field, append_experience, load_init_states
@@ -135,8 +135,8 @@ if __name__=='__main__':
             Curr_States = {id: None for id in env.UAV_ids}
             
             env.dt_move = 0.07
-            env.dt_maneuver = 0.2
-            env.min_alt_safe=1000
+            env.dt_maneuver = 2 # 0.2
+            env.min_alt_safe=2000
             
             episode_start_time = time.time()
 

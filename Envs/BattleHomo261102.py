@@ -48,7 +48,7 @@ except NameError:
     pass
 
 g = 9.81
-dt_maneuver = 0.2
+dt_maneuver = 2 # 0.2
 dt_move = 0.02
 # report_move_time_rate = int(round(dt_maneuver / dt_move))
 RL_controller = 1 # 是否启用RL控制器(否则使用PID)

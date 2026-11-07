@@ -40,7 +40,7 @@ env.reset(red_birth_state=DEFAULT_RED_BIRTH_STATE, blue_birth_state=DEFAULT_BLUE
 np.random.rand = old_rand
 
 dt_maneuver = 1.0
-action_cycle_multiplier = 10
+action_cycle_multiplier = 1
 env.dt_maneuver = dt_maneuver
 
 for count in range(500):

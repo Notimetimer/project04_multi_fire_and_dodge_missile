@@ -18,7 +18,7 @@ import glob
 import pickle
 
 use_tacview = 2 # 1 动态显示 2 静默写入 acmi_records
-action_cycle_multiplier = 10
+action_cycle_multiplier = 1 # 10
 
 from BasicRules_Homo import basic_rules
 from Algorithms.ActorWithATTN import ActorWrapper
@@ -30,6 +30,11 @@ from torch.utils.tensorboard import SummaryWriter
 POMDP = 1
 # 是否使用黑板记录“正在攻击的目标”
 USE_BLACKBOARD = 1
+# 时间
+DT_MOVE = 0.07
+DT_MANEUVER = 2
+
+
 
 if __name__=='__main__':
     print("\n根目录为：", project_root, "\n")
@@ -49,7 +54,7 @@ if __name__=='__main__':
     vertices = load_init_states()['vertices']
     env = ChooseStrategyEnv(args, tacview_show=use_tacview, vertices=vertices)
     # test
-    env.dt_move = 0.07 # 0.04 # 4 # 0.025 0.02
+    env.dt_move = DT_MOVE # 0.04 # 4 # 0.025 0.02
 
     device = torch.device("cpu")  # torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -72,9 +77,9 @@ if __name__=='__main__':
                                     }
         return DEFAULT_RED_BIRTH_STATE, DEFAULT_BLUE_BIRTH_STATE
 
-    dt_action_cycle = dt_maneuver * action_cycle_multiplier # Agent takes action every dt_action_cycle seconds
+    # dt_action_cycle = dt_maneuver * action_cycle_multiplier # Agent takes action every dt_action_cycle seconds
 
-    transition_dict_threshold = env.args.max_episode_len//dt_action_cycle + 1 # Adjusted capacity
+    # transition_dict_threshold = env.args.max_episode_len//dt_action_cycle + 1 # Adjusted capacity
 
     steps_count = 0
 
@@ -165,9 +170,9 @@ if __name__=='__main__':
             attacking_records = {id: [] for id in env.UAV_ids}
             tfly_records = {id: [] for id in env.UAV_ids}
             
-            env.dt_move = 0.07
-            env.dt_maneuver = 0.2
-            env.min_alt_safe=1000
+            env.dt_move = DT_MOVE
+            env.dt_maneuver = DT_MANEUVER
+            env.min_alt_safe=2000
             
             episode_start_time = time.time()
 
@@ -175,9 +180,9 @@ if __name__=='__main__':
             steps_of_this_eps = -1 # 没办法了
             
             # 一轮仿真开始
-            for count in range(round(args.max_episode_len / dt_maneuver)):
+            for count in range(round(args.max_episode_len / env.dt_maneuver)):
                 # 回合结束判断
-                current_t = count * dt_maneuver
+                current_t = count * env.dt_maneuver
                 steps_of_this_eps += 1
                 if env.running == False or done:
                     # print('回合结束，时间为：', env.t, 's')

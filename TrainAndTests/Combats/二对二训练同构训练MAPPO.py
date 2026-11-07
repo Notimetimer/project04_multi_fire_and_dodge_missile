@@ -7,7 +7,7 @@ from prepare_il_datas_hierarchical import run_rules
 # 指定中断续训的目录。如果为 None，则正常开启新训练。
 resume_target_dir = None
 resume_target_dir = os.path.join(r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat",
-    r"MAPPO_homo_SLA_1_blackboard_0-run-20261104-220859")
+    r"MAPPO_homo_SLA_1_blackboard_1-run-20261106-164643")
 collape_recover={ # 是否是崩盘后恢复
             "collapsed": False,
             "best_actor_name": None,
@@ -15,13 +15,13 @@ collape_recover={ # 是否是崩盘后恢复
         }
 
 USE_SUPERVISED_FIRE = 1 # [新增] 开火命中监督更新开关：仅用 fire_obs->hit_record 监督 fc_bern 头
-ENM_CHOSEN_VISABLE = 0 # 是否能看到导弹的选择 1
+ENM_CHOSEN_VISABLE = 1 # 是否能看到导弹的选择 1
 PPO_WITH_BERN = 1 # 是否开启PPO的开火训练梯度
 mission_name = f'MAPPO_homo_SLA_{USE_SUPERVISED_FIRE}_blackboard_{ENM_CHOSEN_VISABLE}'
 
 # 超参数
 dt_decide = 2 # 2 # 6
-dt_maneuver = 0.2
+dt_maneuver = 2 # 0.2
 action_cycle_multiplier = int(round(dt_decide /dt_maneuver)) # 6s 决策一次
 MAX_DEC_STEPS = 1e6  # 按决策步定训练开支
 

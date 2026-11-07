@@ -25,8 +25,8 @@ args = argparse.Namespace(max_episode_len=15 * 60, R_cage=60.3e3)
 vertices = load_init_states()['vertices']
 env = ChooseStrategyEnv(args, tacview_show=0, vertices=vertices)
 env.dt_move = 0.07
-env.dt_maneuver = 0.2
-env.min_alt_safe=1000
+env.dt_maneuver = 2 # 0.2
+env.min_alt_safe=2000
 
 fixed_dim, enm_shape, ally_shape = load_obs_dims()
 actor = ActorWrapper(fixed_dim, enm_shape, ally_shape, device='cpu')
@@ -117,7 +117,7 @@ while steps < round(args.max_episode_len / env.dt_maneuver):
             flight_cmds[uid] = [0.0, 0.0, 0.0]
     env.step(flight_cmds.values())
     for uid in env.UAV_ids:
-        done, _ = env.combat_terminate_and_reward(id=uid, action_cycle_multiplier=10)
+        done, _ = env.combat_terminate_and_reward(id=uid, action_cycle_multiplier=1)
 
 print(f'\n汇总: 决策次数={n_decision}, 采样到fire=1的次数={n_sample_fire}, 实际发射={n_launch}, '
       f'fire_mask=0的点数={n_mask_zero}, 概率max={max_p:.3f}, 最近距离={min_dist:.1f}km, '

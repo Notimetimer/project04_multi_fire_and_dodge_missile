@@ -14,7 +14,7 @@ from Math_calculates.sub_of_angles import *
 import re
 
 use_tacview = 2  # 是否可视化 1 连接Tacview，2 静默写入
-action_cycle_multiplier = 10
+action_cycle_multiplier = 1
 
 def basic_rules(state_check, rules_num, last_action=0, p_random=0):
     '''

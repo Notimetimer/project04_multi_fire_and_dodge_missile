@@ -348,7 +348,7 @@ def run_MLP_simulation(
     epochs=4,
     eps=0.2,
     k_entropy=0.001,
-    action_cycle_multiplier=10,
+    action_cycle_multiplier=1,
     dt_move=0.07,
     dt_maneuver=0.2,
     max_episode_duration=15*60,

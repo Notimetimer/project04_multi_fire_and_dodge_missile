@@ -357,7 +357,7 @@ def main():
     env_args = argparse.Namespace(max_episode_len=15*60, R_cage=R_CAGE)
     env = ChooseStrategyEnv(env_args, tacview_show=False, vertices=None)
     env.dt_move = 0.07
-    env.dt_maneuver = 0.2
+    env.dt_maneuver = 2 # 0.2
     
     total_points = len(distances) * len(delta_psis)
     
