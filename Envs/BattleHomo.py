@@ -502,6 +502,8 @@ class Battle(object):
             ego.whole_cycle_got_a_miss = 0
             ego.whole_cycle_got_a_kill = 0
             ego.whole_cycle_can_let_go = 0
+            ego.msl_in_4km_count = 0       # 已结算的“导弹进入4km”累计数
+            ego.msl_in_4km_t = -1e9        # 该累计数对应的结算时间戳
             ego.cycle_events = []          # [(t, id, 事件内容)]
             ego.last_cycle_t = -1e9        # 本机上次结算周期边界的时间戳
         
@@ -689,6 +691,7 @@ class Battle(object):
             new_missile.target_id = target_id
             new_missile.init_target_id = target_id
             new_missile.hit_supposed = False
+            new_missile.get_in_4km = 0
             if side == 'r':
                 self.Rmissiles.append(new_missile)
                 self.r_missile_count += 1

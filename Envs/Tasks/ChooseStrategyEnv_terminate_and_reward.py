@@ -49,6 +49,7 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
         MISS_WEIGHT = -3 # -5            # 脱靶
         ESCAPE_ONCE_WEIGHT = 5      # 逃脱一次
         FOX3 = -5                   # 开火惩罚
+        MSL_IN_4KM_WEIGHT = 3       # 导弹首次进入4km（按枚计）
         
         # 各个分项总奖励
         reward_dict = {
@@ -76,6 +77,14 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
         if getattr(ego, 'got_a_miss', 0):    ego.whole_cycle_got_a_miss = 1
         if getattr(ego, 'got_a_kill', 0):    ego.whole_cycle_got_a_kill = 1
         if getattr(ego, 'can_let_go', 0):    ego.whole_cycle_can_let_go = 1
+
+        # 本机导弹首次进入4km：逐帧捕获上升沿（get_in_4km 锁存），已进入的和已死的不记录
+        # 放在逐帧段而不是结算段：导弹进入4km后可能在同一决策周期内命中而死，结算段按存活过滤会漏计
+        for msl in ego.launched_aim120s:
+            if msl.get_in_4km == 1:
+                continue
+            if msl.min_distance < 4e3:
+                msl.get_in_4km = 1
 
         # 当下状态，合并红蓝双方写法
         if side == 'r':
@@ -337,6 +346,17 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             ego.whole_cycle_got_a_miss = 0
             ego.whole_cycle_got_a_kill = 0
             ego.whole_cycle_can_let_go = 0
+
+            # 导弹首次进入4km：统计本机全部已发射导弹的锁存标志（含本周期内命中/已死的弹）
+            # 时间戳保护同一时刻只结算一次；累计数不清零，用已结算值差分出本周期新增
+            if ego.msl_in_4km_t != self.t:
+                total_msl_4km = sum(msl.get_in_4km for msl in ego.launched_aim120s)
+                new_msl_4km = total_msl_4km - ego.msl_in_4km_count
+                if new_msl_4km > 0:
+                    events_this_cycle.append('导弹进入4km')
+                    reward_dict["event"] += MSL_IN_4KM_WEIGHT * new_msl_4km
+                ego.msl_in_4km_t = self.t
+                ego.msl_in_4km_count = total_msl_4km
             
             # 开火惩罚，通过弹药下降沿判断
             if ego.ammo < ego.last_ammo_whole_cycle:

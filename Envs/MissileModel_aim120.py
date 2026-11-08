@@ -173,6 +173,7 @@ class aim120:
         # 最大跟踪视角速度
         self.sight_angle_rate_max = np.radians(50) # 0.7  # rad/s
         self.distance = 100e3
+        self.min_distance = 100e3
         # 初制导下最大速度倾角
         self.v_theta_of_initial_guidance_max = 45 * pi / 180
         self.t = 0  # 导弹初始计时
@@ -274,6 +275,7 @@ class aim120:
         vrt_ = v_target_ - v_missile_
         distance = np.linalg.norm(line_t_)
         self.distance = distance
+        self.min_distance = min(self.min_distance, distance)
         vmt = np.linalg.norm(vmt_)
         vm_hor = np.linalg.norm([vmt_[2], vmt_[0]])  # 导弹水平分速度
         distance_hor = np.linalg.norm([line_t_[2], line_t_[0]])  # 弹目线水平距离
@@ -560,6 +562,7 @@ class aim120:
         line_t_ = ptt_ - pmt_
         distance = np.linalg.norm(line_t_)
         self.distance = distance
+        self.min_distance = min(self.min_distance, distance)
         self.delta_height = line_t_[1] # 与目标的高度差
         # print('导弹感知到的距离:' + str(distance))
 
