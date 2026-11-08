@@ -196,6 +196,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                 done = False
                 ep_return = 0.0
                 ep_return_by_id = {id: 0.0 for id in student_ids} # 个体回报（tensorboard 按 id 记录）
+                ep_threat_delta_psi_abs_by_id = {id: [] for id in student_ids} # 告警状态下 |threat_delta_psi| 采样（tensorboard behavior 按 id 记录）
 
                 for count in range(round(args.max_episode_len / dt_maneuver)):
                     if not env.running or done:
@@ -332,7 +333,13 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                     
                     # 记录当前状态
                     for id in env.UAV_ids:
-                        Curr_States[id], _, _ = env.get_obs(id, reward_fn=1)
+                        Curr_States[id], _, state_obs = env.get_obs(id, reward_fn=1)
+                        # 红方学生处于告警威胁时，记录 |threat_delta_psi|（观测中 RWR_infos 只保留最近的一个威胁）
+                        if id in ep_threat_delta_psi_abs_by_id and not env.find_uav_with_id(id).dead:
+                            rwr = state_obs.get('RWR_infos')
+                            if rwr and rwr.get('warning', 0) > 0:
+                                threat_abs = float(np.arccos(np.clip(rwr.get('cos_threat_delta_psi', 1.0), -1.0, 1.0)))
+                                ep_threat_delta_psi_abs_by_id[id].append(threat_abs)
 
                 # 最后一帧经验（done=1，仅学生，统一走 append_experience）
                 for id in student_ids:
@@ -365,6 +372,11 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                         'steps': count,
                         'return': ep_return,
                         'return_by_id': ep_return_by_id, # 个体回报
+                        # 告警状态下 |threat_delta_psi| 的回合均值（单位：rad；无告警样本时为 None）
+                        'threat_delta_psi_abs_by_id': {
+                            id: (float(np.mean(v)) if len(v) > 0 else None)
+                            for id, v in ep_threat_delta_psi_abs_by_id.items()
+                        },
                         'event_return': 0,
                         'win': win,
                         'lose': lose,
@@ -826,6 +838,7 @@ def run_MLP_simulation(
             batch_total_return = 0
             batch_ignored_enm_sum = 0.0  # 各回合平均漏选敌机数累加
             batch_return_by_id = {uid: 0 for uid in red_student_ids} # 个体回报累加器
+            batch_threat_delta_psi_abs_by_id = {uid: [] for uid in red_student_ids} # 个体告警方位偏差样本累加器
 
             for res in batch_results:
                 l_tr_by_id = res['trans']  # {id: transition_dict}
@@ -841,6 +854,10 @@ def run_MLP_simulation(
                 for uid, r_id in metrics.get('return_by_id', {}).items():
                     if uid in batch_return_by_id:
                         batch_return_by_id[uid] += r_id
+                # 个体告警方位偏差累加
+                for uid, threat_abs in metrics.get('threat_delta_psi_abs_by_id', {}).items():
+                    if uid in batch_threat_delta_psi_abs_by_id and threat_abs is not None:
+                        batch_threat_delta_psi_abs_by_id[uid].append(threat_abs)
                 if metrics.get('BVR_perish_together', False):
                     batch_bvr_perish_together_cnt += 1
                 # batch_ignored_enm_sum += metrics.get('ignored_enm_num', 0.0)
@@ -907,6 +924,10 @@ def run_MLP_simulation(
             # 个体回报（每 id 一条）
             for uid, r_id in batch_return_by_id.items():
                 logger.add(f"train/1 avg_episode_return_id{uid}", r_id / num_workers, total_steps/action_cycle_multiplier)
+            # 告警威胁下的方位偏差均值（每 id 一条，单位：度）
+            for uid, threat_abs_list in batch_threat_delta_psi_abs_by_id.items():
+                if len(threat_abs_list) > 0:
+                    logger.add(f"behavior/abs_threat_delta_psi_id{uid}", float(np.mean(threat_abs_list)) * 180 / np.pi, total_steps/action_cycle_multiplier)
             logger.add("train/2 win", batch_wins / num_workers, total_steps/action_cycle_multiplier)
             logger.add("train/2 lose", batch_loss_cnt / num_workers, total_steps/action_cycle_multiplier)
             logger.add("train/2 draw", batch_draw_cnt / num_workers, total_steps/action_cycle_multiplier)
