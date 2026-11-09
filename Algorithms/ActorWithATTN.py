@@ -378,22 +378,23 @@ class ActorWrapper(nn.Module):
         ally = self._to_tensor(agent_inputs['ally'], torch.float32, self.ally_shape)
         # enm_chosen: (N,) -> (B, N, 1)，与 enm_chosen_embed 的 (1, d) 广播成 (B, N, d)；
         # 环境未提供时用全 0 兜底，此时残差支路输出恒为 0，与原计算图等价
+        # 按实际 enm 序列长度构造，避免与 self.enm_num 不一致
         enm_chosen = np.asarray(
-            agent_inputs.get('enm_chosen', np.zeros(self.enm_num, dtype=np.float32)), dtype=np.float32
+            agent_inputs.get('enm_chosen', np.zeros(enm.shape[1], dtype=np.float32)), dtype=np.float32
         ).reshape(-1)
         enm_chosen = torch.as_tensor(enm_chosen, dtype=torch.float32, device=self.device)
         enm_chosen = enm_chosen.reshape(1, -1, 1).expand(fixed.shape[0], -1, 1)
 
         enm_mask = np.asarray(mask_inputs.get('enm', []), dtype=bool).reshape(-1)
         if enm_mask.size == 0:
-            enm_mask = np.ones(self.enm_num, dtype=bool)
+            enm_mask = np.ones(enm.shape[1], dtype=bool)
         enm_mask = torch.as_tensor(enm_mask, dtype=torch.bool, device=self.device)
         if enm_mask.ndim == 1:
             enm_mask = enm_mask.unsqueeze(0).expand(fixed.shape[0], -1)
 
         ally_mask = np.asarray(mask_inputs.get('ally', []), dtype=bool).reshape(-1)
         if ally_mask.size == 0:
-            ally_mask = np.ones(self.ally_num, dtype=bool)
+            ally_mask = np.ones(ally.shape[1], dtype=bool)
         ally_mask = torch.as_tensor(ally_mask, dtype=torch.bool, device=self.device)
         if ally_mask.ndim == 1:
             ally_mask = ally_mask.unsqueeze(0).expand(fixed.shape[0], -1)
@@ -562,8 +563,9 @@ class ActorWrapper(nn.Module):
                              % (enm_idx.numel(), hit.numel(), batch_size))
 
         if mask_inputs is None:
-            enm_mask = torch.ones(batch_size, self.enm_num, dtype=torch.bool, device=device)
-            ally_mask = torch.ones(batch_size, self.ally_num, dtype=torch.bool, device=device)
+            # 按实际观测中的敌机/队友数构造全 1 掩码，避免与 self.enm_num/ally_num 不一致
+            enm_mask = torch.ones(batch_size, enm.shape[1], dtype=torch.bool, device=device)
+            ally_mask = torch.ones(batch_size, ally.shape[1], dtype=torch.bool, device=device)
         else:
             enm_mask = torch.as_tensor(np.asarray(mask_inputs['enm']), dtype=torch.bool, device=device)
             ally_mask = torch.as_tensor(np.asarray(mask_inputs['ally']), dtype=torch.bool, device=device)
