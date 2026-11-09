@@ -120,6 +120,8 @@ class UAVModel(object):
         self.o00 = None
         self.start_lon = None
         self.start_lat = None
+        self.turn_rate = 0
+        self.last_params = {}
 
     def reset(self, lon0=118, lat0=30, h0=8000, v0=200, psi0=0, phi0=0, theta0=0, o00=np.array([118, 30])):
         sim = jsbsim.FGFDMExec(None, None)
@@ -376,6 +378,11 @@ class UAVModel(object):
 
         # 速度更新位置
         self.pos_ = np.array([self.x, self.y, self.z])
+        
+        # 差分求变化率
+        if self.last_params.get('psi_v', None) is not None:
+            self.turn_rate = (self.psi_v - self.last_params['psi_v'])/(self.dt+1e-6)
+        self.last_params['psi_v'] = self.psi_v
         
         # 箔条更新
         if hasattr(self, 'activated_chaffs'):

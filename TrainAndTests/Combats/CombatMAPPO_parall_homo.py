@@ -197,6 +197,8 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                 ep_return = 0.0
                 ep_return_by_id = {id: 0.0 for id in student_ids} # 个体回报（tensorboard 按 id 记录）
                 ep_threat_delta_psi_abs_by_id = {id: [] for id in student_ids} # 告警状态下 |threat_delta_psi| 采样（tensorboard behavior 按 id 记录）
+                ep_out_of_bounds_by_id = {id: 0 for id in student_ids} # 本回合是否出界（0/1，tensorboard behavior 按 id 记录）
+                ep_ammo_exhausted_by_id = {id: 0 for id in student_ids} # 本回合是否打光中距弹 ammo=0（0/1）
 
                 for count in range(round(args.max_episode_len / dt_maneuver)):
                     if not env.running or done:
@@ -340,6 +342,14 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                             if rwr and rwr.get('warning', 0) > 0:
                                 threat_abs = float(np.arccos(np.clip(rwr.get('cos_threat_delta_psi', 1.0), -1.0, 1.0)))
                                 ep_threat_delta_psi_abs_by_id[id].append(threat_abs)
+                        # 红方学生行为统计：出界 & 打光中距弹（逐帧锁存，一旦置 1 不再清零）
+                        if id in ep_out_of_bounds_by_id:
+                            u = env.find_uav_with_id(id)
+                            # 出界即死，死后位置不变，out_cage 仍返回 True，故 dead & out_cage 可判定出界死因
+                            if u.dead and env.out_cage(u):
+                                ep_out_of_bounds_by_id[id] = 1
+                            if u.ammo == 0:
+                                ep_ammo_exhausted_by_id[id] = 1
 
                 # 最后一帧经验（done=1，仅学生，统一走 append_experience）
                 for id in student_ids:
@@ -377,6 +387,9 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                             id: (float(np.mean(v)) if len(v) > 0 else None)
                             for id, v in ep_threat_delta_psi_abs_by_id.items()
                         },
+                        # 本回合行为统计：出界标志、打光中距弹标志（0/1）
+                        'out_of_bounds_by_id': ep_out_of_bounds_by_id,
+                        'ammo_exhausted_by_id': ep_ammo_exhausted_by_id,
                         'event_return': 0,
                         'win': win,
                         'lose': lose,
@@ -839,6 +852,8 @@ def run_MLP_simulation(
             batch_ignored_enm_sum = 0.0  # 各回合平均漏选敌机数累加
             batch_return_by_id = {uid: 0 for uid in red_student_ids} # 个体回报累加器
             batch_threat_delta_psi_abs_by_id = {uid: [] for uid in red_student_ids} # 个体告警方位偏差样本累加器
+            batch_out_of_bounds_by_id = {uid: 0 for uid in red_student_ids} # 个体出界回合数累加器
+            batch_ammo_exhausted_by_id = {uid: 0 for uid in red_student_ids} # 个体打光中距弹回合数累加器
 
             for res in batch_results:
                 l_tr_by_id = res['trans']  # {id: transition_dict}
@@ -858,6 +873,13 @@ def run_MLP_simulation(
                 for uid, threat_abs in metrics.get('threat_delta_psi_abs_by_id', {}).items():
                     if uid in batch_threat_delta_psi_abs_by_id and threat_abs is not None:
                         batch_threat_delta_psi_abs_by_id[uid].append(threat_abs)
+                # 个体出界 / 打光中距弹 回合数累加
+                for uid, oob in metrics.get('out_of_bounds_by_id', {}).items():
+                    if uid in batch_out_of_bounds_by_id:
+                        batch_out_of_bounds_by_id[uid] += int(oob)
+                for uid, ae in metrics.get('ammo_exhausted_by_id', {}).items():
+                    if uid in batch_ammo_exhausted_by_id:
+                        batch_ammo_exhausted_by_id[uid] += int(ae)
                 if metrics.get('BVR_perish_together', False):
                     batch_bvr_perish_together_cnt += 1
                 # batch_ignored_enm_sum += metrics.get('ignored_enm_num', 0.0)
@@ -928,6 +950,11 @@ def run_MLP_simulation(
             for uid, threat_abs_list in batch_threat_delta_psi_abs_by_id.items():
                 if len(threat_abs_list) > 0:
                     logger.add(f"behavior/abs_threat_delta_psi_id{uid}", float(np.mean(threat_abs_list)) * 180 / np.pi, total_steps/action_cycle_multiplier)
+            # 出界率 / 打光中距弹率（每 id 一条，本 batch 内回合占比）
+            for uid, oob_cnt in batch_out_of_bounds_by_id.items():
+                logger.add(f"behavior/out_of_bounds_rate_id{uid}", oob_cnt / num_workers, total_steps/action_cycle_multiplier)
+            for uid, ae_cnt in batch_ammo_exhausted_by_id.items():
+                logger.add(f"behavior/ammo_exhausted_rate_id{uid}", ae_cnt / num_workers, total_steps/action_cycle_multiplier)
             logger.add("train/2 win", batch_wins / num_workers, total_steps/action_cycle_multiplier)
             logger.add("train/2 lose", batch_loss_cnt / num_workers, total_steps/action_cycle_multiplier)
             logger.add("train/2 draw", batch_draw_cnt / num_workers, total_steps/action_cycle_multiplier)

@@ -44,8 +44,8 @@ def calc_intern_dist2circle(R, pos_, psi):
 
     # 边界在飞机的左边还是右边
     # border_side = np.sign(sub_of_radian(eta, psi)) # -1 左边，0 中间，1 右边
-    border_side = sub_of_radian(psi, pi+eta)/pi*2 # -1 左边，0 中间，1 右边
-    
+    border_side = sub_of_radian(psi, pi+eta)/pi # -1 左边，0 中间，1 右边（归一化到 [-1,1]）
+
     return dh, border_side   
 
 
@@ -118,7 +118,7 @@ class polygon_fences:
         if not is_inside:
             dist_along_v = -100
         psi_of_vec2center = np.arctan2(vec2center[1], vec2center[0])
-        side = sub_of_radian(psi, psi_of_vec2center)/pi*2
+        side = sub_of_radian(psi, psi_of_vec2center)/pi # -1 左边，0 中间，1 右边（归一化到 [-1,1]）
         return dist_along_v, side
 
     def is_inside(self, pos_):
@@ -130,58 +130,60 @@ if __name__ == '__main__':
     # 设置中文字体
     plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
     plt.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
+    Polygon_fences = polygon_fences([[60e3, 60e3], [-60e3, 60e3], [-60e3, -60e3], [60e3, -60e3]])
+    print(Polygon_fences.calc_intern_dist(pos_=np.array([0, 5000, -59e3]), psi=-pi*3/4))
     
-    # 参数设置
-    R = 50
-    rho = 80
-    eta = 150 * pi/180
-    psi = 180 * pi/180
-    theta = 89 * pi/180
+    # # 参数设置
+    # R = 50
+    # rho = 80
+    # eta = 150 * pi/180
+    # psi = 180 * pi/180
+    # theta = 89 * pi/180
     
-    pos_ = np.array([rho*cos(eta), 0, rho*sin(eta)])
+    # pos_ = np.array([rho*cos(eta), 0, rho*sin(eta)])
 
-    # 计算距离
-    d_hor, border_side = calc_intern_dist2circle(R,pos_,psi)
+    # # 计算距离
+    # d_hor, border_side = calc_intern_dist2circle(R,pos_,psi)
     
-    # 可视化
-    print(f"水平距离: {d_hor:.2f}")
-    print(border_side)
+    # # 可视化
+    # print(f"水平距离: {d_hor:.2f}")
+    # print(border_side)
     
-    # 绘制图形
-    plt.figure(figsize=(8, 6))
+    # # 绘制图形
+    # plt.figure(figsize=(8, 6))
     
-    # 绘制圆形边界
-    theta_circle = np.linspace(0, 2*pi, 100)
-    x_circle = R * np.cos(theta_circle)
-    z_circle = R * np.sin(theta_circle)
-    plt.plot(x_circle, z_circle, 'b-', label='边界')
+    # # 绘制圆形边界
+    # theta_circle = np.linspace(0, 2*pi, 100)
+    # x_circle = R * np.cos(theta_circle)
+    # z_circle = R * np.sin(theta_circle)
+    # plt.plot(x_circle, z_circle, 'b-', label='边界')
     
-    # 绘制圆心到飞机位置的线段
-    plt.plot([0, pos_[2]], [0, pos_[0]], 'g-', label='圆心到飞机')
+    # # 绘制圆心到飞机位置的线段
+    # plt.plot([0, pos_[2]], [0, pos_[0]], 'g-', label='圆心到飞机')
     
-    # 计算速度向量终点
-    vx = pos_[0] + d_hor * cos(psi)
-    vz = pos_[2] + d_hor * sin(psi)
+    # # 计算速度向量终点
+    # vx = pos_[0] + d_hor * cos(psi)
+    # vz = pos_[2] + d_hor * sin(psi)
     
-    # 绘制飞机位置到速度向量终点的线段
-    plt.plot([pos_[2], vz], [pos_[0], vx], 'r-', label='速度向量')
+    # # 绘制飞机位置到速度向量终点的线段
+    # plt.plot([pos_[2], vz], [pos_[0], vx], 'r-', label='速度向量')
     
-    # 绘制速度向量终点到圆心的线段
-    plt.plot([vz, 0], [vx, 0], 'k-', label='终点到圆心')
+    # # 绘制速度向量终点到圆心的线段
+    # plt.plot([vz, 0], [vx, 0], 'k-', label='终点到圆心')
     
-    # 标记关键点
-    plt.plot(0, 0, 'ko', label='圆心')
-    plt.plot(pos_[2], pos_[0], 'ro', label='飞机位置')
-    plt.plot(vz, vx, 'bo', label='碰撞点')
+    # # 标记关键点
+    # plt.plot(0, 0, 'ko', label='圆心')
+    # plt.plot(pos_[2], pos_[0], 'ro', label='飞机位置')
+    # plt.plot(vz, vx, 'bo', label='碰撞点')
     
-    # 设置图形属性
-    plt.grid(True)
-    plt.axis('equal')
-    plt.legend()
-    plt.title('飞机与圆柱形边界的相对位置')
-    plt.xlabel('东')
-    plt.ylabel('北')
+    # # 设置图形属性
+    # plt.grid(True)
+    # plt.axis('equal')
+    # plt.legend()
+    # plt.title('飞机与圆柱形边界的相对位置')
+    # plt.xlabel('东')
+    # plt.ylabel('北')
     
-    plt.show()
+    # plt.show()
 
 

@@ -126,6 +126,12 @@ def sigmoid(x):
 
 class Battle(object):
     def __init__(self, args, tacview_show=0, vertices=None):
+        # vertices=None 时统一从 init_states.json 读取缺省方形边界，保证训练/测试场地一致
+        if vertices is None:
+            init_states_path = os.path.join(
+                os.path.dirname(current_dir), 'TrainAndTests', 'Combats', 'init_states.json')
+            with open(init_states_path, 'r', encoding='utf-8') as f:
+                vertices = json.load(f).get('vertices', None)
         self.vertices = vertices
         if self.vertices is not None:
             self.polygon_fences = polygon_fences(self.vertices)
@@ -1380,7 +1386,7 @@ class Battle(object):
             "radar_info": radar_info,
             "border": {
                 'd_hor2border': float(d_hor),
-                'border_LR': int(border_side),
+                'border_LR': float(border_side),
                 'dist_from_center': float(norm([
                     ego.pos_[0]-self.horizontal_center[0],
                     ego.pos_[2]-self.horizontal_center[1]
