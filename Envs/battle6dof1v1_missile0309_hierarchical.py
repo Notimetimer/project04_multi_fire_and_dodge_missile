@@ -454,11 +454,11 @@ class Battle(object):
             # 不准出界
             if self.no_out:
                 if self.vertices is not None:
-                    d_hor, left_or_right = self.polygon_fences.calc_intern_dist(UAV.pos_, UAV.psi_v)
+                    d_hor, border_side = self.polygon_fences.calc_intern_dist(UAV.pos_, UAV.psi_v)
                 else:
-                    d_hor, left_or_right = calc_intern_dist2circle(self.R_cage, UAV.pos_, UAV.psi_v)
+                    d_hor, border_side = calc_intern_dist2circle(self.R_cage, UAV.pos_, UAV.psi_v)
                 if d_hor < 8e3: # 8e3
-                    if left_or_right > 0:
+                    if border_side > 0:
                         delta_heading = min(-pi/2, delta_heading)
                     else:
                         delta_heading = max(pi/2, delta_heading)
@@ -860,9 +860,9 @@ class Battle(object):
 
         # 边界信息
         if self.vertices is not None:
-            d_hor, left_or_right = self.polygon_fences.calc_intern_dist(ego.pos_, ego.psi)
+            d_hor, border_side = self.polygon_fences.calc_intern_dist(ego.pos_, ego.psi)
         else:
-            d_hor, left_or_right = calc_intern_dist2circle(self.R_cage, ego.pos_, ego.psi)
+            d_hor, border_side = calc_intern_dist2circle(self.R_cage, ego.pos_, ego.psi)
 
         # 脱离锁定的时间（30s）为最长
         if locked_by_target:
@@ -951,7 +951,7 @@ class Battle(object):
 
             "border": np.array([
                 float(d_hor),  # 0
-                float(left_or_right),  # 1
+                float(border_side),  # 1
             ]),
 
             # 脱离锁定时间

@@ -59,9 +59,9 @@ def calc_intern_dist2cylinder(R, pos_, psi, theta):
     d = dh/(cos(theta)+1e-5)
 
     # 边界在飞机的左边还是右边
-    left_or_right = np.sign(sub_of_radian(eta, psi)) # -1 左边，0 中间，1 右边
+    border_side = np.sign(sub_of_radian(eta, psi)) # -1 左边，0 中间，1 右边
     
-    return d, dh, left_or_right
+    return d, dh, border_side
 
 if __name__ == '__main__':
     # 设置中文字体
@@ -78,12 +78,12 @@ if __name__ == '__main__':
     pos_ = np.array([rho*cos(eta), 0, rho*sin(eta)])
 
     # 计算距离
-    d, dh, left_or_right = calc_intern_dist2cylinder(R, pos_, psi, theta)
+    d, dh, border_side = calc_intern_dist2cylinder(R, pos_, psi, theta)
     
     # 可视化
     print(f"水平距离: {dh:.2f}")
     print(f"斜距离: {d:.2f}")
-    print(left_or_right)
+    print(border_side)
     
     # 绘制图形
     plt.figure(figsize=(8, 6))

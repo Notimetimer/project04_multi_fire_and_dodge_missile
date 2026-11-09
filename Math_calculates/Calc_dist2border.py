@@ -43,10 +43,10 @@ def calc_intern_dist2circle(R, pos_, psi):
         dh = 0
 
     # 边界在飞机的左边还是右边
-    # left_or_right = np.sign(sub_of_radian(eta, psi)) # -1 左边，0 中间，1 右边
-    left_or_right = sub_of_radian(psi, pi+eta)/pi*2 # -1 左边，0 中间，1 右边
+    # border_side = np.sign(sub_of_radian(eta, psi)) # -1 左边，0 中间，1 右边
+    border_side = sub_of_radian(psi, pi+eta)/pi*2 # -1 左边，0 中间，1 右边
     
-    return dh, left_or_right   
+    return dh, border_side   
 
 
 def get_velocity_intercept_info(poly, p, v):
@@ -141,11 +141,11 @@ if __name__ == '__main__':
     pos_ = np.array([rho*cos(eta), 0, rho*sin(eta)])
 
     # 计算距离
-    d_hor, left_or_right = calc_intern_dist2circle(R,pos_,psi)
+    d_hor, border_side = calc_intern_dist2circle(R,pos_,psi)
     
     # 可视化
     print(f"水平距离: {d_hor:.2f}")
-    print(left_or_right)
+    print(border_side)
     
     # 绘制图形
     plt.figure(figsize=(8, 6))

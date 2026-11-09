@@ -806,11 +806,11 @@ class Battle(object):
                 # 不准出界
                 if self.no_out:
                     if self.vertices is not None:
-                        d_hor, left_or_right = self.polygon_fences.calc_intern_dist(UAV.pos_, UAV.psi_v)
+                        d_hor, border_side = self.polygon_fences.calc_intern_dist(UAV.pos_, UAV.psi_v)
                     else:
-                        d_hor, left_or_right = calc_intern_dist2circle(self.R_cage, UAV.pos_, UAV.psi_v)
+                        d_hor, border_side = calc_intern_dist2circle(self.R_cage, UAV.pos_, UAV.psi_v)
                     if d_hor < 8e3: # 8e3
-                        if left_or_right > 0:
+                        if border_side > 0:
                             target_delta_heading = min(-pi/2, target_delta_heading)
                         else:
                             target_delta_heading = max(pi/2, target_delta_heading)
@@ -1133,9 +1133,9 @@ class Battle(object):
 
         # 边界信息
         if self.vertices is not None:
-            d_hor, left_or_right = self.polygon_fences.calc_intern_dist(ego.pos_, ego.psi)
+            d_hor, border_side = self.polygon_fences.calc_intern_dist(ego.pos_, ego.psi)
         else:
-            d_hor, left_or_right = calc_intern_dist2circle(self.R_cage, ego.pos_, ego.psi)
+            d_hor, border_side = calc_intern_dist2circle(self.R_cage, ego.pos_, ego.psi)
 
         #------------------------
         # 1. 己方信息向量（固定结构）
@@ -1384,7 +1384,7 @@ class Battle(object):
             "radar_info": radar_info,
             "border": {
                 'd_hor2border': float(d_hor),
-                'border_LR': int(left_or_right),
+                'border_LR': int(border_side),
                 'dist_from_center': float(norm([
                     ego.pos_[0]-self.horizontal_center[0],
                     ego.pos_[2]-self.horizontal_center[1]

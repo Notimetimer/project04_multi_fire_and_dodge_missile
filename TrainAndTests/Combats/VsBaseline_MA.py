@@ -329,6 +329,7 @@ def test_worker(model_state_dict, rules_num,
             perish_togethers += all(uav.dead for uav in test_env.UAVs) and test_env.t <= env_args.max_episode_len - 10
 
             # 记录测试方击杀/死亡数
+            test_env.update_entity_alives() # 更新存活表
             R_kill_count += initial_alive_b - len(test_env.alive_b_uavs)
             B_kill_count += initial_alive_r - len(test_env.alive_r_uavs)
             
