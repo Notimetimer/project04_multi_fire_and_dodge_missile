@@ -70,6 +70,11 @@ def plot_uav_mc_return(event_log_dir, uav_id=1, gamma=0.97, side_label='红方')
             abs_all.append(np.abs(g_ep))
             # 各回合同色，图例只在首回合登记一次；上图保留正负号，仅下图用绝对值算比例
             axes[0].plot(x, g_ep, color=color, lw=1.2, label=name if ep_i == 0 else None)
+            # 密集奖励叠加瞬时值：很浅的红色细线（每周期原始 r_shaping，未折扣累加）
+            if key == 'dense_reward':
+                axes[0].plot(x, r_ep, color='red', lw=0.6, alpha=0.35,
+                             linestyle='-',
+                             label=('密集奖励(瞬时)' if ep_i == 0 else None))
             # 原始 event/end 奖励用散点+竖线直接标出（未折扣、未相互抵消），只画非零行避免铺满 y=0
             if key in ('event_reward', 'end_reward'):
                 nz = np.abs(r_ep) > 1e-9
