@@ -6,7 +6,6 @@ from torch import nn
 from torch.distributions import Bernoulli, Categorical
 import torch.nn.functional as F
 
-HORIZONTAL_ACTIONS = (0, 1, 3, 5)
 VERT_DIM = 3                      # 垂直动作维度
 HOR_DIM = 7                       # 水平动作维度
 _MASK_VAL = 1e8                   # 掩码填充值（-inf 量级，保证 softmax 后概率为 0）
@@ -14,8 +13,6 @@ _MASK_VAL = 1e8                   # 掩码填充值（-inf 量级，保证 softm
 # 规避模式（warning=True）下，仅允许水平动作索引 {2,3,4}，其余维度置为 -1e8
 # hor顺序： 前，右前，右，后，左，左前，巡逻
 _EVADE_HOR_MASK = torch.tensor([-1, -1, 0, 0, 0, -1, -1], dtype=torch.float32) * _MASK_VAL
-# # 安全模式（no_warning_or_enm=True）下，仅允许水平动作索引 {6}，其余维度置为 -1e8
-# _SAFE_HOR_MASK = torch.tensor([-1, -1, -1, -1, -1, -1, 0], dtype=torch.float32) * _MASK_VAL
 
 # # 废弃接口：通过json控制开火是否受SLA控制
 # import json
