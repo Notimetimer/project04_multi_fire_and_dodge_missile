@@ -375,6 +375,14 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                 fire_hit_records = []
                 for uav in env.UAVs:
                     fire_hit_records += uav.fire_hit_records
+
+                # 学生侧每 id 开火/命中统计（只统计已结算：hit_record 1=命中, 0=脱靶；None=未结算的一并丢弃）
+                fire_count_by_id = {}
+                hit_count_by_id = {}
+                for id in student_ids:
+                    recs = [r for r in getattr(env.find_uav_with_id(id), 'fire_hit_records', []) if r.get('hit_record') is not None]
+                    fire_count_by_id[id] = len(recs)
+                    hit_count_by_id[id] = sum(1 for r in recs if r['hit_record'] == 1)
                 
                 pipe.send({
                     'trans': stacked_trans,
@@ -390,6 +398,8 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                         # 本回合行为统计：出界标志、打光中距弹标志（0/1）
                         'out_of_bounds_by_id': ep_out_of_bounds_by_id,
                         'ammo_exhausted_by_id': ep_ammo_exhausted_by_id,
+                        'fire_count_by_id': fire_count_by_id, # 每 id 本回合已结算开火次数
+                        'hit_count_by_id': hit_count_by_id, # 每 id 本回合命中次数
                         'event_return': 0,
                         'win': win,
                         'lose': lose,
@@ -590,49 +600,55 @@ def run_MLP_simulation(
         pipes.append(parent_conn)
 
     # ELO 初始化
-    elo_ratings = copy.deepcopy(init_elo_ratings)
-    elite_elo_ratings = {} # {copy.deepcopy(elo_ratings)}
-    hall_of_fame = {}
-    
-    full_json_path = os.path.join(log_dir, "elo_ratings.json")
+    # elo_ratings：可用对手注册表 {name: version}，规则版本号统一为 0，NN 版本号=batch_idx；
+    #              仅记录名称→版本号，不再承载 Elo 分（分数只存在 elite_elo_ratings）。
+    #              其中 __CURRENT_MAIN__ / __LAST_UPDATE_STEP__ / __LAST_UPDATE_BATCH__ 为训练状态元数据。
+    available_opps = {k: 0 for k in init_elo_ratings.keys()}  # 规则版本号统一为 0
+    # elite_elo_ratings：限定容量的 Elo 表 {name: elo_score}，满员按 Elo 踢出最弱（规则与 NN 一视同仁）
+    elite_elo_ratings = {}
+
+    full_json_path = os.path.join(log_dir, "available_opps.json")
     elite_json_path = os.path.join(log_dir, "elite_elo_ratings.json")
-    hof_json_path = os.path.join(log_dir, "hall_of_fame.json")
-    # 新增：对手及精英开火与导弹期参数统计文件路径
-    Elite_Fire_Stats_path = os.path.join(log_dir, "Elite_Fire_Stats.json")
 
     GameTimes = {}
-    # 初始化开火与导弹期参数统计字典（不区分普通和精英）
-    Elite_Fire_Stats = {}
 
     # 尝试加载历史 # 中断续训
     if os.path.exists(full_json_path):
-        with open(full_json_path, 'r', encoding='utf-8') as f: elo_ratings = json.load(f)
+        with open(full_json_path, 'r', encoding='utf-8') as f: available_opps = json.load(f)
     if os.path.exists(elite_json_path):
         with open(elite_json_path, 'r', encoding='utf-8') as f: elite_elo_ratings = json.load(f)
-    if os.path.exists(hof_json_path):
-        with open(hof_json_path, 'r', encoding='utf-8') as f: hall_of_fame = json.load(f)
-    if os.path.exists(Elite_Fire_Stats_path):
-        with open(Elite_Fire_Stats_path, 'r', encoding='utf-8') as f: Elite_Fire_Stats = json.load(f)
 
-    main_agent_elo = elo_ratings.get("__CURRENT_MAIN__", 1200)
+    # 续训清洗：剔除本地没有对应权重文件的 NN 快照，防止采样到加载失败的幽灵对手
+    def _opp_ckpt_exists(name):
+        if name.startswith("Rule"):
+            return True
+        return os.path.exists(os.path.join(log_dir, f"{name}.pt"))
+    available_opps = {k: v for k, v in available_opps.items()
+                   if k.startswith("__") or _opp_ckpt_exists(k)}
+    # elite 池只保留真实对手（规则/NN 快照）；__CURRENT_MAIN__ 等元数据键只存于 available_opps，
+    # elite json 里残留的 __ 键必须剔除，否则会被当成对手采样
+    elite_elo_ratings = {k: v for k, v in elite_elo_ratings.items()
+                         if not k.startswith("__") and _opp_ckpt_exists(k)}
+
+    main_agent_elo = available_opps.get("__CURRENT_MAIN__", 1200)
 
     # 团队命名：actor_rein{batch} 代表一个团队（含所有 id）
     int_team_name = "actor_rein0"
 
     # 不论如何，记录在线训练前的网络参数
     if not elite_elo_ratings:
-        for k in init_elo_ratings.keys():
-            elo_ratings[k] = main_agent_elo
+        # 规则初始 Elo 取自 init_elo_ratings（仅用于 elite 池，不再写入 elo_ratings）
+        elite_elo_ratings = copy.deepcopy(init_elo_ratings)
+        # 可用注册表：规则版本号 0
+        available_opps = {k: 0 for k in init_elo_ratings.keys()}
         if hist_agent_as_opponent:
-            elo_ratings[int_team_name] = main_agent_elo
-        elite_elo_ratings = copy.deepcopy(elo_ratings)
-        for k in elo_ratings.keys():
+            available_opps[int_team_name] = 0  # actor_rein0 版本号 0
+            elite_elo_ratings[int_team_name] = main_agent_elo
+        for k in elite_elo_ratings.keys():
             GameTimes[k] = 0
-            Elite_Fire_Stats[k] = [0.0, 0.0, 0.0, 0.0, 0.0]
-        Elite_Fire_Stats["__CURRENT_MAIN__"] = [0.0, 0.0, 0.0, 0.0, 0.0]
 
     # 训练循环变量
-    total_steps = elo_ratings.get("__LAST_UPDATE_STEP__", 0)
+    total_steps = available_opps.get("__LAST_UPDATE_STEP__", 0)
     if collape_recover["collapsed"]:
         actor_freeze_until = batch_idx + int(collape_recover["actor_frozen_batchs"])
     else:
@@ -753,19 +769,13 @@ def run_MLP_simulation(
             # 分发采样任务给 Worker
             worker_metrics_buffer = []
 
-            # 对手池
-            if not init_elo_ratings:
-                sorted_all_keys = [k for k in sorted(elo_ratings.keys(),
-                                    key=lambda x: elo_ratings[x] if not x.startswith("__") else -1e9,
-                                    reverse=True) if not k.startswith("__")]
-                effective_pool = {k: elo_ratings[k] for k in sorted_all_keys[:MAX_HISTORY_SIZE]}
-            else:
-                effective_pool = elite_elo_ratings
+            # 对手池：采样一律从限定容量的 elite_elo_ratings（真实 Elo 表）取
+            effective_pool = elite_elo_ratings
 
             selected_opponents = []
             for rank in range(num_workers):
                 probs, opponent_keys = get_opponent_probabilities(
-                    effective_pool, hall_of_fame,
+                    effective_pool,
                     target_elo=main_agent_elo, SP_type=self_play_type,
                     sigma=sigma_elo, compete_old_rate=compete_old_rate,
                     deltaFSP_epsilon=deltaFSP_epsilon,
@@ -795,16 +805,16 @@ def run_MLP_simulation(
                     if m:
                         old_batch = int(m.group(1))
                         ap = os.path.join(log_dir, f"actor_rein{old_batch}.pt")
-                        if os.path.exists(ap):
-                            shared_opp_sd = torch.load(ap, map_location='cpu')
-                            # 蓝机 id = 学生 id + 200（同编队位次：1→201, 2→202）
-                            opp_data = {uid + 200: shared_opp_sd for uid in red_student_ids}
-                        else:
-                            opp_type = 'rule'
-                            opp_data = 0
+                        if not os.path.exists(ap):
+                            # 权重文件缺失：直接抛错，禁止静默降级到 Rule_0
+                            raise FileNotFoundError(
+                                f"对手 {selected_opponent_name} 的权重文件不存在: {ap}")
+                        shared_opp_sd = torch.load(ap, map_location='cpu')
+                        # 蓝机 id = 学生 id + 200（同编队位次：1→201, 2→202）
+                        opp_data = {uid + 200: shared_opp_sd for uid in red_student_ids}
                     else:
-                        opp_type = 'rule'
-                        opp_data = 0
+                        raise ValueError(
+                            f"无法解析的 NN 对手名称: {selected_opponent_name}")
 
                 opp_info = (selected_opponent_name, opp_type, opp_data)
 
@@ -854,6 +864,8 @@ def run_MLP_simulation(
             batch_threat_delta_psi_abs_by_id = {uid: [] for uid in red_student_ids} # 个体告警方位偏差样本累加器
             batch_out_of_bounds_by_id = {uid: 0 for uid in red_student_ids} # 个体出界回合数累加器
             batch_ammo_exhausted_by_id = {uid: 0 for uid in red_student_ids} # 个体打光中距弹回合数累加器
+            batch_fire_count_by_id = {uid: 0 for uid in red_student_ids} # 个体开火次数累加器
+            batch_hit_count_by_id = {uid: 0 for uid in red_student_ids} # 个体命中次数累加器
 
             for res in batch_results:
                 l_tr_by_id = res['trans']  # {id: transition_dict}
@@ -880,6 +892,13 @@ def run_MLP_simulation(
                 for uid, ae in metrics.get('ammo_exhausted_by_id', {}).items():
                     if uid in batch_ammo_exhausted_by_id:
                         batch_ammo_exhausted_by_id[uid] += int(ae)
+                # 个体开火 / 命中次数累加
+                for uid, fc in metrics.get('fire_count_by_id', {}).items():
+                    if uid in batch_fire_count_by_id:
+                        batch_fire_count_by_id[uid] += int(fc)
+                for uid, hc in metrics.get('hit_count_by_id', {}).items():
+                    if uid in batch_hit_count_by_id:
+                        batch_hit_count_by_id[uid] += int(hc)
                 if metrics.get('BVR_perish_together', False):
                     batch_bvr_perish_together_cnt += 1
                 # batch_ignored_enm_sum += metrics.get('ignored_enm_num', 0.0)
@@ -900,24 +919,17 @@ def run_MLP_simulation(
                 fire_records_buffer.extend(fire_records)
                 batch_fire_supervised += len(fire_records)
                 
-                # ELO 更新
+                # ELO 更新：仅当对手已入 elite 池时才更新双方 Elo；未入池对手不参与 Elo 记账
                 actual_score = 0.5
                 if metrics['win']: actual_score = 1.0
                 elif metrics['lose']: actual_score = 0.0
-                if opp_name in elo_ratings:
+                if opp_name in elite_elo_ratings:
                     prev_main_elo = main_agent_elo
-                    adv_elo = elo_ratings[opp_name]
+                    adv_elo = elite_elo_ratings[opp_name]
                     main_agent_elo = update_elo(prev_main_elo, adv_elo, actual_score, K_FACTOR)
                     new_adv_elo = update_elo(adv_elo, prev_main_elo, 1.0 - actual_score, K_FACTOR)
-                    elo_ratings["__CURRENT_MAIN__"] = main_agent_elo
-                else:
-                    new_adv_elo = main_agent_elo
-                elo_ratings[opp_name] = new_adv_elo
-                if opp_name in elite_elo_ratings:
+                    available_opps["__CURRENT_MAIN__"] = main_agent_elo
                     elite_elo_ratings[opp_name] = new_adv_elo
-                # 同步更新 Hall of Fame 中已有的对手Elo分值
-                if opp_name in hall_of_fame:
-                    hall_of_fame[opp_name] = new_adv_elo
             
         
             # 在 PPO 更新前打印本轮详细战况
@@ -955,6 +967,12 @@ def run_MLP_simulation(
                 logger.add(f"behavior/out_of_bounds_rate_id{uid}", oob_cnt / num_workers, total_steps/action_cycle_multiplier)
             for uid, ae_cnt in batch_ammo_exhausted_by_id.items():
                 logger.add(f"behavior/ammo_exhausted_rate_id{uid}", ae_cnt / num_workers, total_steps/action_cycle_multiplier)
+            # 每回合已结算开火次数 / 命中率（每 id 一条；命中率 = batch 内总命中 / 总已结算开火，无已结算开火时跳过该点）
+            for uid, fc_cnt in batch_fire_count_by_id.items():
+                logger.add(f"behavior/fire_count_id{uid}", fc_cnt / num_workers, total_steps/action_cycle_multiplier)
+                hc_cnt = batch_hit_count_by_id.get(uid, 0)
+                if fc_cnt > 0:
+                    logger.add(f"behavior/hit_rate_id{uid}", hc_cnt / fc_cnt, total_steps/action_cycle_multiplier)
             logger.add("train/2 win", batch_wins / num_workers, total_steps/action_cycle_multiplier)
             logger.add("train/2 lose", batch_loss_cnt / num_workers, total_steps/action_cycle_multiplier)
             logger.add("train/2 draw", batch_draw_cnt / num_workers, total_steps/action_cycle_multiplier)
@@ -968,13 +986,13 @@ def run_MLP_simulation(
             if batch_idx % save_interval == 0 and \
                 len(transition_dicts[red_student_ids[0]]['dones']) >= transition_dict_threshold:
 
-                # ELO 相对位置
-                all_keys = list(elo_ratings.keys())
+                # ELO 相对位置（基于 elite 池中的真实 Elo，elo_ratings 仅存版本号不可再用）
+                all_keys = list(elite_elo_ratings.keys())
                 rule_keys = [k for k in all_keys if k.startswith('Rule')]
                 rein_keys = [k for k in all_keys if k.startswith('actor_rein')]
                 latest_rein_keys = rein_keys[-300:] if len(rein_keys) > 300 else rein_keys
                 target_pool_keys = rule_keys + latest_rein_keys
-                avg_pool_elo = np.mean([elo_ratings[k] for k in target_pool_keys])
+                avg_pool_elo = np.mean([elite_elo_ratings[k] for k in target_pool_keys]) if target_pool_keys else main_agent_elo
                 x_elo_diff = main_agent_elo - avg_pool_elo
                 logger.add("train_plus/elo_diff_x", x_elo_diff, total_steps/action_cycle_multiplier)
 
@@ -1015,50 +1033,28 @@ def run_MLP_simulation(
                     print(f"Saved Checkpoint team: {actor_team_key}")
                     # 每次落盘新的 actor_rein 时记录：横轴当前步数，纵轴 actor_rein 后面的数字（batch_idx）
                     logger.add("checkpoint/actor_rein_idx", batch_idx, total_steps/action_cycle_multiplier)
-                    # 只注册已落盘的版本，保证自博弈采样对手时总能加载到对应权重
-                    elo_ratings[actor_team_key] = main_agent_elo
+                    # 只注册已落盘的版本到可用注册表（版本号=batch_idx），保证采样时总能加载到权重
+                    available_opps[actor_team_key] = batch_idx
 
                 # 清空各学生 id Buffer
                 for uid in red_student_ids:
                     transition_dicts[uid] = copy.deepcopy(empty_transition_dict)
 
-                # B. 精英池维护
-                if total_steps >= WARM_UP_STEPS:
-                    elo_ratings[opp_name] = main_agent_elo
+                # B. 精英池维护（容量受限，满员按 Elo 踢最弱，规则与 NN 一视同仁；不再定期全量重刷）
 
                 # 全量历史记录
-                elo_ratings["__LAST_UPDATE_STEP__"] = total_steps
-                elo_ratings["__LAST_UPDATE_BATCH__"] = batch_idx
-
-                # 定期重刷精英池
-                if total_steps > 0 and total_steps % 1e6 == 0:
-                    print(f"\n>>> [Elite Pool Refresh] Refreshing elite_elo_ratings at {total_steps} steps...")
-                    non_rule_elo = {k: v for k, v in elo_ratings.items() if not k.startswith("Rule") and not k.startswith("__")}
-                    current_non_rule_count = len([k for k in elite_elo_ratings.keys() if not k.startswith("Rule") and not k.startswith("__")])
-                    refresh_size = min(current_non_rule_count, MAX_HISTORY_SIZE)
-                    sorted_non_rule = sorted(non_rule_elo.items(), key=lambda x: x[1], reverse=True)
-                    top_non_rule = dict(sorted_non_rule[:refresh_size])
-                    rule_elo = {k: v for k, v in elo_ratings.items() if k.startswith("Rule")}
-                    elite_elo_ratings = {**rule_elo, **top_non_rule}
-                    print(f"  [Elite Pool Refresh] Refreshed: {len(rule_elo)} Rules + {len(top_non_rule)} top agents (size={refresh_size})")
+                available_opps["__LAST_UPDATE_STEP__"] = total_steps
+                available_opps["__LAST_UPDATE_BATCH__"] = batch_idx
 
                 # 保存全量日志
                 with open(full_json_path, "w", encoding="utf-8") as f:
-                    json.dump(elo_ratings, f, ensure_ascii=False, indent=2)
+                    json.dump(available_opps, f, ensure_ascii=False, indent=2)
 
                 # 精英池快照
                 save_elite = copy.deepcopy(elite_elo_ratings)
                 save_elite["__CURRENT_MAIN__"] = main_agent_elo
                 with open(elite_json_path, "w", encoding="utf-8") as f:
                     json.dump(save_elite, f, ensure_ascii=False, indent=2)
-
-                # 名人堂
-                with open(hof_json_path, "w", encoding="utf-8") as f:
-                    json.dump(hall_of_fame, f, ensure_ascii=False, indent=2)
-
-                # 行为统计
-                with open(Elite_Fire_Stats_path, "w", encoding="utf-8") as f:
-                    json.dump(Elite_Fire_Stats, f, ensure_ascii=False, indent=2)
 
                 #  日志记录 (Logging) - 保持不变，展示的是精英池状态
                 valid_elos = {k: v for k, v in elite_elo_ratings.items() if not k.startswith("__")}
@@ -1108,25 +1104,31 @@ def run_MLP_simulation(
                     if total_steps >= WARM_UP_STEPS:
                         logger.add("Elo_Centered/Current_rate_normed %", curr_rate * 100, total_steps/action_cycle_multiplier)
 
-                    if main_agent_elo >= rule_elo_thres:
-                        # 满员清理
-                        history_keys = [k for k in elite_elo_ratings.keys() if not k.startswith("Rule") and not k.startswith("__")]
-                        while len(history_keys) >= MAX_HISTORY_SIZE:
-                            # 每次找到当前池子中最弱的一个
-                            weakest_history_key = min(history_keys, key=lambda k: elite_elo_ratings[k])
-                            old_elo = elite_elo_ratings[weakest_history_key]
-                            # 从 ELO 字典和局部列表中同步删除
-                            del elite_elo_ratings[weakest_history_key]
-                            history_keys.remove(weakest_history_key)
-                            print(f"[Pool Cleanup] Kicked weakest: {weakest_history_key} (Elo: {old_elo:.0f}), Current Pool: {len(history_keys)}")
-                        
-                        #  正式入池
-                        if hist_agent_as_opponent:
-                            elite_elo_ratings[actor_team_key] = main_agent_elo
+                    # 正式入池：仅注册已落盘的版本，避免幽灵对手；新对手 Elo=main_agent_elo
+                    if hist_agent_as_opponent and os.path.exists(os.path.join(log_dir, f"{actor_team_key}.pt")):
+                        new_entry_elo = main_agent_elo
+                        pool_keys = [k for k in elite_elo_ratings.keys() if not k.startswith("__")]
+                        if len(pool_keys) >= MAX_HISTORY_SIZE:
+                            # 满员：按 Elo 踢出最弱（规则与 NN 一视同仁）
+                            weakest_key = min(pool_keys, key=lambda k: elite_elo_ratings[k])
+                            weakest_elo = elite_elo_ratings[weakest_key]
+                            if new_entry_elo > weakest_elo:
+                                del elite_elo_ratings[weakest_key]
+                                elite_elo_ratings[actor_team_key] = new_entry_elo
+                                print(f"[Pool Cleanup] Kicked {weakest_key} (Elo: {weakest_elo:.0f}), "
+                                      f"accepted {actor_team_key} (Elo: {new_entry_elo:.0f}).")
+                            else:
+                                print(f"[Pool Skip] {actor_team_key} (Elo: {new_entry_elo:.0f}) not stronger "
+                                      f"than weakest {weakest_key} (Elo: {weakest_elo:.0f}), skipped.")
+                        else:
+                            elite_elo_ratings[actor_team_key] = new_entry_elo
                             print(f"Accepted {actor_team_key} into Elite Pool.")
 
+                    # 池容量占用（规则 + NN 总数）
                     hist_count = len([k for k in valid_elos if not k.startswith("Rule")])
+                    pool_total = len([k for k in elite_elo_ratings.keys() if not k.startswith("__")])
                     logger.add("Elo/History_Pool_Size", hist_count, total_steps/action_cycle_multiplier)
+                    logger.add("Elo/Pool_Total_Size", pool_total, total_steps/action_cycle_multiplier)
 
                     # 记录详细分数
                     # 记录最新个体的绝对分和相对均值的居中分
@@ -1158,10 +1160,10 @@ def run_MLP_simulation(
                     print(f"Saved fire records buffer to {fire_buffer_path}. Size: {len(fire_records_buffer)}")
 
 
-                elo_ratings["__LAST_UPDATE_STEP__"] = total_steps
-                elo_ratings["__LAST_UPDATE_BATCH__"] = batch_idx
+                available_opps["__LAST_UPDATE_STEP__"] = total_steps
+                available_opps["__LAST_UPDATE_BATCH__"] = batch_idx
                 with open(full_json_path, "w", encoding="utf-8") as f:
-                    json.dump(elo_ratings, f, ensure_ascii=False, indent=2)
+                    json.dump(available_opps, f, ensure_ascii=False, indent=2)
 
         #  [新增] 达到 max_steps 后的交互逻辑
         print(f"\n--- Target steps reached: {total_steps} / {current_max_steps} ---")
