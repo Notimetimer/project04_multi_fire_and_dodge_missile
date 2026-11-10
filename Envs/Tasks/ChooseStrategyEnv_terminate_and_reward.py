@@ -208,6 +208,19 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             mach = ego.mach
             r_shaping += (mach-1.0)*2 * DENSE_REWARD_WEIGHT/2
 
+            # 贴边界方向引导奖励（常驻）：距边界 ≤30km 时向远离边界的一侧压坡度
+            border_info = ego_full_state.get("border", None)
+            if border_info is None and hasattr(ego, 'current_state'):
+                border_info = ego.current_state.get("border", None)
+            if border_info is not None:
+                d_hor = float(border_info.get("d_hor2border", 999e3))
+                border_LR = float(border_info.get("border_LR", 0))
+                # border_LR 为连续值 [-1,1]：航向偏右为负（边界在左），鼓励 sin(φ)>0 即右滚远离左边界；
+                # 航向偏左为正（边界在右），鼓励 -sin(φ)>0 即左滚远离右边界；
+                # 幅值越大表示航向越偏离"指向中心"方向，压坡度奖励越强
+                if d_hor <= 30e3:
+                    r_shaping += - border_LR * sin(ego.phi) * DENSE_REWARD_WEIGHT
+
             # 队友间距（直接取观测中已算好的 ally_dist，即本机到各队友的相对距离，无需再自算）差分缓存：每周期都更新，保证差分跨度恰好为一个周期
             # 死队友在观测里是填充值（ally_dist=100e3），用 mask_output['ally'] 剔除；全部阵亡则 teammate_dist 取 None
             alive_ally_dists = [temp["ally_dist"] for temp, m in zip(ally_infos, mask_output['ally']) if temp and m > 0.5]
@@ -223,10 +236,17 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             if warning:
                 # 下高引导
                 r_shaping += (-ego.vu/100) * np.sign(threat_theta-(-pi/4)) * DENSE_REWARD_WEIGHT
-                # 三九和拖尾机动的奖励在动作mask面前很微弱，不写了
+                # 置尾引导
+                abs_threat_delta_psi = np.arccos(cos_threat_delta_psi * 0.999)
+                if abs_threat_delta_psi > pi/2:
+                    r_shaping += DENSE_REWARD_WEIGHT
+                else:
+                    r_shaping -= DENSE_REWARD_WEIGHT
+                # r_shaping += (abs_threat_delta_psi-pi/2)/(pi/2) * DENSE_REWARD_WEIGHT
             else:
                 # 锁定/被锁定
-                r_shaping += (ego_has_lock - ego_is_locked) * DENSE_REWARD_WEIGHT
+                if missile_t_fly >= 30: # 开火后短时间内豁免保持锁定的需要
+                    r_shaping += (ego_has_lock - ego_is_locked) * DENSE_REWARD_WEIGHT * 0.75 # * 1
                 
                 # 漏选/未选取目标惩罚：如果有alive enm uav没有被己方任何飞机或者导弹选中，全队扣分
                 enm_allocateIDs4missile = [missile.target_id for missile in alive_ally_missiles]

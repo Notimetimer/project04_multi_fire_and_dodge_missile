@@ -6,8 +6,8 @@ from prepare_il_datas_hierarchical import run_rules
 
 # 指定中断续训的目录。如果为 None，则正常开启新训练。
 resume_target_dir = None
-resume_target_dir = os.path.join(r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat",
-    r"MAPPO_homo_SLA_1_blackboard_1-run-20261106-164643")
+# resume_target_dir = os.path.join(r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat",
+#     r"MAPPO_homo_SLA_1_blackboard_1-run-20261109-191727")
 collape_recover={ # 是否是崩盘后恢复
             "collapsed": False,
             "best_actor_name": None,
@@ -73,7 +73,8 @@ if __name__=='__main__':
         save_interval = 1, # 触发更新至少要经过多少批采样
         num_runs = 3, # 测试回合重复次数  3
         device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
-        vertices = None,
+        # 场地边界：与测试脚本一致，统一从 init_states.json 加载方形顶点（不再传 None 走环境兜底）
+        vertices = load_init_states()['vertices'],
         resume_dir=resume_target_dir, # 指定中断续训目录
         use_supervised_fire = USE_SUPERVISED_FIRE,
         supervised_fire_buffer_size = 1000, # [新增] 开火记录滚动缓冲容量（FIFO，像off-policy一样滚动更新）
