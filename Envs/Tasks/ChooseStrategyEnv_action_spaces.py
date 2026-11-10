@@ -409,7 +409,25 @@ class ChooseStrategyEnv(Battle):
             dist2center = norm(line2center)
             delta_psi_cmd = sub_of_radian(psi2center, ego.psi) * dist2center/self.R_cage
 
-        
+        # 给对比算法新增的韩浩然TIM动作
+        # 直飞
+        if action_h == 7:
+            delta_psi_cmd = 0
+        # 左转
+        if action_h == 8:
+            delta_psi_cmd = -pi/2
+        # 右转
+        if action_h == 9:
+            delta_psi_cmd = pi/2
+        # 半筋斗前半段
+        if action_h == 10:
+            delta_psi_cmd = pi
+            theta_desired = np.radians(80)
+        # 破S前半段
+        if action_h == 11:
+            delta_psi_cmd = pi
+            theta_desired = -np.radians(80)
+            
         # 处理指令，让crank的时候依然能够保持锁定
         target_delta_point_ = np.array([
             cos(theta + delta_theta) * cos(delta_psi),
