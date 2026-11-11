@@ -15,9 +15,12 @@
 单步 transition = {
   'obs':  {'agent_input','mask_input','rule_input'},   # 决策时刻观测三元组
   'action': {'flat_idx': int, ...},                    # 扁平机动动作索引
-  'reward': float, 'next_obs': {...}, 'done': 0/1, 'active_mask': 0/1
+  'reward': float, 'next_obs': {...}, 'active_mask': 0/1,
+  'terminated': 0/1,   # 环境终结（胜负已分）：TD 目标不 bootstrap
+  'truncated': 0/1,    # 时限截断：TD 目标照常 bootstrap（time-limit aware）
 }
 开火记录 = {'fire_obs': agent_input, 'enm_idx': int, 'hit_record': 0/1}（环境端回填）。
+末端门控：回放池中末端转移（terminated+truncated）累计不足 min_terminal_samples 时不做梯度更新。
 """
 
 import copy
@@ -78,6 +81,12 @@ class ReplayBuffer:
         self.capacity = int(capacity)
         self.storage = []
         self.pos = 0
+        self.n_terminated = 0    # 累计入池的环境终结帧数（末端门控用）
+        self.n_truncated = 0     # 累计入池的时限截断帧数（末端门控用）
+
+    @property
+    def n_ended(self):
+        return self.n_terminated + self.n_truncated
 
     def push(self, transition):
         if len(self.storage) < self.capacity:
@@ -89,10 +98,14 @@ class ReplayBuffer:
     def push_stacked(self, stacked_trans):
         """把 worker 堆叠好的 dict-of-arrays 拆成单步转移逐条写入（键名归一化为单数）。"""
         key_map = {'actions': 'action', 'rewards': 'reward',
-                   'dones': 'done', 'active_masks': 'active_mask'}
-        n = len(stacked_trans['dones'])
+                   'terminateds': 'terminated', 'truncateds': 'truncated',
+                   'active_masks': 'active_mask',
+                   'next_states': 'next_obs'}
+        n = len(stacked_trans['terminateds'])
         for i in range(n):
             single = _tree_index(stacked_trans, i)
+            self.n_terminated += int(single['terminateds'])
+            self.n_truncated += int(single['truncateds'])
             self.push({key_map.get(k, k): v for k, v in single.items()})
 
     def sample(self, batch_size):
@@ -103,19 +116,21 @@ class ReplayBuffer:
 
 
 class HANSACHybrid:
-    """离策略混合 SAC：双 Q + 目标网络 + 三温度自动调节 + 开火 BCE 监督（式 35 联合反传）。"""
+    """离策略混合 SAC：双 Q + 目标网络 + 三类温度自动调节（αI/αD/per-Ñ αJ）+ 开火 BCE 监督（式 35 联合反传）。"""
 
     def __init__(self, networks: HanWrapper,
                  lr=1e-4, gamma=0.9, tau=0.05, batch_size=128,
                  buffer_size=int(1e5),
                  fire_buffer_size=1000, fire_batch_size=128, fire_min_samples=100,
-                 kI=0.8, kD=0.8, alpha_init=0.2, max_grad_norm=5.0,
+                 min_terminal_samples=32,
+                 kI=0.8, kD=0.8, xi=1.5, alpha_init=0.2, max_grad_norm=5.0,
                  device='cpu'):
         self.ac = networks
         self.ac_target = copy.deepcopy(networks)
         self.ac_target.eval()
         for p in self.ac_target.parameters():
             p.requires_grad_(False)
+        self.enm_num = int(networks.enm_num)
 
         self.gamma = gamma          # 论文 γ=0.9
         self.tau = tau              # 式(39) τ=0.05
@@ -126,21 +141,31 @@ class HANSACHybrid:
         # LNet = Lf + LQ1 + LQ2 + Lπ 对同一参数集一次反传（式 35），单个优化器
         self.net_optimizer = torch.optim.Adam(self.ac.parameters(), lr=lr)
 
-        # 三个温度的 log 参数（式 36-38 自动调节）
+        # 温度的 log 参数：αI（式36 全样本）、αD（式37 Ñ>0）、αJ（式38 按 Ñ 分桶，每桶独立）
         self.log_alpha_I = torch.tensor(np.log(alpha_init), device=device, requires_grad=True)
         self.log_alpha_D = torch.tensor(np.log(alpha_init), device=device, requires_grad=True)
-        self.log_alpha_J = torch.tensor(np.log(alpha_init), device=device, requires_grad=True)
+        self.log_alpha_J = torch.tensor(np.full(self.enm_num + 1, np.log(alpha_init)),
+                                        device=device, requires_grad=True)
         self.alpha_optimizer = torch.optim.Adam(
             [self.log_alpha_I, self.log_alpha_D, self.log_alpha_J], lr=lr)
 
-        # 期望熵：Ḅ^I = kI·log|AI|，Ḅ^D = kD·log|AD|（论文取 kI=kD=0.8）
+        # 期望熵：H̄I = kI·log|AI|，H̄D = kD·log|AD|（论文取 kI=kD=0.8）
         self.B_I = float(kI * np.log(N_TIM))
         self.B_D = float(kD * np.log(N_TDM))
+        # 式(48)：固定 logit ratio ξ（论文取 1.5）→ ξ̄ = ξ·|AI|/|AD|（式 42）
+        #   H̄J_Ñ = log(ξ̄+Ñ) + (ξ̄·H̄I + Ñ·H̄D − ξ̄·log ξ̄)/(ξ̄+Ñ)；Ñ=0 时退化为 H̄I
+        self.xi = float(xi)
+        self.xi_bar = self.xi * N_TIM / N_TDM
+        self.B_J_table = [float(np.log(self.xi_bar + n)
+                                + (self.xi_bar * self.B_I + n * self.B_D
+                                   - self.xi_bar * np.log(self.xi_bar)) / (self.xi_bar + n))
+                          for n in range(self.enm_num + 1)]
 
         self.buffer = ReplayBuffer(buffer_size)                    # D_BFM
         self.fire_buffer = deque(maxlen=int(fire_buffer_size))     # D_f
         self.fire_batch_size = int(fire_batch_size)
         self.fire_min_samples = int(fire_min_samples)
+        self.min_terminal_samples = int(min_terminal_samples)
 
         self.update_count = 0
 
@@ -153,17 +178,23 @@ class HANSACHybrid:
 
     # ------------------------------------------------------------------ 内部量
     def _soft_value_terms(self, out, alpha_I, alpha_D, alpha_J):
-        """给定 forward_sac 输出，返回 (ΣπQmin 所需 qmin, 熵加权和)。
-        熵加权和 = αJ·H^J + αI·Pr(G0)·H^I + αD·Σ_j Pr(Gj)·H^D_j。"""
+        """给定 forward_sac 输出，返回 (ΣπQmin 所需 qmin, 熵加权和)（式 32 目标口径）。
+        alpha_J 为 per-Ñ 温度向量 (Ne+1,)，按存活敌机数取值；
+        熵项按组概率加权——式(32) 指示子在 πJ 采样下的数学期望。"""
         qmin = torch.min(out['q1'], out['q2'])
-        ent = alpha_J * out['H_J'] \
+        n_surv = out['enm_mask'].sum(-1).long()                    # (B,)
+        alpha_J_n = alpha_J[n_surv]                                # (B,)
+        ent = alpha_J_n * out['H_J'] \
             + alpha_I * out['pr_g'][:, 0] * out['H_I'] \
             + alpha_D * (out['pr_g'][:, 1:] * out['H_Dj']).sum(-1)
         return qmin, ent
 
     # ------------------------------------------------------------------ 主更新
     def update(self, batch: Any = None, n_updates=1) -> UpdateResult:
-        """执行 n_updates 次梯度更新；batch 参数仅为抽象接口兼容（数据来自内部回放池）。"""
+        """执行 n_updates 次梯度更新；batch 参数仅为抽象接口兼容（数据来自内部回放池）。
+        末端门控：回放池不满一批、或末端转移（terminated+truncated）不足 min_terminal_samples 时不更新。"""
+        if len(self.buffer) < self.batch_size or self.buffer.n_ended < self.min_terminal_samples:
+            return UpdateResult({})
         metrics_acc = {}
         n_done = 0
         for _ in range(int(n_updates)):
@@ -172,10 +203,14 @@ class HANSACHybrid:
             m = self._update_once()
             n_done += 1
             for k, v in m.items():
-                metrics_acc[k] = metrics_acc.get(k, 0.0) + v
+                if isinstance(v, (int, float)):
+                    metrics_acc[k] = metrics_acc.get(k, 0.0) + v
+                else:
+                    metrics_acc[k] = v  # 非标量指标（如 alpha_J_each 列表）取最近一次
         if n_done == 0:
             return UpdateResult({})
-        return UpdateResult({k: v / n_done for k, v in metrics_acc.items()})
+        return UpdateResult({k: (v / n_done if isinstance(v, (int, float)) else v)
+                             for k, v in metrics_acc.items()})
 
     def _update_once(self):
         device = self.device
@@ -189,8 +224,8 @@ class HANSACHybrid:
                                    dtype=torch.long, device=device)
         reward = torch.as_tensor(np.array([t['reward'] for t in trans], dtype=np.float32),
                                  dtype=torch.float32, device=device)
-        done = torch.as_tensor(np.array([t['done'] for t in trans], dtype=np.float32),
-                               dtype=torch.float32, device=device)
+        terminated = torch.as_tensor(np.array([t['terminated'] for t in trans], dtype=np.float32),
+                                     dtype=torch.float32, device=device)
         active = torch.as_tensor(np.array([t['active_mask'] for t in trans], dtype=np.float32),
                                  dtype=torch.float32, device=device)
         act_sum = active.sum().clamp(min=1.0)
@@ -209,16 +244,19 @@ class HANSACHybrid:
         with torch.no_grad():
             qmin_t, ent_t = self._soft_value_terms(out_t, alpha_I, alpha_D, alpha_J)
             V_t = (out_t['pi'] * qmin_t).sum(-1) + ent_t
-            y = reward + self.gamma * (1.0 - done) * V_t
+            y = reward + self.gamma * (1.0 - terminated) * V_t  # 截断帧照常 bootstrap
 
         q1_taken = out['q1'].gather(1, flat_idx.unsqueeze(1)).squeeze(1)
         q2_taken = out['q2'].gather(1, flat_idx.unsqueeze(1)).squeeze(1)
         LQ1 = (((q1_taken - y) ** 2) * active).sum() / act_sum
         LQ2 = (((q2_taken - y) ** 2) * active).sum() / act_sum
 
-        # ---------------- 策略损失（式 34：−J，含联合熵与分组熵） ----------------
-        qmin, ent = self._soft_value_terms(out, alpha_I, alpha_D, alpha_J)
-        Lpi = (-((out['pi'] * qmin).sum(-1) + ent) * active).sum() / act_sum
+        # ---------------- 策略损失（式 34：−J；熵项不加组概率权重） ----------------
+        qmin, _ = self._soft_value_terms(out, alpha_I, alpha_D, alpha_J)
+        n_surv_pi = out['enm_mask'].sum(-1).long()
+        ent_pi = alpha_J[n_surv_pi] * out['H_J'] + alpha_I * out['H_I'] \
+            + alpha_D * out['H_Dj'].sum(-1)   # 阵亡敌机组 H_Dj=0，自动只计入存活组
+        Lpi = (-((out['pi'] * qmin).sum(-1) + ent_pi) * active).sum() / act_sum
 
         # ---------------- 开火监督 Lf（式 28，不冻结主干） ----------------
         Lf = torch.zeros((), device=device)
@@ -238,13 +276,21 @@ class HANSACHybrid:
         self.net_optimizer.step()
 
         # ---------------- 温度更新（式 36-38，熵全部 detach） ----------------
-        pr_g_det = out_t['pr_g']  # 用目标策略的组质量合成期望联合熵（式 48 口径，无梯度）
-        H_gamma = -(pr_g_det * torch.log(pr_g_det.clamp(min=1e-8))).sum(-1)   # H(Γ)
-        B_J = (pr_g_det[:, 0] * self.B_I + pr_g_det[:, 1:].sum(-1) * self.B_D + H_gamma).detach()
-
+        # 式(36)：TIM 熵用全部样本；式(37)：TDM 熵只统计 Ñ>0 的样本；
+        # 式(38)：联合熵按存活敌机数 Ñ 分桶，每桶独立温度，期望值查 B_J_table（固定 ξ，式 48）
         L_alpha_I = (self.log_alpha_I * ((out['H_I'] - self.B_I) * active).detach().sum() / act_sum)
-        L_alpha_D = (self.log_alpha_D * ((out['H_D'] - self.B_D) * active).detach().sum() / act_sum)
-        L_alpha_J = (self.log_alpha_J * ((out['H_J'] - B_J) * active).detach().sum() / act_sum)
+        surv = out['enm_mask'].any(-1).to(torch.float32)          # Ñ>0 过滤
+        n_surv = (surv * active).sum().clamp(min=1.0)
+        L_alpha_D = (self.log_alpha_D * ((out['H_D'] - self.B_D) * active * surv).detach().sum() / n_surv)
+        n_surv_now = out['enm_mask'].sum(-1).long()               # (B,)
+        laj_terms = []
+        for n in range(self.enm_num + 1):
+            mask_n = ((n_surv_now == n).to(torch.float32) * active)
+            if mask_n.sum().item() > 0:
+                laj_terms.append(self.log_alpha_J[n]
+                                 * ((out['H_J'] - self.B_J_table[n]) * mask_n).detach().sum()
+                                 / mask_n.sum())
+        L_alpha_J = torch.stack(laj_terms).sum()
         alpha_loss = L_alpha_I + L_alpha_D + L_alpha_J
         self.alpha_optimizer.zero_grad()
         alpha_loss.backward()
@@ -263,11 +309,13 @@ class HANSACHybrid:
             'H_J': float(out['H_J'].mean().detach().cpu()),
             'H_I': float(out['H_I'].mean().detach().cpu()),
             'H_D': float(out['H_D'].mean().detach().cpu()),
-            'alpha_I': float(alpha_I), 'alpha_D': float(alpha_D), 'alpha_J': float(alpha_J),
-            'B_J': float(B_J.mean().cpu()),
+            'alpha_I': float(alpha_I), 'alpha_D': float(alpha_D),
+            'alpha_J': float(alpha_J.mean()), 'alpha_J_each': [float(a) for a in alpha_J],
+            'B_J': float(np.mean([self.B_J_table[n] for n in n_surv_now.tolist()])),
             'q_mean': float(qmin.mean().detach().cpu()),
             'fire_buffer': float(len(self.fire_buffer)),
             'replay_size': float(len(self.buffer)),
+            'buffer_ended': float(self.buffer.n_ended),
         }
 
     # ------------------------------------------------------------------ 存取（断点续训）
@@ -279,7 +327,7 @@ class HANSACHybrid:
             'alpha_optimizer': self.alpha_optimizer.state_dict(),
             'log_alpha_I': float(self.log_alpha_I.detach().cpu()),
             'log_alpha_D': float(self.log_alpha_D.detach().cpu()),
-            'log_alpha_J': float(self.log_alpha_J.detach().cpu()),
+            'log_alpha_J': [float(a) for a in self.log_alpha_J.detach().cpu()],
             'update_count': self.update_count,
         }
 

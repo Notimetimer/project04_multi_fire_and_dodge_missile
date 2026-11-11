@@ -186,6 +186,7 @@ class aim120:
         self.in_distance = 0
         self.q_beta = 0
         self.q_epsilon = 0
+        self.q_beta_known = 0
         self.nzt = 0  # 过载量记忆值
         self.nyt = 0
         self.last_target_pos = None
@@ -369,6 +370,7 @@ class aim120:
         ptt_ = ptt_predict
         pmt_ = p_missile_
         line_t_ = ptt_ - pmt_
+        self.q_beta_known = np.arctan2(line_t_[2], line_t_[0])
         vrt_ = vtt_predict - v_missile_
         distance = np.linalg.norm(line_t_)
         vmt = np.linalg.norm(vmt_)
@@ -430,6 +432,7 @@ class aim120:
         ptt_ = p_target_
         pmt_ = p_missile_
         line_t_ = ptt_ - pmt_
+        self.q_beta_known = np.arctan2(line_t_[2], line_t_[0])
         vrt_ = v_target_ - v_missile_
         distance = np.linalg.norm(line_t_)
         vmt = np.linalg.norm(vmt_)
@@ -531,10 +534,7 @@ class aim120:
             # 捕获目标瞬间标志
             if self.guidance_stage == 2:
                 self.A_pole_moment = 1
-            # print(str(self.t)+'s,末制导')
             self.guidance_stage = 3
-        # if self.A_pole_moment == 1:
-        #     print('A_pole')
 
         if self.guidance_stage == 2:
             return self.mid_term_guidance(v_missile_, v_target_, p_missile_, p_target_, datalink)

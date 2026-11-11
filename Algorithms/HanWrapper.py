@@ -6,14 +6,19 @@
 - 式(15)：阵亡/无效敌机在注意力 key 侧掩码；
 - 式(16)：残差 + LayerNorm；实验部分为 2 层、E=32；
 - 式(17)-(18)：ego 嵌入出 TIM 策略/Q 头；每个敌机嵌入经共享 MLP 出 TDM logits、开火 logit、TDM Q；
-- 式(21)：TIM ∪ TDM 拼接为扁平 logits，带 mask 的单一 softmax（本文件 maneuver 部分）；
-- 式(19)(20)(26)：开火 = 每敌机 sigmoid 命中概率，训练时 Bernoulli 采样，测试时 argmax + 阈值 0.8。
+- 式(21)：TIM ∪ TDM 拼接为扁平 logits，带 mask 的单一 softmax；
+- 式(19)(20)(26)：开火 = 每敌机 sigmoid 命中概率，训练时 Bernoulli 采样，测试时 argmax + 阈值。
+- 论文实验超参：2 层注意力 E=32；MLP 头 2 隐层×128；kI=kD=0.8；ξ=1.5；Ω̄1=0.8。
 
-与论文的有意偏差（动作空间沿用项目既有设定，不重引入论文原版动作）：
-- 项目机动动作为 (vert, hor) 对，见 Envs/Tasks/ChooseStrategyEnv260421_action_spaces.py maneuver_for_1_enm；
-  * hor ∈ {2,3,4}（3线/置尾/9线）在 warning 下相对威胁方向 → 按用户规定视为 TIM，vert 固定为平飞(1)；
-  * hor∈{0,1,5,6}（追踪/左crank/右crank/回中心）× vert∈{0,1,2} → TDM，每个敌机一份（12 个/敌机）；
-  * 扁平机动动作数 A = N_TIM + N_enm*N_TDM = 3 + 2*12 = 27（2V2）。
+已声明偏差（declared_deviations）：论文式(19)(26) 的开火目标恒为 argmax_j πF,j 的 j*，
+与机动动作解耦；本实现为与 ActorWithATTN 的 enm_idx 语义对齐，TDM 动作的开火目标
+绑定其机动目标敌机，TIM 动作仍取 j*。
+
+对比用动作空间（idx ↔ (vert, hor) 双向映射表与合法 mask 表均在本文件内部维护）：
+- TIM（目标无关机动，全局共享组，11 个）：(vert,hor) ∈ {0,1,2}×{7,8,9} ∪ {(1,10),(1,11)}；
+- TDM（目标相关机动，每个敌机一份，6 个）：vert 固定为平飞 1，hor ∈ 0~5；
+- TIM/TDM 的组合互不重叠，(vert,hor) ↔ idx 双向唯一；
+- 扁平机动动作数 A = N_TIM + N_enm × N_TDM（2V2 时 11 + 2×6 = 23）。
 - 手工禁火门控全部保留为开火头的硬 mask（锁定、40°锥、15°仰角、<100km、30s 冷却、弹药、敌机存活）。
 
 接口约定与 Algorithms/ActorWithATTN.py 保持一致：
@@ -34,17 +39,34 @@ import torch.nn.functional as F
 _MASK_VAL = 1e8  # 掩码填充值（-inf 量级），与 ActorWithATTN 口径一致
 
 VERT_DIM = 3
-# hor 语义（maneuver_for_1_enm）：0 追踪 / 1 左crank / 5 右crank / 2 3线 / 3 置尾 / 4 9线 / 6 回中心
-TIM_HOR = (2, 3, 4)        # warning 时相对威胁方向 → 论文 TIM（目标无关机动）
-TDM_HOR = (0, 1, 5, 6)     # 相对所选目标 → 论文 TDM（目标相关机动）
-TIM_VERT = 1               # TIM 动作垂直通道固定为"平飞(+1°)"
-N_TIM = len(TIM_HOR)                       # 3
-N_TDM = len(TDM_HOR) * VERT_DIM            # 每敌机 12
-FIRE_THRESHOLD = 0.8       # 论文 IV-B：测试时开火阈值
+# 对比环境 maneuver_for_1_enm 支持的水平动作索引范围：[0, 12)
+HOR_DIM_FULL = 12
 
-# TDM 扁平索引 k ∈ [0,12) -> (hor, vert)
-_TDM_HOR_LIST = [TDM_HOR[k // VERT_DIM] for k in range(N_TDM)]
-_TDM_VERT_LIST = [k % VERT_DIM for k in range(N_TDM)]
+# TIM（目标无关机动）：全局共享组，共 11 个 (vert, hor)
+TIM_ACTIONS = (
+    (0, 7), (0, 8), (0, 9),
+    (1, 7), (1, 8), (1, 9),
+    (2, 7), (2, 8), (2, 9),
+    (1, 10), (1, 11),
+)
+N_TIM = len(TIM_ACTIONS)
+
+# TDM（目标相关机动）：action_v 固定为平飞 1，hor 0~5，每个敌机一份，共 6 个
+TDM_ACTIONS = tuple((1, h) for h in range(6))
+N_TDM = len(TDM_ACTIONS)
+
+# 反向映射：(vert, hor) -> 组内 idx；正向映射直接查 TIM_ACTIONS / TDM_ACTIONS 下标
+TIM_INDEX = {a: i for i, a in enumerate(TIM_ACTIONS)}
+TDM_INDEX = {a: i for i, a in enumerate(TDM_ACTIONS)}
+assert not (set(TIM_INDEX) & set(TDM_INDEX)), 'TIM/TDM 动作组合必须互斥'
+
+# mask 表：完整 (VERT_DIM × HOR_DIM_FULL) 网格上标记哪些 (vert, hor) 合法
+VALID_ACTION_MASK = tuple(
+    tuple((v, h) in TIM_INDEX or (v, h) in TDM_INDEX for h in range(HOR_DIM_FULL))
+    for v in range(VERT_DIM)
+)
+assert sum(sum(row) for row in VALID_ACTION_MASK) == N_TIM + N_TDM
+
 
 
 @dataclass(frozen=True)
@@ -106,14 +128,16 @@ class HetAttnLayer(nn.Module):
 
 
 def _mlp(in_dim, hidden, out_dim):
-    return nn.Sequential(nn.Linear(in_dim, hidden), nn.ReLU(), nn.Linear(hidden, out_dim))
+    """论文实验配置：MLP 头含两个隐层、每层 hidden 节点（默认 128）。"""
+    return nn.Sequential(nn.Linear(in_dim, hidden), nn.ReLU(),
+                         nn.Linear(hidden, hidden), nn.ReLU(),
+                         nn.Linear(hidden, out_dim))
 
 
 class HanWrapper(nn.Module):
     """异构 Transformer 骨干 + 扁平混合动作头 + 双 Q + 开火头（策略与价值共享骨干，式 35 联合反传）。"""
-
     def __init__(self, fixed_dim, enm_shape, ally_shape,
-                 embed_dim=32, n_layers=2, head_hidden=64, device='cpu', **_unused):
+                 embed_dim=32, n_layers=2, head_hidden=128, device='cpu', **_unused):
         super().__init__()
         self.fixed_dim = fixed_dim
         self.enm_shape = tuple(enm_shape)
@@ -127,7 +151,7 @@ class HanWrapper(nn.Module):
         self.fixed_embed = nn.Linear(fixed_dim, embed_dim)
         self.enm_embed = nn.Linear(self.enm_shape[1], embed_dim)
         self.ally_embed = nn.Linear(self.ally_shape[1], embed_dim)
-        # 2 层异构自注意力（论文实验设置）
+        # 2 层异构自注意力
         self.attn_layers = nn.ModuleList([HetAttnLayer(embed_dim) for _ in range(n_layers)])
 
         # 式(17)：ego 嵌入 → TIM 策略头 + TIM 双 Q
@@ -209,31 +233,32 @@ class HanWrapper(nn.Module):
 
     # ------------------------------------------------------------------ 核心前向（可微，SAC 训练与采样共用）
     def forward_sac(self, agent_inputs, mask_inputs, rule_inputs):
-        """返回扁平混合动作分布、双 Q、分组条件熵等全部训练所需量（带梯度）。
+        """返回扁平机动分布、双 Q、per-enm 分组熵等全部训练所需量（带梯度）。
 
-        扁平顺序：[TIM(3)] + [敌机0 的 TDM(12), 敌机1 的 TDM(12), ...]；开火 logits 单独返回。
+        扁平顺序：[TIM(11)] + [敌机0 的 TDM(6), 敌机1 的 TDM(6), ...]；开火 logits 单独返回。
         """
         device = self.device
         fixed, enm, ally, enm_mask, ally_mask = self._pack(agent_inputs, mask_inputs)
         B = fixed.shape[0]
         e_f, e_e = self._backbone(fixed, enm, ally, enm_mask, ally_mask)
 
-        # 策略/Q 头
-        tim_logits = self.tim_pi_head(e_f)                       # (B,3)
-        opp_out = self.opp_pi_head(e_e)                          # (B,N,13)
-        tdm_logits = opp_out[..., :N_TDM]                        # (B,N,12)
-        fire_logits_raw = opp_out[..., N_TDM]                    # (B,N)
+        # 式(17)：ego 嵌入 → TIM logits；式(18)：敌机嵌入 → TDM logits + fire logit
+        tim_logits = self.tim_pi_head(e_f)                       # (B, N_TIM)
+        opp_out = self.opp_pi_head(e_e)                          # (B, Ne, N_TDM+1)
+        tdm_logits = opp_out[..., :N_TDM]                        # (B, Ne, N_TDM)
+        fire_logits_raw = opp_out[..., N_TDM]                    # (B, Ne)
         q1 = torch.cat((self.tim_q1_head(e_f),
-                        self.opp_q1_head(e_e).reshape(B, -1)), dim=-1)   # (B,A)
+                        self.opp_q1_head(e_e).reshape(B, -1)), dim=-1)   # (B, A)
         q2 = torch.cat((self.tim_q2_head(e_f),
-                        self.opp_q2_head(e_e).reshape(B, -1)), dim=-1)   # (B,A)
+                        self.opp_q2_head(e_e).reshape(B, -1)), dim=-1)   # (B, A)
 
-        # 机动掩码：TIM 恒有效；敌机 j 的 12 个 TDM 随敌机存活/有效掩码
-        tdm_mask = enm_mask.unsqueeze(-1).expand(B, self.enm_num, N_TDM).reshape(B, -1)
+        # 机动掩码：TIM 恒有效；敌机 j 的 N_TDM 个 TDM 槽位随敌机存活/有效掩码
+        tdm_mask = enm_mask.unsqueeze(-1).expand(
+            B, self.enm_num, N_TDM).reshape(B, -1)
         maneuver_mask = torch.cat(
-            (torch.ones(B, N_TIM, dtype=torch.bool, device=device), tdm_mask), dim=-1)  # (B,A)
+            (torch.ones(B, N_TIM, dtype=torch.bool, device=device), tdm_mask), dim=-1)  # (B, A)
 
-        logits_flat = torch.cat((tim_logits, tdm_logits.reshape(B, -1)), dim=-1)
+        logits_flat = torch.cat((tim_logits, tdm_logits.reshape(B, -1)), dim=-1)  # (B, A)
         logits_flat_masked = logits_flat.masked_fill(~maneuver_mask, -_MASK_VAL)
         log_pi = logits_flat_masked - torch.logsumexp(logits_flat_masked, dim=-1, keepdim=True)
         pi = torch.softmax(logits_flat_masked, dim=-1)
@@ -248,14 +273,13 @@ class HanWrapper(nn.Module):
 
         log_cond = torch.cat(
             [log_pi[:, sl] - log_pr_g[:, g:g + 1] for g, sl in enumerate(group_slices)], dim=-1)  # (B,A)
-        with torch.no_grad():
-            pass
+
         # 联合熵 H^J 与组内条件熵 H^I / H^D_j（masked 槽位 pi=0，0*有限值=0 不贡献）
         H_J = -(pi * log_pi).sum(-1)                                          # (B,)
         H_I = -(pi[:, group_slices[0]] * log_cond[:, group_slices[0]]).sum(-1) / pr_g_safe[:, 0]
         H_Dj = torch.stack([
             -(pi[:, sl] * log_cond[:, sl]).sum(-1) / pr_g_safe[:, j + 1]
-            for j, sl in enumerate(group_slices[1:])], dim=-1)                # (B,N)
+            for j, sl in enumerate(group_slices[1:])], dim=-1)                # (B,Ne)
         # H^D 对存活敌机取均值（式 37 的 1/Ñ Σ 口径）
         enm_mask_f = enm_mask.to(torch.float32)
         H_D = (H_Dj * enm_mask_f).sum(-1) / enm_mask_f.sum(-1).clamp(min=1.0)
@@ -265,15 +289,15 @@ class HanWrapper(nn.Module):
         fire_logits = fire_logits_raw.masked_fill(~fire_gate, -_MASK_VAL)
 
         return {
-            'logits_flat_masked': logits_flat_masked,  # (B,A)
-            'log_pi': log_pi, 'pi': pi,                # (B,A)
-            'q1': q1, 'q2': q2,                        # (B,A)
-            'log_cond': log_cond,                      # (B,A) 组内条件 log prob
-            'pr_g': pr_g,                              # (B,1+N)
+            'logits_flat_masked': logits_flat_masked,  # (B, A)
+            'log_pi': log_pi, 'pi': pi,                # (B, A)
+            'q1': q1, 'q2': q2,                        # (B, A)
+            'log_cond': log_cond,                      # (B, A) 组内条件 log prob
+            'pr_g': pr_g,                              # (B, 1+Ne)
             'H_J': H_J, 'H_I': H_I, 'H_D': H_D, 'H_Dj': H_Dj,
             'maneuver_mask': maneuver_mask,
-            'fire_logits': fire_logits,                # (B,N) 已掩码
-            'fire_logits_raw': fire_logits_raw,        # (B,N) 未掩码（供 BCE）
+            'fire_logits': fire_logits,                # (B, Ne) 已掩码
+            'fire_logits_raw': fire_logits_raw,        # (B, Ne) 未掩码（供 BCE）
             'fire_gate': fire_gate,
             'enm_mask': enm_mask,
         }
@@ -285,17 +309,12 @@ class HanWrapper(nn.Module):
         return NetworkOutput(out['logits_flat_masked'], out['q1'], out['q2'], out['maneuver_mask'])
 
     # ------------------------------------------------------------------ 动作解码
-    def _primary_target(self, fire_logits, enm_mask):
-        """论文式(19)：j* = argmax_j πF,j（已掩码，命中概率最高的可打敌机）。"""
-        p = torch.sigmoid(fire_logits)  # (B,N)
-        p = p.masked_fill(~enm_mask, 0.0)
-        j_star = p.argmax(dim=-1)  # 全无效时退化为 0（此时 p=0，不会真开火）
-        return j_star, p
-
     def get_action(self, agent_inputs, mask_inputs, rule_inputs, h=None,
-                   temperature=1.0, deterministic=None, fire_threshold=FIRE_THRESHOLD):
+                   temperature=1.0, deterministic=None, fire_threshold=0.8):
         """一次扁平采样：TIM ∪ TDM 单一 softmax 采样机动；开火独立 Bernoulli（训练）/阈值（测试）。
 
+        解码：flat_idx < N_TIM 走 TIM（目标无关，交互目标取开火概率最高的 j*）；
+        否则走敌机 j 的 TDM 组，enm_idx=j；idx→(vert,hor) 映射表见文件头部常量。
         deterministic=None 时按 temperature<1 推断（兼容 VsBaseline_MA 测试通路的 temperature=0.3）。
         """
         if deterministic is None:
@@ -305,39 +324,52 @@ class HanWrapper(nn.Module):
             logits = out['logits_flat_masked']
 
             if deterministic:
-                flat_idx = logits_flat_argmax = logits.argmax(dim=-1)  # 式(22)：联合分布 argmax
+                flat_idx = logits.argmax(dim=-1)  # 联合分布 argmax
             else:
                 flat_idx = Categorical(logits=logits / max(temperature, 1e-3)).sample()
 
-            j_star, fire_p = self._primary_target(out['fire_logits'], out['enm_mask'])
-            p_star = fire_p.gather(1, j_star.unsqueeze(1)).squeeze(1)  # (B,)
-            if deterministic:
-                fire = (p_star > fire_threshold).to(torch.long)        # 式(20)：阈值 0.8
-            else:
-                fire = Bernoulli(probs=p_star.clamp(0.0, 1.0)).sample().to(torch.long)  # 式(26)
-
-            # 解码扁平索引 → (enm_idx, vert, hor)
+            # 解码扁平索引 → TIM 或 (敌机 j 的 TDM) → 查内部映射表得 (vert, hor)
             device = logits.device
+            tim_table = torch.as_tensor(TIM_ACTIONS, dtype=torch.long, device=device)
+            tdm_table = torch.as_tensor(TDM_ACTIONS, dtype=torch.long, device=device)
             is_tim = flat_idx < N_TIM
+            tim_idx = flat_idx.clamp(max=N_TIM - 1)
             r = (flat_idx - N_TIM).clamp(min=0)
-            tdm_enm = r // N_TDM
-            k = r % N_TDM
-            hor_tdm = torch.as_tensor(_TDM_HOR_LIST, device=device)[k]
-            vert_tdm = (k % VERT_DIM)
-            hor_tim = torch.as_tensor(TIM_HOR, device=device)[flat_idx.clamp(max=N_TIM - 1)]
+            tdm_enm = torch.div(r, N_TDM, rounding_mode='floor')
+            tdm_idx = r % N_TDM
+
+            # 开火概率（已掩码）：TIM 与目标无关，取开火概率最高的敌机 j* 作为交互目标
+            fire_logits = out['fire_logits']  # (B, Ne) 已掩码
+            p_all = torch.sigmoid(fire_logits)
+            p_all = p_all.masked_fill(~out['enm_mask'], 0.0)
+            j_star = p_all.argmax(dim=-1)
 
             enm_idx = torch.where(is_tim, j_star, tdm_enm)
-            hor_idx = torch.where(is_tim, hor_tim, hor_tdm)
-            vert_idx = torch.where(is_tim, torch.full_like(flat_idx, TIM_VERT), vert_tdm)
+            vert_idx = torch.where(is_tim, tim_table[tim_idx, 0], tdm_table[tdm_idx, 0])
+            hor_idx = torch.where(is_tim, tim_table[tim_idx, 1], tdm_table[tdm_idx, 1])
+
+            # 对选中的 enm_idx 取开火概率；若该敌机 mask 屏蔽（理论上不会），退化为 j*
+            p_primary = p_all.gather(1, enm_idx.unsqueeze(1)).squeeze(1)
+            need_fallback = ~out['enm_mask'].gather(1, enm_idx.unsqueeze(1)).squeeze(1)
+            if need_fallback.any():
+                enm_idx = torch.where(need_fallback, j_star, enm_idx)
+                p_primary = torch.where(need_fallback,
+                                        p_all.gather(1, j_star.unsqueeze(1)).squeeze(1),
+                                        p_primary)
+
+            if deterministic:
+                fire = (p_primary > fire_threshold).to(torch.long)
+            else:
+                fire = Bernoulli(probs=p_primary.clamp(0.0, 1.0)).sample().to(torch.long)
 
         return {
             'enm_idx': enm_idx,
             'vert_idx': vert_idx,
             'hor_idx': hor_idx,
             'fire': fire,
-            'fire_target': j_star,
+            'fire_target': enm_idx,
             'flat_idx': flat_idx,
-            'fire_prob_max': float(p_star.max().item()) if p_star.numel() else float('nan'),
+            'fire_prob_primary': float(p_primary.mean().item()) if p_primary.numel() else float('nan'),
         }
 
     # ------------------------------------------------------------------ 开火监督（式 28，梯度穿骨干）
@@ -351,7 +383,7 @@ class HanWrapper(nn.Module):
         """
         fixed, enm, ally, enm_mask, ally_mask = self._pack(agent_inputs, mask_inputs)
         e_f, e_e = self._backbone(fixed, enm, ally, enm_mask, ally_mask)
-        fire_logits = self.opp_pi_head(e_e)[..., N_TDM]  # (B,N) raw
+        fire_logits = self.opp_pi_head(e_e)[..., N_TDM]  # (B, Ne) raw
 
         B = fixed.shape[0]
         idx = torch.as_tensor(np.asarray(fire_target_idx), dtype=torch.long, device=self.device).reshape(B)
