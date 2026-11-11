@@ -2,12 +2,11 @@ import os, sys
 from _context import *
 from TrainAndTests.Combats.CombatMAPPO_parall_homo import *
 from datetime import datetime
-from prepare_il_datas_hierarchical import run_rules
 
 # 指定中断续训的目录。如果为 None，则正常开启新训练。
 resume_target_dir = None
-# resume_target_dir = os.path.join(r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat",
-#     r"MAPPO_homo_SLA_1_blackboard_1-run-20261109-191727")
+resume_target_dir = os.path.join(r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat",
+    r"MAPPO_homo_SLA_1_blackboard_1-run-20261110-130531")
 collape_recover={ # 是否是崩盘后恢复
             "collapsed": False,
             "best_actor_name": None,
@@ -65,7 +64,6 @@ if __name__=='__main__':
         self_play_type = 'PFSP_balanced', # PFSP_balanced, PFSP_challenge, FSP, SP, None 表示非自博弈
         hist_agent_as_opponent = 1, # 奖励函数调试禁止自博弈
         WARM_UP_STEPS = 0e3, # 500e3, # 1e3 为debug
-        ADMISSION_THRESHOLD = -1,  # 0.5,
         MAX_HISTORY_SIZE = 50, # 150  # 300
         compete_old_rate = 0.2, # “复习”概率
         K_FACTOR = 16,  # 32 原先振荡太大了

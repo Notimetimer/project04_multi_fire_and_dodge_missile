@@ -448,7 +448,6 @@ def run_MLP_simulation(
     hist_agent_as_opponent=1,
     sigma_elo=400,
     WARM_UP_STEPS=500e3,
-    ADMISSION_THRESHOLD=0.5,
     MAX_HISTORY_SIZE=50,
     deltaFSP_epsilon=0.8,
     compete_old_rate=0.2,
@@ -568,7 +567,9 @@ def run_MLP_simulation(
         log_root=log_dir, host="127.0.0.1", port=6006, use_log_root=True, auto_show=False)
 
     # 存储在线训练前的网络参数（同构单份）
-    torch.save(actor.state_dict(), os.path.join(log_dir, "actor_rein0.pt"))
+    # actor_rein0 只在首次创建时落盘；续训时若已存在则保留原始初始策略，避免被 latest 权重覆盖
+    if not os.path.exists(os.path.join(log_dir, "actor_rein0.pt")):
+        torch.save(actor.state_dict(), os.path.join(log_dir, "actor_rein0.pt"))
     torch.save(critic.state_dict(), os.path.join(log_dir, "critic.pt"))
 
     # 并行环境初始化
@@ -1040,8 +1041,6 @@ def run_MLP_simulation(
                 for uid in red_student_ids:
                     transition_dicts[uid] = copy.deepcopy(empty_transition_dict)
 
-                # B. 精英池维护（容量受限，满员按 Elo 踢最弱，规则与 NN 一视同仁；不再定期全量重刷）
-
                 # 全量历史记录
                 available_opps["__LAST_UPDATE_STEP__"] = total_steps
                 available_opps["__LAST_UPDATE_BATCH__"] = batch_idx
@@ -1052,7 +1051,6 @@ def run_MLP_simulation(
 
                 # 精英池快照
                 save_elite = copy.deepcopy(elite_elo_ratings)
-                save_elite["__CURRENT_MAIN__"] = main_agent_elo
                 with open(elite_json_path, "w", encoding="utf-8") as f:
                     json.dump(save_elite, f, ensure_ascii=False, indent=2)
 
@@ -1071,20 +1069,8 @@ def run_MLP_simulation(
                     min_elo = np.min(list(valid_elos.values()))
                     max_elo = np.max(list(valid_elos.values()))
                     
-                    # 升序：Elo 低（弱对手）在前。threshold=0 取最弱 Rule Elo（最低），=1 取最强 Rule Elo（最高）
+                    # 升序：Elo 低（弱对手）在前
                     rule_elos = sorted([v for k, v in elite_elo_ratings.items() if k.startswith("Rule")], reverse=False) # 升序排列
-                    if not rule_elos:
-                        rule_elo_thres = main_agent_elo
-                    elif ADMISSION_THRESHOLD < 0:
-                        rule_elo_thres = main_agent_elo  # 无门槛，差值仅供参考
-                    else:
-                        t = np.clip(ADMISSION_THRESHOLD, 0, 1)
-                        idx = np.clip(int(t * (len(rule_elos) - 1) + 0.5), 0, len(rule_elos) - 1)
-                        rule_elo_thres = rule_elos[idx]  # =0 取最低 Rule Elo，=0.5 取中位数，=1 取最高 Rule Elo
-
-                    # 记录与 Rule 阈值的差值 (维持旧指标名)
-                    elo_diff_to_thres = main_agent_elo - rule_elo_thres
-                    logger.add("Elo_Centered/EloDiffToMean", elo_diff_to_thres, total_steps/action_cycle_multiplier)
                     
                     # 新增：记录 ELO 极差（max - min），用于判断 PFSP sigma 是否合适...
                     elo_spread = float(max_elo - min_elo)
@@ -1104,31 +1090,31 @@ def run_MLP_simulation(
                     if total_steps >= WARM_UP_STEPS:
                         logger.add("Elo_Centered/Current_rate_normed %", curr_rate * 100, total_steps/action_cycle_multiplier)
 
-                    # 正式入池：仅注册已落盘的版本，避免幽灵对手；新对手 Elo=main_agent_elo
-                    if hist_agent_as_opponent and os.path.exists(os.path.join(log_dir, f"{actor_team_key}.pt")):
-                        new_entry_elo = main_agent_elo
-                        pool_keys = [k for k in elite_elo_ratings.keys() if not k.startswith("__")]
-                        if len(pool_keys) >= MAX_HISTORY_SIZE:
-                            # 满员：按 Elo 踢出最弱（规则与 NN 一视同仁）
-                            weakest_key = min(pool_keys, key=lambda k: elite_elo_ratings[k])
-                            weakest_elo = elite_elo_ratings[weakest_key]
-                            if new_entry_elo > weakest_elo:
-                                del elite_elo_ratings[weakest_key]
-                                elite_elo_ratings[actor_team_key] = new_entry_elo
-                                print(f"[Pool Cleanup] Kicked {weakest_key} (Elo: {weakest_elo:.0f}), "
-                                      f"accepted {actor_team_key} (Elo: {new_entry_elo:.0f}).")
-                            else:
-                                print(f"[Pool Skip] {actor_team_key} (Elo: {new_entry_elo:.0f}) not stronger "
-                                      f"than weakest {weakest_key} (Elo: {weakest_elo:.0f}), skipped.")
-                        else:
-                            elite_elo_ratings[actor_team_key] = new_entry_elo
-                            print(f"Accepted {actor_team_key} into Elite Pool.")
-
                     # 池容量占用（规则 + NN 总数）
                     hist_count = len([k for k in valid_elos if not k.startswith("Rule")])
                     pool_total = len([k for k in elite_elo_ratings.keys() if not k.startswith("__")])
                     logger.add("Elo/History_Pool_Size", hist_count, total_steps/action_cycle_multiplier)
                     logger.add("Elo/Pool_Total_Size", pool_total, total_steps/action_cycle_multiplier)
+
+                # B. 精英池维护（容量只对 NN 生效，规则对手永不踢出；不再定期全量重刷）
+                if hist_agent_as_opponent and os.path.exists(os.path.join(log_dir, f"{actor_team_key}.pt")):
+                    new_entry_elo = main_agent_elo
+                    nn_keys = [k for k in elite_elo_ratings.keys() if not k.startswith("__") and not k.startswith("Rule")]
+                    if len(nn_keys) >= MAX_HISTORY_SIZE:
+                        # 满员：在 NN 内部按 Elo 踢出最弱；规则永不被踢出
+                        weakest_key = min(nn_keys, key=lambda k: elite_elo_ratings[k])
+                        weakest_elo = elite_elo_ratings[weakest_key]
+                        if new_entry_elo > weakest_elo:
+                            del elite_elo_ratings[weakest_key]
+                            elite_elo_ratings[actor_team_key] = new_entry_elo
+                            print(f"[Pool Cleanup] Kicked {weakest_key} (Elo: {weakest_elo:.0f}), "
+                                  f"accepted {actor_team_key} (Elo: {new_entry_elo:.0f}).")
+                        else:
+                            print(f"[Pool Skip] {actor_team_key} (Elo: {new_entry_elo:.0f}) not stronger "
+                                  f"than weakest NN {weakest_key} (Elo: {weakest_elo:.0f}), skipped.")
+                    else:
+                        elite_elo_ratings[actor_team_key] = new_entry_elo
+                        print(f"Accepted {actor_team_key} into Elite Pool.")
 
                     # 记录详细分数
                     # 记录最新个体的绝对分和相对均值的居中分

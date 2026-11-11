@@ -60,7 +60,6 @@ if __name__=='__main__':
         self_play_type = 'PFSP_balanced', # PFSP_balanced, PFSP_challenge, FSP, SP, None 表示非自博弈
         hist_agent_as_opponent = 1, # 奖励函数调试禁止自博弈
         WARM_UP_STEPS = 0e3, # 500e3, # 1e3 为debug
-        ADMISSION_THRESHOLD = -1,  # 0.5,
         MAX_HISTORY_SIZE = 50, # 150  # 300
         compete_old_rate = 0.2, # “复习”概率
         K_FACTOR = 16,  # 32 原先振荡太大了
