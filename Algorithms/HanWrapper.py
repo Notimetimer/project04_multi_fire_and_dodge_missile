@@ -232,11 +232,8 @@ class HanWrapper(nn.Module):
         return gate
 
     # ------------------------------------------------------------------ 核心前向（可微，SAC 训练与采样共用）
-    def forward_sac(self, agent_inputs, mask_inputs, rule_inputs):
-        """返回扁平机动分布、双 Q、per-enm 分组熵等全部训练所需量（带梯度）。
-
-        扁平顺序：[TIM(11)] + [敌机0 的 TDM(6), 敌机1 的 TDM(6), ...]；开火 logits 单独返回。
-        """
+    def _forward_policy(self, agent_inputs, mask_inputs, rule_inputs):
+        """策略部分前向：扁平机动 logits、掩码与开火门控；不算 Q 与分组熵。"""
         device = self.device
         fixed, enm, ally, enm_mask, ally_mask = self._pack(agent_inputs, mask_inputs)
         B = fixed.shape[0]
@@ -247,10 +244,6 @@ class HanWrapper(nn.Module):
         opp_out = self.opp_pi_head(e_e)                          # (B, Ne, N_TDM+1)
         tdm_logits = opp_out[..., :N_TDM]                        # (B, Ne, N_TDM)
         fire_logits_raw = opp_out[..., N_TDM]                    # (B, Ne)
-        q1 = torch.cat((self.tim_q1_head(e_f),
-                        self.opp_q1_head(e_e).reshape(B, -1)), dim=-1)   # (B, A)
-        q2 = torch.cat((self.tim_q2_head(e_f),
-                        self.opp_q2_head(e_e).reshape(B, -1)), dim=-1)   # (B, A)
 
         # 机动掩码：TIM 恒有效；敌机 j 的 N_TDM 个 TDM 槽位随敌机存活/有效掩码
         tdm_mask = enm_mask.unsqueeze(-1).expand(
@@ -262,6 +255,40 @@ class HanWrapper(nn.Module):
         logits_flat_masked = logits_flat.masked_fill(~maneuver_mask, -_MASK_VAL)
         log_pi = logits_flat_masked - torch.logsumexp(logits_flat_masked, dim=-1, keepdim=True)
         pi = torch.softmax(logits_flat_masked, dim=-1)
+
+        # 开火：手工门控作为硬 mask 叠加到 logit 上（sigmoid 后≈0）
+        fire_gate = self._fire_gate(rule_inputs, enm_mask, B, device)
+        fire_logits = fire_logits_raw.masked_fill(~fire_gate, -_MASK_VAL)
+
+        out = {
+            'logits_flat_masked': logits_flat_masked,  # (B, A)
+            'log_pi': log_pi, 'pi': pi,                # (B, A)
+            'maneuver_mask': maneuver_mask,
+            'fire_logits': fire_logits,                # (B, Ne) 已掩码
+            'fire_logits_raw': fire_logits_raw,        # (B, Ne) 未掩码（供 BCE）
+            'fire_gate': fire_gate,
+            'enm_mask': enm_mask,
+        }
+        return out, e_f, e_e
+
+    def forward_actor(self, agent_inputs, mask_inputs, rule_inputs):
+        """部署/采样专用：只算策略分布与开火门控，不计算 Q 与分组熵。"""
+        out, _, _ = self._forward_policy(agent_inputs, mask_inputs, rule_inputs)
+        return out
+
+    def forward_sac(self, agent_inputs, mask_inputs, rule_inputs):
+        """返回扁平机动分布、双 Q、per-enm 分组熵等全部训练所需量（带梯度）。
+
+        扁平顺序：[TIM(11)] + [敌机0 的 TDM(6), 敌机1 的 TDM(6), ...]；开火 logits 单独返回。
+        """
+        out, e_f, e_e = self._forward_policy(agent_inputs, mask_inputs, rule_inputs)
+        B = e_f.shape[0]
+        pi, log_pi, enm_mask = out['pi'], out['log_pi'], out['enm_mask']
+
+        q1 = torch.cat((self.tim_q1_head(e_f),
+                        self.opp_q1_head(e_e).reshape(B, -1)), dim=-1)   # (B, A)
+        q2 = torch.cat((self.tim_q2_head(e_f),
+                        self.opp_q2_head(e_e).reshape(B, -1)), dim=-1)   # (B, A)
 
         # 分组：G0=TIM，G1..GN=各敌机 TDM；组质量、组内条件 log prob、分组熵（式 29-30 所需）
         eps = 1e-8
@@ -284,23 +311,13 @@ class HanWrapper(nn.Module):
         enm_mask_f = enm_mask.to(torch.float32)
         H_D = (H_Dj * enm_mask_f).sum(-1) / enm_mask_f.sum(-1).clamp(min=1.0)
 
-        # 开火：手工门控作为硬 mask 叠加到 logit 上（sigmoid 后≈0）
-        fire_gate = self._fire_gate(rule_inputs, enm_mask, B, device)
-        fire_logits = fire_logits_raw.masked_fill(~fire_gate, -_MASK_VAL)
-
-        return {
-            'logits_flat_masked': logits_flat_masked,  # (B, A)
-            'log_pi': log_pi, 'pi': pi,                # (B, A)
+        out.update({
             'q1': q1, 'q2': q2,                        # (B, A)
             'log_cond': log_cond,                      # (B, A) 组内条件 log prob
             'pr_g': pr_g,                              # (B, 1+Ne)
             'H_J': H_J, 'H_I': H_I, 'H_D': H_D, 'H_Dj': H_Dj,
-            'maneuver_mask': maneuver_mask,
-            'fire_logits': fire_logits,                # (B, Ne) 已掩码
-            'fire_logits_raw': fire_logits_raw,        # (B, Ne) 未掩码（供 BCE）
-            'fire_gate': fire_gate,
-            'enm_mask': enm_mask,
-        }
+        })
+        return out
 
     def forward(self, context: Any) -> NetworkOutput:
         """与预留抽象接口对齐：context = (agent_inputs, mask_inputs, rule_inputs)。"""
@@ -320,7 +337,7 @@ class HanWrapper(nn.Module):
         if deterministic is None:
             deterministic = bool(temperature < 1.0)
         with torch.no_grad():
-            out = self.forward_sac(agent_inputs, mask_inputs, rule_inputs)
+            out = self.forward_actor(agent_inputs, mask_inputs, rule_inputs)
             logits = out['logits_flat_masked']
 
             if deterministic:

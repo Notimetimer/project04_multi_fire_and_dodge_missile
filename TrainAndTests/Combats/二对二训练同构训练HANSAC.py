@@ -1,4 +1,4 @@
-import os, sys
+import os, sys, runpy
 from _context import *
 from TrainAndTests.Combats.CombatHanSAC_parall_homo import *
 from datetime import datetime
@@ -9,9 +9,14 @@ resume_target_dir = None
 #     r"HanSAC_homo_JPO-run-2026xxxx-xxxxxx")
 mission_name = 'HanSAC_homo_JPO'
 
+# 机数统一从 init_states.json 读取（与 MAPPO 链路同源），训练与周期测试共用同一组值
+_init_cfg = load_init_states()
+red_init_num = _init_cfg['red_init_num']
+blue_init_num = _init_cfg['blue_init_num']
+
 # 超参数（JPO 论文口径：γ=0.9, τ=0.05, lr=1e-4, batch=128, buffer 1e5）
 dt_decide = 2
-dt_maneuver = 0.2
+dt_maneuver = 2 # 0.2
 action_cycle_multiplier = int(round(dt_decide / dt_maneuver))  # 2s 决策一次
 MAX_DEC_STEPS = 1e6  # 按决策步定训练开支
 
@@ -19,6 +24,9 @@ MAX_DEC_STEPS = 1e6  # 按决策步定训练开支
 max_episode_duration = 15 * 60  # 回合最长时间，单位s
 
 if __name__ == '__main__':
+    # 训练前自动按 init_states.json 刷新 env_obs_dims.json，省去人工重跑生成器
+    runpy.run_path(os.path.join(os.path.dirname(os.path.abspath(__file__)), '读取环境参数并存json.py'),
+                   run_name='__main__')
     print('Hello')
     start_time = datetime.now()
     print(f"Simulation start: {start_time.isoformat(sep=' ', timespec='seconds')}")
@@ -54,6 +62,8 @@ if __name__ == '__main__':
         randomized_birth=1,
         save_interval=1,
         num_runs=3,  # 测试回合重复次数
+        red_init_num=red_init_num,    # 与 env_obs_dims.json 的 ally 槽位对齐
+        blue_init_num=blue_init_num,  # 与 env_obs_dims.json 的 enm 槽位对齐
         device=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
         # 场地边界：与 MAPPO 训练脚本一致，统一从 init_states.json 加载方形顶点
         vertices=load_init_states()['vertices'],

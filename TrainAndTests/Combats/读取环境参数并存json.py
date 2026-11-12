@@ -27,9 +27,12 @@ if __name__ == '__main__':
     args.R_cage = 60.3e3
 
     # 构建场地边界，南北长54km，东西宽100km的长方形边界
-    vertices = load_init_states()['vertices']
+    # 机数/挂载统一从 init_states.json 读取，保证 env_obs_dims.json 与训练链路同源
+    init_cfg = load_init_states()
+    vertices = init_cfg['vertices']
     env = ChooseStrategyEnv(args, tacview_show=0, vertices=vertices)
-    env.reset(red_init_num=2, blue_init_num=2, red_init_ammo=2, blue_init_ammo=2)
+    env.reset(red_init_num=init_cfg['red_init_num'], blue_init_num=init_cfg['blue_init_num'],
+              red_init_ammo=init_cfg['red_init_ammo'], blue_init_ammo=init_cfg['blue_init_ammo'])
 
     # 各机观测维度一致，用第一架红机的观测确定网络维度
     red_id = [i for i in env.UAV_ids if env.find_uav_with_id(i).side == 'r'][0]

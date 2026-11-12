@@ -19,9 +19,9 @@ PPO_WITH_BERN = 1 # 是否开启PPO的开火训练梯度
 mission_name = f'MAPPO_homo_SLA_{USE_SUPERVISED_FIRE}_blackboard_{ENM_CHOSEN_VISABLE}'
 
 # 超参数
-dt_decide = 2 # 2 # 6
+dt_decide = 2
 dt_maneuver = 2 # 0.2
-action_cycle_multiplier = int(round(dt_decide /dt_maneuver)) # 6s 决策一次
+action_cycle_multiplier = int(round(dt_decide / dt_maneuver))  # 2s 决策一次
 MAX_DEC_STEPS = 1e6  # 按决策步定训练开支
 
 # 仿真环境参数

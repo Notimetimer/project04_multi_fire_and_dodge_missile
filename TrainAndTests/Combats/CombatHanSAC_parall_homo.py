@@ -107,6 +107,14 @@ def worker_process_han(rank, pipe, args, device_worker, dt_maneuver, seed, dt_mo
     from BasicRules_Homo import basic_rules
     from _context import take_some_of_rule_inputs, stack_field, load_obs_dims, load_init_states
 
+    # 单进程单线程：worker 每决策点只做 batch=1 的 actor 前向，多线程在 20 逻辑核上会与
+    # 其余 worker 争抢并产生线程自旋开销（实测 14 线程比 1 线程更慢）
+    torch.set_num_threads(1)
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
+
     env = ChooseStrategyEnv(args, tacview_show=0, vertices=vertices)
     env.dt_move = dt_move
     env.dt_maneuver = dt_maneuver
@@ -319,7 +327,7 @@ def worker_process_han(rank, pipe, args, device_worker, dt_maneuver, seed, dt_mo
 def test_worker_han(model_state_dict, rules_num, env_args, device_name='cpu', num_runs=3,
                     vertices=None, dt_move=0.07, dt_maneuver=0.2, action_cycle_multiplier=10,
                     red_init_num=2, blue_init_num=2, red_init_ammo=4, blue_init_ammo=4,
-                    temperature=None, enm_chosen_visable=0):
+                    temperature=None, enm_chosen_visable=0, use_tacview=0):
     """周期性规则测试：论文设定 —— 联合分布 argmax + 开火命中概率阈值 0.8（deterministic）。"""
     import torch
     import numpy as np
@@ -328,10 +336,20 @@ def test_worker_han(model_state_dict, rules_num, env_args, device_name='cpu', nu
     from BasicRules_Homo import basic_rules
     from _context import take_some_of_rule_inputs, stack_field, load_obs_dims
 
-    env = ChooseStrategyEnv(env_args, tacview_show=0, vertices=vertices)
+    # 测试池进程同样只做 batch=1 前向，限制为单线程以免与训练 worker 抢核
+    torch.set_num_threads(1)
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
+
+    env = ChooseStrategyEnv(env_args, tacview_show=use_tacview, vertices=vertices)
     env.dt_move = dt_move
     env.dt_maneuver = dt_maneuver
     fixed_dim, enm_shape, ally_shape = load_obs_dims()
+    # 部署规模由传入机数决定：敌机槽位=蓝方机数，队友槽位=红方机数-1（不含自己）
+    enm_shape = (int(blue_init_num), enm_shape[1])
+    ally_shape = (max(int(red_init_num) - 1, 0), ally_shape[1])
 
     actor = HanWrapper(fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape,
                        device=torch.device(device_name))
@@ -340,6 +358,8 @@ def test_worker_han(model_state_dict, rules_num, env_args, device_name='cpu', nu
 
     wins = loses = draws = perish_togethers = 0
     kill_count = die_count = 0
+    # 多场共用一条 acmi 时间轴：每场结束后累加 env.t，避免轨迹在 t=0 处重叠
+    t_bias = 0
 
     for _ in range(num_runs):
         rb, bb = create_initial_state_worker(1)
@@ -395,8 +415,14 @@ def test_worker_han(model_state_dict, rules_num, env_args, device_name='cpu', nu
             for id in env.UAV_ids:
                 done, _ = env.combat_terminate_and_reward(
                     id=id, action_cycle_multiplier=action_cycle_multiplier)
+            # 可视化：唯一写 acmi 的入口就是 render（tacview_show=0 时内部直接返回）
+            env.render(t_bias=t_bias)
             if done:
                 break
+
+        # 单场轨迹收尾：清空残余缓存并把时间轴累加，多场写入同一份 acmi 时首尾相接
+        env.clear_render(t_bias=t_bias)
+        t_bias += env.t
 
         outcome = env.r_outcome if env.r_outcome is not None else 0
         wins += int(outcome == 1)
@@ -482,6 +508,14 @@ def run_HanSAC_simulation(
     args = parser.parse_args([])
 
     print(f"Master training device: {device}")
+
+    # master 只做 batch=128 的小网络更新，实测单线程最快（2/4/14 线程分别约 15.9/22.8/19.0 ms，
+    # 单线程 11.3 ms）；同时把核留给 15 个采样 worker 与 3 个测试进程
+    torch.set_num_threads(1)
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
 
     # 3. 网络维度从 json 读取，用 dummy env 获取 UAV id 列表
     dummy_env = ChooseStrategyEnv(args, tacview_show=0, vertices=vertices)
@@ -647,6 +681,13 @@ def run_HanSAC_simulation(
         decision_points_total = int(total_steps / action_cycle_multiplier)
         next_test_dp = decision_points_total + test_interval_dp
         pending_points = 0
+        # 吞吐观测窗口：dp/s（采样）、updates/s（更新密度）、ms/update 与 master 更新占用率，
+        # 用于区分“采样受限”与“更新受限”，不参与训练逻辑
+        perf_win_t = time.perf_counter()
+        perf_win_dp = 0
+        perf_win_updates = 0
+        perf_win_update_time = 0.0
+        perf_win_flushes = 0
         local_trans = {r: {} for r in range(num_workers)}  # rank -> uid -> {field: [t=0..]}
         episodes_window = []      # 本测试窗口内的 (opp_name, metrics)
         last_update_metrics = {}
@@ -737,6 +778,7 @@ def run_HanSAC_simulation(
                         for k, v in tr.items():
                             slot[k].append(v)
                     pending_points += msg['n_points']
+                    perf_win_dp += msg['n_points']
                     decision_points_total += msg['n_points']
                     total_steps = decision_points_total * action_cycle_multiplier
 
@@ -773,8 +815,23 @@ def run_HanSAC_simulation(
                             agent.push_stacked({k: stack_field(v) for k, v in fields.items()})
                 local_trans = {r: {} for r in range(num_workers)}
                 n_up = max(1, pending_points // max(1, int(points_per_update)))
+                _t_upd = time.perf_counter()
                 last_update_metrics = agent.update(n_updates=n_up).metrics  # 末端门控未开时返回 {}
+                perf_win_update_time += time.perf_counter() - _t_upd
+                perf_win_updates += n_up if last_update_metrics else 0
                 pending_points = 0
+                perf_win_flushes += 1
+                if perf_win_flushes % 20 == 0:
+                    _el = max(1e-9, time.perf_counter() - perf_win_t)
+                    print(f"  [Perf] {perf_win_dp / _el:.1f} dp/s | "
+                          f"updates {perf_win_updates / _el:.1f}/s | "
+                          f"{1000 * perf_win_update_time / max(1, perf_win_updates):.1f} ms/update | "
+                          f"master update duty {100 * perf_win_update_time / _el:.0f}% | "
+                          f"replay {len(agent.buffer)}")
+                    perf_win_t = time.perf_counter()
+                    perf_win_dp = 0
+                    perf_win_updates = 0
+                    perf_win_update_time = 0.0
                 if not last_update_metrics:
                     gate_notices += 1
                     if gate_notices % 25 == 1:
