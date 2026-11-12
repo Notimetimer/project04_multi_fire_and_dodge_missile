@@ -105,7 +105,7 @@ def create_initial_state_worker(randomized=0):
     return DEFAULT_RED_BIRTH_STATE, DEFAULT_BLUE_BIRTH_STATE
 
 
-def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0.07, pomdp=1, vertices=None):
+def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0.07, pomdp=1, vertices=None, use_tacview=0):
     """采样 worker：红方学生共享一个 ActorWrapper（同构），蓝方为规则或历史 nn（对手）。
     经验只按学生 id 分组保存在内存，堆叠后通过 pipe 传回 master，不写磁盘。"""
     import torch
@@ -114,7 +114,9 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
     from Algorithms.ActorWithATTN import ActorWrapper
     from BasicRules_Homo import basic_rules
     from _context import take_some_of_rule_inputs, stack_field, load_obs_dims, load_init_states, append_experience
+    from Visualize.tacview_visualize2 import Tacview, Tacview_s
 
+    # acmi 改为每回合开始时单独握手，初始不建文件，避免留下一份没人写入的空文件
     env = ChooseStrategyEnv(args, tacview_show=0, vertices=vertices)
     env.dt_move = dt_move
     env.dt_maneuver = dt_maneuver
@@ -126,6 +128,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
     # 红方学生共享一个 ActorWrapper（同构），蓝方历史 nn 对手按蓝机 id 存放
     actor_dict = {}
     student_actor = None
+    episode_count = 0  # 本 worker 已完成的回合数，用于逐回合新建 acmi 文件
 
     while True:
         try:
@@ -141,6 +144,17 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                 blue_init_ammo = settings.get('blue_init_ammo', init_cfg['blue_init_ammo'])
                 enm_chosen_visable = settings.get('enm_chosen_visable', 0)  # 是否接收可见性标记
                 ppo_with_bern = settings.get('ppo_with_bern', 1)  # 0 时 RL 的 log_prob/熵不含 fire 分支
+
+                # 每回合重新握手：上一局 clear_render 已关闭旧文件，这里新建文件并带 _ep 后缀保证不重名
+                if use_tacview:
+                    env.tacview_show = use_tacview
+                    if use_tacview == 2:
+                        env.tacview = Tacview_s()
+                        env.tacview.handshake(tag=f"_ep{episode_count + 1}")
+                    else:
+                        env.tacview = Tacview()
+                        env.tacview.handshake()
+                episode_count += 1
 
                 # 加载红方学生共享 actor 权重（学生 id 与环境红机 id 一致，全队共用一个实例）
                 if student_actor is None:
@@ -350,7 +364,12 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                                 ep_out_of_bounds_by_id[id] = 1
                             if u.ammo == 0:
                                 ep_ammo_exhausted_by_id[id] = 1
-
+                
+                    if use_tacview > 0:
+                        env.render(t_bias=0)
+                if use_tacview > 0:
+                    env.clear_render(t_bias=0)
+                    
                 # 最后一帧经验（done=1，仅学生，统一走 append_experience）
                 for id in student_ids:
                     UAV = env.find_uav_with_id(id)

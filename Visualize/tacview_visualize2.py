@@ -117,10 +117,10 @@ class Tacview_s(object):
         self.rendering = False
         self.lock = threading.Lock()
 
-    def handshake(self):
+    def handshake(self, tag=""):
         os.makedirs(self.record_dir, exist_ok=True)
         now = datetime.datetime.now()
-        self.filename = os.path.join(self.record_dir, now.strftime("%Y%m%d_%H%M%S") + ".acmi")
+        self.filename = os.path.join(self.record_dir, now.strftime("%Y%m%d_%H%M%S") + tag + ".acmi")
         self.file = open(self.filename, "w", encoding="utf-8")
         self.rendering = True
 
