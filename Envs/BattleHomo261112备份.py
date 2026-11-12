@@ -1,6 +1,11 @@
-'''出生点改在外面指定'''
+'''
+相对上一个备份点的变化：
+1、初始化默认传入json中的vertices；
+2、允许配置初始队形；
+3、记录导弹是否进入4km
+4、border_side与场地的关系，用float代替int表示
+'''
 
-'''多对多需要真正启用cat动作空间的多维度功能。情况涉及到雷达开关'''
 
 import numpy as np
 from random import random
@@ -126,6 +131,12 @@ def sigmoid(x):
 
 class Battle(object):
     def __init__(self, args, tacview_show=0, vertices=None):
+        # vertices=None 时统一从 init_states.json 读取缺省方形边界，保证训练/测试场地一致
+        if vertices is None:
+            init_states_path = os.path.join(
+                os.path.dirname(current_dir), 'TrainAndTests', 'Combats', 'init_states.json')
+            with open(init_states_path, 'r', encoding='utf-8') as f:
+                vertices = json.load(f).get('vertices', None)
         self.vertices = vertices
         if self.vertices is not None:
             self.polygon_fences = polygon_fences(self.vertices)
@@ -289,7 +300,7 @@ class Battle(object):
               red_init_num=2, blue_init_num=2,
               red_init_ammo=4, blue_init_ammo=4, 
               red_alive_num=None, blue_alive_num=None,
-              red_init_formation = 'random', blue_init_formation = 'random', # 初始队形 # 原本均为 wall
+              red_init_formation = 'wall', blue_init_formation = 'wall', # 初始队形
               pomdp=1, seed=None, options={"random_pos": True},
               ego_side='r'):  # 重置位置和状态
         # 初始编队合法类型：随机、墙、楔、v形
@@ -492,8 +503,7 @@ class Battle(object):
                     uav.dead = 1
                     uav.radar_on = 0
         # reset后、首个step前就填充存活列表，保证决策循环可访问 alive_*_uavs
-        # self.update_entity_alives()
-        self.update_entity_states()
+        self.update_entity_alives()
         
         # 初始化 last_dead 属性，防止死亡惩罚重复计算
         for ego in self.UAVsTable.values():
@@ -503,6 +513,8 @@ class Battle(object):
             ego.whole_cycle_got_a_miss = 0
             ego.whole_cycle_got_a_kill = 0
             ego.whole_cycle_can_let_go = 0
+            ego.msl_in_4km_count = 0       # 已结算的“导弹进入4km”累计数
+            ego.msl_in_4km_t = -1e9        # 该累计数对应的结算时间戳
             ego.cycle_events = []          # [(t, id, 事件内容)]
             ego.last_cycle_t = -1e9        # 本机上次结算周期边界的时间戳
         
@@ -617,15 +629,6 @@ class Battle(object):
             if replacement_id is not None:
                 missile.target_id = replacement_id
         
-        # 记录每架飞机被几枚导弹追，前面的continue逻辑让修改变得很困难，再写一遍循环好了
-        # 重置追逐计数
-        for uav in self.UAVs:
-            uav.msl_num_chasing_me = 0
-        # 累加追逐计数
-        for msl in self.alive_missiles:
-            current_chased_uav = self.find_uav_with_id(msl.target_id)
-            current_chased_uav.msl_num_chasing_me += 1
-        
     # 根据飞机id查找飞机类实例
     def find_uav_with_id(self, id):
         uav = self.UAVsTable[id]
@@ -699,6 +702,7 @@ class Battle(object):
             new_missile.target_id = target_id
             new_missile.init_target_id = target_id
             new_missile.hit_supposed = False
+            new_missile.get_in_4km = 0
             if side == 'r':
                 self.Rmissiles.append(new_missile)
                 self.r_missile_count += 1
@@ -752,6 +756,8 @@ class Battle(object):
         # 输入动作（范围为[-1,1]
         self.t += self.dt_maneuver
         self.t = round(self.t, 2)  # 保留两位小数
+
+        # flight_cmds = [actions_of_ids[id] for id in self.UAV_ids]
 
         # 在整个 maneuver step 开始时只重置一次 escape_once（不要在内层子步或导弹循环中再次重置）
         for UAV in self.UAVs:
@@ -869,6 +875,7 @@ class Battle(object):
                 # 出界就炸
                 if self.out_cage(UAV):
                     UAV.dead = 1
+                    print(UAV.id, "出界")
                     continue
                 e2e = RL_controller
                 # 临时改动，关闭端到端控制，改为PID
@@ -1384,7 +1391,7 @@ class Battle(object):
             "radar_info": radar_info,
             "border": {
                 'd_hor2border': float(d_hor),
-                'border_LR': int(border_side),
+                'border_LR': float(border_side),
                 'dist_from_center': float(norm([
                     ego.pos_[0]-self.horizontal_center[0],
                     ego.pos_[2]-self.horizontal_center[1]
@@ -1678,8 +1685,7 @@ class Battle(object):
 
                 else:
                     data_to_send += f"#{send_t:.2f}\n-{UAV.id}\n"
-                    # # data_to_send += f"#-{UAV.id+1000}\n"
-                    # data_to_send += f"#{send_t:.2f}\n-{UAV.id + 1000}\n"
+                    data_to_send += f"#{send_t:.2f}\n-{UAV.id + 1000}\n"
 
             # 传输导弹信息
             for missile in self.missiles:
@@ -1725,7 +1731,9 @@ class Battle(object):
                             data_to_send += (
                                 f"{missile.id+1000},T={loc_m[0]:.6f}|{loc_m[1]:.6f}|{loc_m[2]:.6f}|"
                                 f"0|{missile.theta * 180 / pi:.6f}|{missile.psi * 180 / pi:.6f},"
-                                f"Type=Beam, Color={color},Visible=0.3,Radius=0.0,RadarMode=1,RadarRange={missile.detect_range:.1f}, RadarHorizontalBeamwidth=80, RadarVerticalBeamwidth=80\n"
+                                f"Type=Beam, Color={color},Visible=0.3,Radius=0.0,RadarMode=1,RadarRange={missile.detect_range:.1f}, \
+                                    RadarHorizontalBeamwidth={2*np.degrees(missile.sight_angle_max)}, \
+                                        RadarVerticalBeamwidth={2*np.degrees(missile.sight_angle_max)}\n"
                             )
                     else:
                         # 导弹存活但雷达关闭/红外弹，移除可能残留的雷达波束可视

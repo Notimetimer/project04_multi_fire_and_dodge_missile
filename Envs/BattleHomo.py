@@ -1,6 +1,8 @@
-'''出生点改在外面指定'''
-
-'''多对多需要真正启用cat动作空间的多维度功能。情况涉及到雷达开关'''
+'''
+相对上一个备份点的变化：
+1、敌机信息中加入我方所发射导弹对其的影响；
+2、
+'''
 
 import numpy as np
 from random import random
@@ -67,7 +69,7 @@ R_birth = 40e3
 
 horizontal_center = np.array([0, 0])
 
-# ==================== 个体观测空间字段命名（规范见 Envs/接口.py） ====================
+# ==================== 个体观测空间字段命名白名单（规范见 Envs/接口.py） ====================
 EGO_MAIN_KEYS = ['v_ego', 'h_ego', 'cos_theta', 'sin_theta', 'cos_phi', 'sin_phi']
 EGO_CONTROL_KEYS = ['p', 'q', 'r', 'theta_v', 'psi_v', 'alpha_air', 'beta_air', 'Ny']
 RADAR_INFO_KEYS = ['radar_on']
@@ -75,7 +77,10 @@ BORDER_KEYS = ['d_hor2border', 'border_LR', 'dist_from_center']
 ALLY_KEYS = ['radar_on', 'cos_ally_delta_psi', 'sin_ally_delta_psi', 'ally_delta_theta',
              'ally_dist', 'v_ally', 'cos_ally_rel_heading', 'sin_ally_rel_heading', 'theta_ally']
 ENM_KEYS = ['enm_observable', 'enm_locked', 'locked_by_enm', 'cos_enm_delta_psi',
-            'sin_enm_delta_psi', 'enm_delta_theta', 'enm_dist', 'enm_ATA', 'v_enm', 'cos_enm_AA', 'sin_enm_AA']
+            'sin_enm_delta_psi', 'enm_delta_theta', 'enm_dist', 'enm_ATA', 'v_enm', 'cos_enm_AA', 'sin_enm_AA',
+            # 261112 新增：我方威胁导弹信息（最近 2 枚）
+            'occupied', 'threat_distance1', 'cos_threat_delta_psi1', 'sin_threat_delta_psi1', 'v_threat1',
+            'threat_distance2', 'cos_threat_delta_psi2', 'sin_threat_delta_psi2', 'v_threat2']
 ENM_SUPPLEMENT_KEYS = ['enm_q_beta', 'enm_q_epsilon']
 WEAPON_KEYS = ['missile_t_fly', 'cos_msl_delta_psi', 'sin_msl_delta_psi', 'mid_term']
 RWR_KEYS = ['warning', 'cos_threat_delta_psi', 'sin_threat_delta_psi', 'threat_theta', 'threat_distance']
@@ -1063,6 +1068,16 @@ class Battle(object):
             'v_enm': 0,
             'cos_enm_AA': -1,
             'sin_enm_AA': 0,
+            # 2611112新增
+            'occupied': 0,
+            'threat_distance1': 100e3,
+            'cos_threat_delta_psi1': -1,
+            'sin_threat_delta_psi1': 0,
+            'v_threat1': 0,
+            'threat_distance2': 100e3,
+            'cos_threat_delta_psi2': -1,
+            'sin_threat_delta_psi2': 0,
+            'v_threat2': 0,
         }
         state_init_mod["enm_info_supplement"] = {
             'enm_q_beta': 0,
@@ -1251,6 +1266,23 @@ class Battle(object):
                 ego.t_fly_list[current_target_index] = msl.t  # 对应到目标index的开火累计时间
                 ego.attacking_id2times[msl.target_id] = msl.t  # 对应到目标id的开火累计时间
 
+        # 2611112新增
+        # 预计算我方已发射导弹的威胁：按 target_id 分组，每组取距离目标最近的 2 枚
+        # 计算的是导弹.pos_ 到敌机.pos_ 的欧氏距离，后续在 enm_infos 里用 /50e3 归一化
+        threat_map = {}
+        for msl in alive_ego_missiles:
+            target_id = msl.target_id
+            # 找到目标敌机实体：msl.target_id 就是目标 UAV.id
+            target_enm = next((u for u in (self.RUAVs + self.BUAVs) if u.id == target_id), None)
+            if target_enm is None or target_enm.dead:
+                continue
+            d = norm(msl.pos_ - target_enm.pos_)
+            threat_map.setdefault(target_id, []).append((d, msl))
+        # 每组按距离升序，只留前 2 枚
+        for tid in threat_map:
+            threat_map[tid].sort(key=lambda x: x[0])
+            threat_map[tid] = threat_map[tid][:2]
+
         #------------------------
         # 3. 敌机信息:
         # [存活、可见性、是否能锁定、是否锁定我、相对方位、相对俯仰角、相对距离、速度、hot/cold]*数量
@@ -1314,8 +1346,11 @@ class Battle(object):
             else:
                 locked_by_enm = 0
 
-            
-            enm_infos.append({
+            # 2611112变更
+            # 敌机信息 dict：先铺默认底，再覆盖实时字段，威胁字段最后按需覆盖（默认值统一 state_init_mod）
+            _threat_default = self.state_init_mod["enm_info"]
+            _enm_info = copy.copy(_threat_default)
+            _enm_info.update({
                 'enm_observable': float(enm_observable),
                 'enm_locked': float(enm_locked),
                 'locked_by_enm': float(locked_by_enm),
@@ -1326,8 +1361,24 @@ class Battle(object):
                 'enm_ATA': float(ATA),
                 'v_enm': float(enm_speed),
                 'cos_enm_AA': float(cos(AA_hor)),
-                'sin_enm_AA': float(sin(AA_hor))
+                'sin_enm_AA': float(sin(AA_hor)),
             })
+            # 2611112变更
+            # 我方威胁导弹覆盖：取距离该敌机最近的 2 枚已发射导弹
+            if enm.id in threat_map:
+                _enm_info['occupied'] = 1
+                t1 = threat_map[enm.id][0]
+                _enm_info['threat_distance1'] = float(t1[0])
+                _enm_info['cos_threat_delta_psi1'] = float(cos(sub_of_radian(t1[1].q_beta_known, ego.psi)))
+                _enm_info['sin_threat_delta_psi1'] = float(sin(sub_of_radian(t1[1].q_beta_known, ego.psi)))
+                _enm_info['v_threat1'] = float(norm(t1[1].vel_))
+                if len(threat_map[enm.id]) > 1:
+                    t2 = threat_map[enm.id][1]
+                    _enm_info['threat_distance2'] = float(t2[0])
+                    _enm_info['cos_threat_delta_psi2'] = float(cos(sub_of_radian(t2[1].q_beta_known, ego.psi)))
+                    _enm_info['sin_threat_delta_psi2'] = float(sin(sub_of_radian(t2[1].q_beta_known, ego.psi)))
+                    _enm_info['v_threat2'] = float(norm(t2[1].vel_))
+            enm_infos.append(_enm_info)
             # 惯性系下的位置关系，进入记忆/规则，不进神经网络
             enm_info_supplement.append({
                 'enm_q_beta': float(q_beta),
@@ -1432,6 +1483,12 @@ class Battle(object):
             for enm in s["enm_infos"]:
                 enm["enm_dist"] /= 50e3
                 enm["v_enm"] /= 340
+                # 2611112新增
+                # 我方威胁导弹距离/速度归一化
+                enm["threat_distance1"] /= 50e3
+                enm["threat_distance2"] /= 50e3
+                enm["v_threat1"] /= (2 * 340)
+                enm["v_threat2"] /= (2 * 340)
         if "weapon_infos" in s:
             for w in s["weapon_infos"]:
                 w["missile_t_fly"] /= 120.0
@@ -1462,6 +1519,12 @@ class Battle(object):
             for enm in s["enm_infos"]:
                 enm["enm_dist"] *= 50e3
                 enm["v_enm"] *= 340
+                # 2611112新增
+                # 我方威胁导弹距离/速度反归一化
+                enm["threat_distance1"] *= 50e3
+                enm["threat_distance2"] *= 50e3
+                enm["v_threat1"] *= (2 * 340)
+                enm["v_threat2"] *= (2 * 340)
         if "weapon_infos" in s:
             for w in s["weapon_infos"]:
                 w["missile_t_fly"] *= 120

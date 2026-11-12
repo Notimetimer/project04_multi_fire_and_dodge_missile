@@ -175,6 +175,7 @@ class aim9x:
         self.in_distance = 0
         self.q_beta = 0
         self.q_epsilon = 0
+        self.q_beta_known = 0
         self.nzt = 0  # 过载量记忆值
         self.nyt = 0
         self.aN_target_required_ = np.array([0, 0, 0])
@@ -283,6 +284,7 @@ class aim9x:
         ptt_ = ptt_predict
         pmt_ = p_missile_
         line_t_ = ptt_ - pmt_
+        self.q_beta_known = np.arctan2(line_t_[2], line_t_[0])
         vrt_ = vtt_predict - v_missile_
         distance = np.linalg.norm(line_t_)
         vmt = np.linalg.norm(vmt_)
@@ -319,6 +321,7 @@ class aim9x:
         ptt_ = p_target_
         pmt_ = p_missile_
         line_t_ = ptt_ - pmt_
+        self.q_beta_known = np.arctan2(line_t_[2], line_t_[0])
         vrt_ = v_target_ - v_missile_
         distance = np.linalg.norm(line_t_)
         vmt = np.linalg.norm(vmt_)

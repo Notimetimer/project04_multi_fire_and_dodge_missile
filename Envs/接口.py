@@ -73,6 +73,16 @@ enm_infos: [[
         'v_enm'
         'cos_enm_AA'
         'sin_enm_AA'
+        # 261112 新增：我方威胁导弹信息（最近 2 枚）
+        'occupied', 
+        'threat_distance1', 
+        'cos_threat_delta_psi1', 
+        'sin_threat_delta_psi1', 
+        'v_threat1',
+        'threat_distance2', 
+        'cos_threat_delta_psi2', 
+        'sin_threat_delta_psi2', 
+        'v_threat2'
 ]]
 enm_info_supplement:[[
         'enm_q_beta'
