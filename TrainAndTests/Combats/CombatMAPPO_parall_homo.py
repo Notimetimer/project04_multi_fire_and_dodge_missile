@@ -612,6 +612,8 @@ def run_MLP_simulation(
 
     full_json_path = os.path.join(log_dir, "available_opps.json")
     elite_json_path = os.path.join(log_dir, "elite_elo_ratings.json")
+    # 每个已落盘的 actor_rein 版本对应的决策步数（版本号 → dec_steps_total），供按步数反查权重
+    save_point_json_path = os.path.join(log_dir, "save_point_steps.json")
 
     GameTimes = {}
 
@@ -620,6 +622,11 @@ def run_MLP_simulation(
         with open(full_json_path, 'r', encoding='utf-8') as f: available_opps = json.load(f)
     if os.path.exists(elite_json_path):
         with open(elite_json_path, 'r', encoding='utf-8') as f: elite_elo_ratings = json.load(f)
+
+    # actor_rein0 在训练开始前落盘，对应决策步数 0；续训时沿用已有记录，避免覆盖历史
+    save_point_steps = {"actor_rein0": 0}
+    if os.path.exists(save_point_json_path):
+        with open(save_point_json_path, 'r', encoding='utf-8') as f: save_point_steps = json.load(f)
 
     # 续训清洗：剔除本地没有对应权重文件的 NN 快照，防止采样到加载失败的幽灵对手
     def _opp_ckpt_exists(name):
@@ -1058,6 +1065,10 @@ def run_MLP_simulation(
                     logger.add("checkpoint/actor_rein_idx", batch_idx, dec_steps_total)
                     # 只注册已落盘的版本到可用注册表（版本号=batch_idx），保证采样时总能加载到权重
                     available_opps[actor_team_key] = batch_idx
+                    # 记录本次落盘对应的决策步数：{actor_rein版本全名: dec_steps_total}，与 checkpoint/actor_rein_idx 同横轴
+                    save_point_steps[actor_team_key] = int(dec_steps_total)
+                    with open(save_point_json_path, "w", encoding="utf-8") as f:
+                        json.dump(save_point_steps, f, ensure_ascii=False, indent=2)
 
                 # 清空各学生 id Buffer
                 for uid in red_student_ids:

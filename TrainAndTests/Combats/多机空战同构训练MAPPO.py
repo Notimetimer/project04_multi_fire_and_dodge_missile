@@ -5,8 +5,8 @@ from datetime import datetime
 
 # 指定中断续训的目录。如果为 None，则正常开启新训练。
 resume_target_dir = None
-# resume_target_dir = os.path.join(r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat",
-#     r"MAPPO_homo_SLA_1_blackboard_1-run-20261110-130531")
+resume_target_dir = os.path.join(r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat",
+    r"2APPO_homo_SLA_1_blackboard_0-run-20261112-171248")
 collape_recover={ # 是否是崩盘后恢复
             "collapsed": False,
             "best_actor_name": None,
@@ -25,6 +25,7 @@ dt_decide = 2
 dt_maneuver = 2 # 0.2
 action_cycle_multiplier = int(round(dt_decide / dt_maneuver))  # 2s 决策一次
 MAX_DEC_STEPS = 1e6  # 按决策步定训练开支
+NUM_OF_TEST_POINTS = 50 # 300 # 测试点数
 
 # 仿真环境参数
 max_episode_duration = 15*60 # 回合最长时间，单位s
@@ -71,8 +72,8 @@ if __name__=='__main__':
         K_FACTOR = 16,  # 32 原先振荡太大了
         randomized_birth = 1,
         update_interval_of_batch = 1, # 触发更新至少要经过多少批采样
-        save_interval_of_batch = 10, # 每10个batch保存一次
-        test_interval_dp = int(MAX_DEC_STEPS / 300), # 采集300个测试点
+        save_interval_of_batch = 5, # 每5,10个batch保存一次
+        test_interval_dp = int(MAX_DEC_STEPS / NUM_OF_TEST_POINTS), # 采集300个测试点
         num_runs = 3, # 测试回合重复次数  3
         device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
         # 场地边界：与测试脚本一致，统一从 init_states.json 加载方形顶点（不再传 None 走环境兜底）
