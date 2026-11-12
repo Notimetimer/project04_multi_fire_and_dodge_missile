@@ -24,18 +24,18 @@ defaults = {
         "稀疏奖励位置": "-60,-120,-180",
     }
 
-def simulate_episode(total_steps, dense_mag, occasional_mag, result_mag, gamma, event_indices):
+def simulate_episode(total_steps_of_maneuver, dense_mag, occasional_mag, result_mag, gamma, event_indices):
     """生成一个回合的奖励、蒙特卡洛回报，以及各奖励成分的回报贡献。"""
-    dense = np.full(total_steps, dense_mag, dtype=np.float64)
+    dense = np.full(total_steps_of_maneuver, dense_mag, dtype=np.float64)
 
     # 稀疏奖励位置由用户指定，支持负索引（从总步数末尾倒数）
-    sparse = np.zeros(total_steps, dtype=np.float64)
+    sparse = np.zeros(total_steps_of_maneuver, dtype=np.float64)
     if event_indices is not None and len(event_indices):
         event_indices = np.asarray(event_indices, dtype=np.int64)
         sparse[event_indices] += occasional_mag
 
     # 结果奖励放在最后一步
-    result = np.zeros(total_steps, dtype=np.float64)
+    result = np.zeros(total_steps_of_maneuver, dtype=np.float64)
     result[-1] += result_mag
 
     rewards = dense + sparse + result
@@ -43,7 +43,7 @@ def simulate_episode(total_steps, dense_mag, occasional_mag, result_mag, gamma, 
     def make_returns(arr):
         returns = np.empty_like(arr)
         g = 0.0
-        for t in range(total_steps - 1, -1, -1):
+        for t in range(total_steps_of_maneuver - 1, -1, -1):
             g = arr[t] + gamma * g
             returns[t] = g
         return returns
@@ -58,7 +58,7 @@ def simulate_episode(total_steps, dense_mag, occasional_mag, result_mag, gamma, 
 
 def generate_and_plot(entries):
     try:
-        total_steps = int(entries["总步数"].get().strip())
+        total_steps_of_maneuver = int(entries["总步数"].get().strip())
         dense_mag = float(entries["密集奖励"].get().strip())
         occasional_mag = float(entries["偶发奖励"].get().strip())
         result_mag = float(entries["结果奖励"].get().strip())
@@ -74,7 +74,7 @@ def generate_and_plot(entries):
                 continue
             p = int(token)
             if p < 0:
-                p = total_steps + p
+                p = total_steps_of_maneuver + p
             positions.append(p)
     except ValueError:
         messagebox.showerror("输入错误", "请检查所有参数和稀疏奖励位置均为有效数字")
@@ -82,13 +82,13 @@ def generate_and_plot(entries):
     if not (0.0 < gamma <= 1.0):
         messagebox.showerror("输入错误", "gamma 必须在 (0, 1] 之间")
         return
-    if total_steps > 0:
-        positions = [max(0, min(p, total_steps - 1)) for p in positions]
+    if total_steps_of_maneuver > 0:
+        positions = [max(0, min(p, total_steps_of_maneuver - 1)) for p in positions]
     event_indices = np.array(sorted(set(positions)), dtype=np.int64)
     rewards, returns, event_indices, dense_r, sparse_r, result_r = simulate_episode(
-        total_steps, dense_mag, occasional_mag, result_mag, gamma, event_indices
+        total_steps_of_maneuver, dense_mag, occasional_mag, result_mag, gamma, event_indices
     )
-    steps = np.arange(-total_steps + 1, 1)
+    steps = np.arange(-total_steps_of_maneuver + 1, 1)
 
     fig, (ax_reward, ax_weight) = plt.subplots(
         2, 1, sharex=True, figsize=(10, 7)
@@ -123,7 +123,7 @@ def generate_and_plot(entries):
             color="red",
         )
     ax_reward.annotate(
-        str(total_steps - 1),
+        str(total_steps_of_maneuver - 1),
         (steps[-1], rewards[-1]),
         textcoords="offset points",
         xytext=(0, 10),
@@ -133,7 +133,7 @@ def generate_and_plot(entries):
         fontweight="bold",
     )
 
-    ax_reward.set_title(f"奖励曲线（总步数：{total_steps}）")
+    ax_reward.set_title(f"奖励曲线（总步数：{total_steps_of_maneuver}）")
     ax_reward.set_ylabel("奖励")
     ax_reward.legend(loc="best")
     ax_reward.grid(True, linestyle=":", alpha=0.6)
@@ -151,7 +151,7 @@ def generate_and_plot(entries):
         steps, np.abs(result_r) / total_abs * 100, color="green", label="结果奖励"
     )
     ax_weight.set_title(
-        f"各奖励成分在回报中的权重占比（总步数：{total_steps}）"
+        f"各奖励成分在回报中的权重占比（总步数：{total_steps_of_maneuver}）"
     )
     ax_weight.set_xlabel("倒计时（步）")
     ax_weight.set_ylabel("占比（%）")

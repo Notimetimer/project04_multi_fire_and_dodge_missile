@@ -34,7 +34,7 @@ if __name__ == '__main__':
         num_workers=15,  # 并行进程数，根据CPU核数调整，建议 10-20
         mission_name=mission_name,
         lr=1e-4,
-        max_steps=MAX_DEC_STEPS * action_cycle_multiplier,
+        max_steps_of_maneuver=MAX_DEC_STEPS * action_cycle_multiplier,
         gamma=0.9,
         tau=0.05,
         batch_size=128,
@@ -60,7 +60,7 @@ if __name__ == '__main__':
         compete_old_rate=0.2,  # "复习"概率
         K_FACTOR=16,
         randomized_birth=1,
-        save_interval=1,
+        update_interval_of_batch=1,
         num_runs=3,  # 测试回合重复次数
         red_init_num=red_init_num,    # 与 env_obs_dims.json 的 ally 槽位对齐
         blue_init_num=blue_init_num,  # 与 env_obs_dims.json 的 enm 槽位对齐

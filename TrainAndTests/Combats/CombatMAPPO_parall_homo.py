@@ -429,7 +429,7 @@ def run_MLP_simulation(
     mission_name='无名',
     actor_lr=1e-4,
     critic_lr=5e-4,
-    max_steps=4 * 165e4,
+    max_steps_of_maneuver=4 * 165e4,
     gamma=0.995,
     lmbda=0.995,
     epochs=4,
@@ -453,7 +453,7 @@ def run_MLP_simulation(
     compete_old_rate=0.2,
     K_FACTOR=16,
     randomized_birth=1,
-    save_interval=1,
+    update_interval_of_batch=1,
     test_interval_dp=3333,     # 测试窗口触发间隔：累计 2000 决策点（decision_points）触发一次完整测试+日志+保存
     transition_dict_threshold=2048,
     mini_batch_size_mixed=256,
@@ -520,7 +520,7 @@ def run_MLP_simulation(
         device=device, k_entropy=k_entropy,
     )
 
-    # 日志目录
+    # 日志记录
     logs_dir = os.path.join(project_root, "logs/combat")
     if resume_dir is not None and not os.path.exists(resume_dir):
         raise FileNotFoundError(f"resume_dir 不存在，已中止以防静默新训：{resume_dir}")
@@ -656,17 +656,17 @@ def run_MLP_simulation(
         json.dump(copy.deepcopy(elite_elo_ratings), f, ensure_ascii=False, indent=2)
 
     # 训练循环变量
-    total_steps = available_opps.get("__LAST_UPDATE_STEP__", 0)
+    total_steps_of_maneuver = available_opps.get("__LAST_UPDATE_STEP__", 0)
     if collape_recover["collapsed"]:
         actor_freeze_until = batch_idx + int(collape_recover["actor_frozen_batchs"])
     else:
         actor_freeze_until = -1
 
-    # 测试窗口变量：按 decision_points（total_steps / action_cycle_multiplier）间隔触发完整测试+日志+保存
-    next_test_dp = test_interval_dp
+    # 测试窗口变量：按 decision_points（total_steps_of_maneuver / action_cycle_multiplier）间隔触发完整测试+日志+保存
+    next_test_dp = 0
     test_window_idx = 0   # 测试窗口计数器，用于 checkpoint 序号；与 batch_idx（同步 barrier 计数）解耦
 
-    current_max_steps = int(max_steps)
+    current_max_steps_of_maneuver = int(max_steps_of_maneuver)
 
     # 学生 id 独立的全局 Buffer
     empty_transition_dict = {'obs': [], 'states': [], 'actions': [],
@@ -703,15 +703,15 @@ def run_MLP_simulation(
 
     # 主循环
     while True:
-        while total_steps < current_max_steps:
+        while total_steps_of_maneuver < current_max_steps_of_maneuver:
             # 获取当前学生队共享策略权重 (CPU，单份同构)
             current_actor_weights = {k: v.cpu() for k, v in actor.state_dict().items()}
-
+            do_test_window = 0 #  这个batch默认开始不测试
             # [测试] 按 decision_points 间隔触发：累计 2000 dp 做一次完整规则测试
             # 预判：本 batch 采完后累计 dp 约为当前 dp + action_cycle_multiplier * num_workers（每回合至少 1 决策点）
-            dp_prev = total_steps / action_cycle_multiplier
-            dp_next_est = dp_prev + num_workers
-            if num_runs > 0 and dp_next_est >= next_test_dp:
+            dp_prev = total_steps_of_maneuver / action_cycle_multiplier
+            if num_runs > 0 and dp_prev >= next_test_dp:
+                do_test_window = 1  # 这个batch有测试
                 test_window_idx += 1
                 print(f"\n>>> [Per-Batch Test] Testing student team vs rules (window {test_window_idx})...")
                 # 学生即红方且不改 id：测试环境红机 id 与学生 id 一致，直接下发整队
@@ -773,7 +773,7 @@ def run_MLP_simulation(
                         _w.writerow(csv_header)
                     for r in test_results:
                         _w.writerow([
-                            test_window_idx,
+                            batch_idx,
                             int(dp_prev),
                             r['rules_num'],
                             r['wins'], r['loses'], r['draws'],
@@ -827,7 +827,8 @@ def run_MLP_simulation(
                         # 蓝机 id = 学生 id + 200（同编队位次：1→201, 2→202）
                         opp_data = {uid + 200: shared_opp_sd for uid in red_student_ids}
                     else:
-                        raise ValueError(f"无法解析的 NN 对手名称: {selected_opponent_name}")
+                        raise ValueError(
+                            f"无法解析的 NN 对手名称: {selected_opponent_name}")
 
                 opp_info = (selected_opponent_name, opp_type, opp_data)
 
@@ -865,7 +866,7 @@ def run_MLP_simulation(
                 batch_results.append(res)
 
             # 数据聚合
-            batch_total_steps = 0
+            batch_total_steps_of_maneuver = 0
             batch_wins = 0
             batch_loss_cnt = 0
             batch_draw_cnt = 0
@@ -888,7 +889,7 @@ def run_MLP_simulation(
                 result_str = "Win" if metrics['win'] else ("Lose" if metrics['lose'] else "Draw")
                 worker_metrics_buffer.append(f"{opp_name}: {result_str}")
 
-                batch_total_steps += metrics['steps']
+                batch_total_steps_of_maneuver += metrics['steps']
                 batch_total_return += metrics['return']
                 # 个体回报累加
                 for uid, r_id in metrics.get('return_by_id', {}).items():
@@ -950,12 +951,11 @@ def run_MLP_simulation(
                 print(f"  [Batch {batch_idx}] Results: {', '.join(worker_metrics_buffer)}")
 
             # 更新全局计数
-            total_steps += batch_total_steps
+            total_steps_of_maneuver += batch_total_steps_of_maneuver
             batch_idx += 1
 
             # 测试窗口精确触发：累计 decision_points 跨过阈值才算一次完整窗口
-            dp_total = total_steps / action_cycle_multiplier
-            do_test_window = dp_total >= next_test_dp
+            dec_steps_total = total_steps_of_maneuver / action_cycle_multiplier
 
             # ---- 批次聚合指标（每测试窗口才记录） ----
             if do_test_window:
@@ -969,40 +969,44 @@ def run_MLP_simulation(
                     ema_score = (1 - alpha_ema) * ema_score + alpha_ema * batch_score
 
                 filtered_score = ema_score
-                logger.add("train_plus/batch_score", batch_score, dp_total)
-                logger.add("train_plus/filtered_score", filtered_score, dp_total)
-                logger.add("train_plus/target_p1", target_p1, dp_total)
+                logger.add("train_plus/batch_score", batch_score, dec_steps_total)
+                logger.add("train_plus/filtered_score", filtered_score, dec_steps_total)
+                logger.add("train_plus/target_p1", target_p1, dec_steps_total)
 
-                logger.add("train/1 avg_episode_return", batch_total_return / num_workers, dp_total)
-                # 个体回报（每 id 一条）
-                for uid, r_id in batch_return_by_id.items():
-                    logger.add(f"train/1 avg_episode_return_id{uid}", r_id / num_workers, dp_total)
-                # 告警威胁下的方位偏差均值（每 id 一条，单位：度）
-                for uid, threat_abs_list in batch_threat_delta_psi_abs_by_id.items():
-                    if len(threat_abs_list) > 0:
-                        logger.add(f"behavior/abs_threat_delta_psi_id{uid}", float(np.mean(threat_abs_list)) * 180 / np.pi, dp_total)
-                # 出界率 / 打光中距弹率（每 id 一条，本 batch 内回合占比）
-                for uid, oob_cnt in batch_out_of_bounds_by_id.items():
-                    logger.add(f"behavior/out_of_bounds_rate_id{uid}", oob_cnt / num_workers, dp_total)
-                for uid, ae_cnt in batch_ammo_exhausted_by_id.items():
-                    logger.add(f"behavior/ammo_exhausted_rate_id{uid}", ae_cnt / num_workers, dp_total)
-                # 每回合已结算开火次数 / 命中率（每 id 一条；命中率 = batch 内总命中 / 总已结算开火，无已结算开火时跳过该点）
-                for uid, fc_cnt in batch_fire_count_by_id.items():
-                    logger.add(f"behavior/fire_count_id{uid}", fc_cnt / num_workers, dp_total)
-                    hc_cnt = batch_hit_count_by_id.get(uid, 0)
-                    if fc_cnt > 0:
-                        logger.add(f"behavior/hit_rate_id{uid}", hc_cnt / fc_cnt, dp_total)
-                logger.add("train/2 win", batch_wins / num_workers, dp_total)
-                logger.add("train/2 lose", batch_loss_cnt / num_workers, dp_total)
-                logger.add("train/2 draw", batch_draw_cnt / num_workers, dp_total)
-                logger.add("train/2 BVR perish together", batch_bvr_perish_together_cnt / num_workers, dp_total)
-                logger.add("train/2 BVR not end", (batch_draw_cnt-batch_bvr_perish_together_cnt) / num_workers, dp_total)
-                # logger.add("train/2 ignored_enm_num", batch_ignored_enm_sum / num_workers, dp_total)
-                logger.add("agent/ episode_step", test_window_idx * num_workers, dp_total)
-                logger.add("agent/ batch_step", test_window_idx, dp_total)
+                # 推进测试窗口阈值
+                next_test_dp = max(dp_prev + test_interval_dp, dec_steps_total)
 
-            # ---- PPO 更新 + 必要清理（每 batch 必做，不受测试窗口门槛影响） ----
-            if len(transition_dicts[red_student_ids[0]]['dones']) >= transition_dict_threshold:
+            logger.add("train/1 avg_episode_return", batch_total_return / num_workers, dec_steps_total)
+            # 个体回报（每 id 一条）
+            for uid, r_id in batch_return_by_id.items():
+                logger.add(f"train/1 avg_episode_return_id{uid}", r_id / num_workers, dec_steps_total)
+            # 告警威胁下的方位偏差均值（每 id 一条，单位：度）
+            for uid, threat_abs_list in batch_threat_delta_psi_abs_by_id.items():
+                if len(threat_abs_list) > 0:
+                    logger.add(f"behavior/abs_threat_delta_psi_id{uid}", float(np.mean(threat_abs_list)) * 180 / np.pi, dec_steps_total)
+            # 出界率 / 打光中距弹率（每 id 一条，本 batch 内回合占比）
+            for uid, oob_cnt in batch_out_of_bounds_by_id.items():
+                logger.add(f"behavior/out_of_bounds_rate_id{uid}", oob_cnt / num_workers, dec_steps_total)
+            for uid, ae_cnt in batch_ammo_exhausted_by_id.items():
+                logger.add(f"behavior/ammo_exhausted_rate_id{uid}", ae_cnt / num_workers, dec_steps_total)
+            # 每回合已结算开火次数 / 命中率（每 id 一条；命中率 = batch 内总命中 / 总已结算开火，无已结算开火时跳过该点）
+            for uid, fc_cnt in batch_fire_count_by_id.items():
+                logger.add(f"behavior/fire_count_id{uid}", fc_cnt / num_workers, dec_steps_total)
+                hc_cnt = batch_hit_count_by_id.get(uid, 0)
+                if fc_cnt > 0:
+                    logger.add(f"behavior/hit_rate_id{uid}", hc_cnt / fc_cnt, dec_steps_total)
+            logger.add("train/2 win", batch_wins / num_workers, dec_steps_total)
+            logger.add("train/2 lose", batch_loss_cnt / num_workers, dec_steps_total)
+            logger.add("train/2 draw", batch_draw_cnt / num_workers, dec_steps_total)
+            logger.add("train/2 BVR perish together", batch_bvr_perish_together_cnt / num_workers, dec_steps_total)
+            logger.add("train/2 BVR not end", (batch_draw_cnt-batch_bvr_perish_together_cnt) / num_workers, dec_steps_total)
+            # logger.add("train/2 ignored_enm_num", batch_ignored_enm_sum / num_workers, dec_steps_total)
+            logger.add("agent/ episode_step", batch_idx * num_workers, dec_steps_total)
+            logger.add("agent/ batch_step", batch_idx, dec_steps_total)
+
+            # 更新，保存与维护 (Checkpoint & Pool)
+            if batch_idx % update_interval_of_batch == 0 and \
+                len(transition_dicts[red_student_ids[0]]['dones']) >= transition_dict_threshold:
 
                 # ELO 相对位置（基于 elite 池中的真实 Elo，elo_ratings 仅存版本号不可再用）
                 all_keys = list(elite_elo_ratings.keys())
@@ -1012,7 +1016,7 @@ def run_MLP_simulation(
                 target_pool_keys = rule_keys + latest_rein_keys
                 avg_pool_elo = np.mean([elite_elo_ratings[k] for k in target_pool_keys]) if target_pool_keys else main_agent_elo
                 x_elo_diff = main_agent_elo - avg_pool_elo
-                logger.add("train_plus/elo_diff_x", x_elo_diff, dp_total)
+                logger.add("train_plus/elo_diff_x", x_elo_diff, dec_steps_total)
 
                 # 同构更新：合并各学生 id 的经验为一个 buffer，共享网络单次 PPO 更新
                 merged_td = copy.deepcopy(empty_transition_dict)
@@ -1024,41 +1028,47 @@ def run_MLP_simulation(
                         merged_td[k] = merge_transition_tree(merged_td[k], td[k])
                 if len(merged_td['dones']) > 0:
                     m = agent.update(merged_td, adv_normed=1, mini_batch_size=mini_batch_size_mixed)
-                    logger.add("train/7 actor_loss", m.get('actor_loss', 0.0), dp_total)
-                    logger.add("train/8 critic_loss", m.get('critic_loss', 0.0), dp_total)
-                    logger.add("train/9 entropy", m.get('entropy', 0.0), dp_total)
-                    logger.add("train/10 approx_kl", m.get('kl', 0.0), dp_total)
-                    logger.add("train/11 clip_frac", m.get('clip_frac', 0.0), dp_total)
+                    logger.add("train/7 actor_loss", m.get('actor_loss', 0.0), dec_steps_total)
+                    logger.add("train/8 critic_loss", m.get('critic_loss', 0.0), dec_steps_total)
+                    logger.add("train/9 entropy", m.get('entropy', 0.0), dec_steps_total)
+                    logger.add("train/10 approx_kl", m.get('kl', 0.0), dec_steps_total)
+                    logger.add("train/11 clip_frac", m.get('clip_frac', 0.0), dec_steps_total)
                     # 记录未禁火 mask 内的开火概率极值（全队共享策略，单条曲线）
-                    logger.add("train/12 max_fire_prob", m.get('fire_prob_max', float('nan')), dp_total)
-                    logger.add("train/13 min_fire_prob", m.get('fire_prob_min', float('nan')), dp_total)
+                    logger.add("train/12 max_fire_prob", m.get('fire_prob_max', float('nan')), dec_steps_total)
+                    logger.add("train/13 min_fire_prob", m.get('fire_prob_min', float('nan')), dec_steps_total)
                     
                 # [新增] 开火命中监督更新：从滚动缓冲采样，仅更新 actor.net.fc_bern，不影响机动策略
                 if use_supervised_fire and len(fire_records_buffer) > 100: #  and\
                     fire_sl_batch = random.sample(list(fire_records_buffer), min(int(supervised_fire_batch_size), len(fire_records_buffer)))
                     agent.supervised_fire_update(fire_sl_batch, epochs=1, batch_size=int(supervised_fire_batch_size), fire_lr_ratio=1)
-                    logger.add("train_plus/supervised_fire_buffer_size", len(fire_records_buffer), total_steps)
-                    logger.add("train_plus/supervised_fire_samples", batch_fire_supervised, total_steps)
-                    logger.add("train/supervised_fire_loss", getattr(agent, 'last_supervised_fire_loss', 0.0), total_steps)
+                    logger.add("train_plus/supervised_fire_buffer_size", len(fire_records_buffer), dec_steps_total)
+                    logger.add("train_plus/supervised_fire_samples", batch_fire_supervised, dec_steps_total)
+                    logger.add("train/supervised_fire_loss", getattr(agent, 'last_supervised_fire_loss', 0.0), dec_steps_total)
 
-                # 清空各学生 id Buffer（必须每 batch 清，否则旧数据干扰更新）
-                for uid in red_student_ids:
-                    transition_dicts[uid] = copy.deepcopy(empty_transition_dict)
-
-            # ---- 测试窗口：保存 + checkpoint + 完整日志 + 精英池维护（每 decision_points 间隔触发） ----
-            if do_test_window:
-                print(f"Step {total_steps}: Batch WinRate {batch_wins}/{num_workers}, ELO {main_agent_elo:.0f}")
+                print(f"Step {dec_steps_total}: Batch WinRate {batch_wins}/{num_workers}, ELO {main_agent_elo:.0f}")
 
                 # A. 保存模型（同构单份，无 _uid 后缀）
-                actor_team_key = f"actor_rein{test_window_idx}"
-                if test_window_idx % 10 == 0:
+                actor_team_key = f"actor_rein{batch_idx}"
+                if batch_idx % 10 == 0:
                     torch.save(actor.state_dict(), os.path.join(log_dir, f"{actor_team_key}.pt"))
                     torch.save(critic.state_dict(), os.path.join(log_dir, "critic.pt"))
                     print(f"Saved Checkpoint team: {actor_team_key}")
-                    # 每次落盘新的 actor_rein 时记录：横轴当前决策点数，纵轴 test_window_idx
-                    logger.add("checkpoint/actor_rein_idx", test_window_idx, dp_total)
-                    # 只注册已落盘的版本到可用注册表（版本号=test_window_idx），保证采样时总能加载到权重
-                    available_opps[actor_team_key] = test_window_idx
+                    # 每次落盘新的 actor_rein 时记录：横轴当前步数，纵轴 actor_rein 后面的数字（batch_idx）
+                    logger.add("checkpoint/actor_rein_idx", batch_idx, dec_steps_total)
+                    # 只注册已落盘的版本到可用注册表（版本号=batch_idx），保证采样时总能加载到权重
+                    available_opps[actor_team_key] = batch_idx
+
+                # 清空各学生 id Buffer
+                for uid in red_student_ids:
+                    transition_dicts[uid] = copy.deepcopy(empty_transition_dict)
+
+                # 全量历史记录
+                available_opps["__LAST_UPDATE_STEP__"] = total_steps_of_maneuver
+                available_opps["__LAST_UPDATE_BATCH__"] = batch_idx
+
+                # 保存全量日志
+                with open(full_json_path, "w", encoding="utf-8") as f:
+                    json.dump(available_opps, f, ensure_ascii=False, indent=2)
 
                 # 精英池快照
                 save_elite = copy.deepcopy(elite_elo_ratings)
@@ -1073,7 +1083,7 @@ def run_MLP_simulation(
                     # 这里为了简单，直接遍历
                     # sorted_keys = sorted(valid_elos.keys())
                     
-                    logger.add("Elo/Main_Agent_Raw", main_agent_elo, dp_total)
+                    logger.add("Elo/Main_Agent_Raw", main_agent_elo, dec_steps_total)
                     
                     # 记录主智能体在当前所有 ELO 中的归一化排名位置：
                     # (主elo - min_elo) / (max_elo - min_elo)，当分母为0时取0.5
@@ -1086,7 +1096,7 @@ def run_MLP_simulation(
                     # 新增：记录 ELO 极差（max - min），用于判断 PFSP sigma 是否合适...
                     elo_spread = float(max_elo - min_elo)
                     print('elo分极差：', elo_spread)
-                    logger.add("Elo/Spread", elo_spread, dp_total)
+                    logger.add("Elo/Spread", elo_spread, dec_steps_total)
 
                     # 口径：把 main 合入规则池一起归一化（不含历史 RL 对手），
                     # 0%=最弱 Rule（或 main 自己垫底），100%=最强 Rule（或 main 自己顶位）；
@@ -1098,14 +1108,14 @@ def run_MLP_simulation(
                     curr_rate = 0.0 if ref_spread == 0 else (main_agent_elo - ref_min) / ref_spread
 
                     # Elo分数没有稳定不许记录
-                    if total_steps >= WARM_UP_STEPS:
-                        logger.add("Elo_Centered/Current_rate_normed %", curr_rate * 100, dp_total)
+                    if total_steps_of_maneuver >= WARM_UP_STEPS:
+                        logger.add("Elo_Centered/Current_rate_normed %", curr_rate * 100, dec_steps_total)
 
                     # 池容量占用（规则 + NN 总数）
                     hist_count = len([k for k in valid_elos if not k.startswith("Rule")])
                     pool_total = len([k for k in elite_elo_ratings.keys() if not k.startswith("__")])
-                    logger.add("Elo/History_Pool_Size", hist_count, dp_total)
-                    logger.add("Elo/Pool_Total_Size", pool_total, dp_total)
+                    logger.add("Elo/History_Pool_Size", hist_count, dec_steps_total)
+                    logger.add("Elo/Pool_Total_Size", pool_total, dec_steps_total)
 
                 # B. 精英池维护（容量只对 NN 生效，规则对手永不踢出；不再定期全量重刷）
                 if hist_agent_as_opponent and os.path.exists(os.path.join(log_dir, f"{actor_team_key}.pt")):
@@ -1129,7 +1139,7 @@ def run_MLP_simulation(
 
                     # 记录详细分数
                     # 记录最新个体的绝对分和相对均值的居中分
-                    logger.add("Elo_Centered/Latest_Best", main_agent_elo - mean_elo, dp_total)
+                    logger.add("Elo_Centered/Latest_Best", main_agent_elo - mean_elo, dec_steps_total)
 
                     # 3. 提取所有的 Rule 对手并遍历，一步到位记录 Rule信息 和 差值
                     rule_keys = [k for k in valid_elos.keys() if k.startswith("Rule_")]
@@ -1137,10 +1147,10 @@ def run_MLP_simulation(
                         rule_elo = float(valid_elos[rk])
                         
                         # 记录 Rule 的绝对分与居中分
-                        logger.add(f"Elo_Raw/{rk}", rule_elo, dp_total)
+                        logger.add(f"Elo_Raw/{rk}", rule_elo, dec_steps_total)
                         
                         # 直接计算并记录 最强个体 vs 规则对手 的差值
-                        logger.add(f"Elo_Diff/Latest_vs_{rk}", main_agent_elo - rule_elo, dp_total)
+                        logger.add(f"Elo_Diff/Latest_vs_{rk}", main_agent_elo - rule_elo, dec_steps_total)
 
                 # 例行保存优化器状态（同构单份）
                 opt_save = {
@@ -1157,29 +1167,26 @@ def run_MLP_simulation(
                     print(f"Saved fire records buffer to {fire_buffer_path}. Size: {len(fire_records_buffer)}")
 
 
-                available_opps["__LAST_UPDATE_STEP__"] = total_steps
+                available_opps["__LAST_UPDATE_STEP__"] = total_steps_of_maneuver
                 available_opps["__LAST_UPDATE_BATCH__"] = batch_idx
                 with open(full_json_path, "w", encoding="utf-8") as f:
                     json.dump(available_opps, f, ensure_ascii=False, indent=2)
 
-                # 推进测试窗口阈值
-                next_test_dp = dp_total + test_interval_dp
-
-        #  [新增] 达到 max_steps 后的交互逻辑
-        print(f"\n--- Target steps reached: {total_steps} / {current_max_steps} ---")
+        #  [新增] 达到 max_steps_of_maneuver 后的交互逻辑
+        print(f"\n--- Target steps reached: {total_steps_of_maneuver} / {current_max_steps_of_maneuver} ---")
         # 【新增】明确告知用户 Worker 当前状态
         print("All simulation workers are now idling safely. System is paused.") 
         
-        inp = input(f"Enter new max_steps (current {total_steps}), or press Enter to exit: ")
+        inp = input(f"Enter new max_steps_of_maneuver (current {total_steps_of_maneuver}), or press Enter to exit: ")
         
         if not inp.strip():
             print("No input provided. Exiting training.")
             break # 退出外层 while True 循环
         try:
             new_max = int(inp)
-            if new_max > total_steps:
-                current_max_steps = new_max
-                print(f"Continuing training until {current_max_steps} steps.")
+            if new_max > total_steps_of_maneuver:
+                current_max_steps_of_maneuver = new_max
+                print(f"Continuing training until {current_max_steps_of_maneuver} steps.")
             else:
                 print("Input steps less than current. Exiting...")
                 break # 退出外层 while True 循环

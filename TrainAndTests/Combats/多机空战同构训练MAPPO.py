@@ -41,7 +41,7 @@ if __name__=='__main__':
         mission_name=mission_name,
         actor_lr = 1e-4,
         critic_lr = 5e-4,
-        max_steps = MAX_DEC_STEPS*action_cycle_multiplier,  # 20e3
+        max_steps_of_maneuver = MAX_DEC_STEPS*action_cycle_multiplier,  # 20e3
         gamma=0.97,
         lmbda=0.985,
         epochs=4,
@@ -70,7 +70,7 @@ if __name__=='__main__':
         compete_old_rate = 0.2, # “复习”概率
         K_FACTOR = 16,  # 32 原先振荡太大了
         randomized_birth = 1,
-        save_interval = 1, # 触发更新至少要经过多少批采样
+        update_interval_of_batch = 1, # 触发更新至少要经过多少批采样
         num_runs = 3, # 测试回合重复次数  3
         device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
         # 场地边界：与测试脚本一致，统一从 init_states.json 加载方形顶点（不再传 None 走环境兜底）

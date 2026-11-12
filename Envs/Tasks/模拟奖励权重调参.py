@@ -27,28 +27,28 @@ defaults = {
 }
 
 
-def simulate_episode(total_steps, dense_mag, occasional_mag, result_mag, gamma, event_indices):
+def simulate_episode(total_steps_of_maneuver, dense_mag, occasional_mag, result_mag, gamma, event_indices):
     """生成一个回合的奖励、蒙特卡洛回报，以及各奖励成分的回报贡献。"""
     # 密集奖励的波形设置
-    t = np.arange(total_steps)
+    t = np.arange(total_steps_of_maneuver)
     # 常数
-    dense = np.full(total_steps, dense_mag, dtype=np.float64)
+    dense = np.full(total_steps_of_maneuver, dense_mag, dtype=np.float64)
     # # 正弦波
     # dense = dense_mag * np.sin(2 * np.pi * t / 50)  # 50步为一个周期
     # # 衰减正弦波
-    # dense = dense_mag * np.exp(-t / (total_steps * 0.5)) * np.sin(2 * np.pi * t / 30)
+    # dense = dense_mag * np.exp(-t / (total_steps_of_maneuver * 0.5)) * np.sin(2 * np.pi * t / 30)
     # # 带偏置的正弦波（始终为正但有起伏）：
     # dense = dense_mag * (1.0 + 0.5 * np.sin(2 * np.pi * t / 50))
 
 
     # 稀疏奖励位置由用户指定，支持负索引（从总步数末尾倒数）
-    sparse = np.zeros(total_steps, dtype=np.float64)
+    sparse = np.zeros(total_steps_of_maneuver, dtype=np.float64)
     if event_indices is not None and len(event_indices):
         event_indices = np.asarray(event_indices, dtype=np.int64)
         sparse[event_indices] += occasional_mag
 
     # 结果奖励放在最后一步
-    result = np.zeros(total_steps, dtype=np.float64)
+    result = np.zeros(total_steps_of_maneuver, dtype=np.float64)
     result[-1] += result_mag
 
     rewards = dense + sparse + result
@@ -56,7 +56,7 @@ def simulate_episode(total_steps, dense_mag, occasional_mag, result_mag, gamma, 
     def make_returns(arr):
         returns = np.empty_like(arr)
         g = 0.0
-        for t in range(total_steps - 1, -1, -1):
+        for t in range(total_steps_of_maneuver - 1, -1, -1):
             g = arr[t] + gamma * g
             returns[t] = g
         return returns
@@ -131,7 +131,7 @@ class RewardWeightTuner:
 
     def _parse_inputs(self):
         try:
-            total_steps = int(self.entries["总步数"].get().strip())
+            total_steps_of_maneuver = int(self.entries["总步数"].get().strip())
             dense_mag = float(self.entries["密集奖励"].get().strip())
             occasional_mag = float(self.entries["偶发奖励"].get().strip())
             result_mag = float(self.entries["结果奖励"].get().strip())
@@ -146,18 +146,18 @@ class RewardWeightTuner:
                     continue
                 p = int(token)
                 if p < 0:
-                    p = total_steps + p
+                    p = total_steps_of_maneuver + p
                 positions.append(p)
 
             if not (0.0 < gamma <= 1.0):
                 raise ValueError("gamma 必须在 (0, 1] 之间")
-            if total_steps <= 0:
+            if total_steps_of_maneuver <= 0:
                 raise ValueError("总步数必须大于 0")
 
-            positions = [max(0, min(p, total_steps - 1)) for p in positions]
+            positions = [max(0, min(p, total_steps_of_maneuver - 1)) for p in positions]
             event_indices = np.array(sorted(set(positions)), dtype=np.int64)
 
-            return total_steps, dense_mag, occasional_mag, result_mag, gamma, event_indices
+            return total_steps_of_maneuver, dense_mag, occasional_mag, result_mag, gamma, event_indices
         except ValueError as e:
             # 输入不完整或非法时不重绘，保留上一次的合法状态
             return None
@@ -167,12 +167,12 @@ class RewardWeightTuner:
         if parsed is None:
             return
 
-        total_steps, dense_mag, occasional_mag, result_mag, gamma, event_indices = parsed
+        total_steps_of_maneuver, dense_mag, occasional_mag, result_mag, gamma, event_indices = parsed
 
         rewards, returns, event_indices, dense_r, sparse_r, result_r = simulate_episode(
-            total_steps, dense_mag, occasional_mag, result_mag, gamma, event_indices
+            total_steps_of_maneuver, dense_mag, occasional_mag, result_mag, gamma, event_indices
         )
-        steps = np.arange(-total_steps + 1, 1)
+        steps = np.arange(-total_steps_of_maneuver + 1, 1)
 
         # 奖励曲线
         self.ax_reward.clear()
@@ -203,7 +203,7 @@ class RewardWeightTuner:
                 color="red",
             )
         self.ax_reward.annotate(
-            str(total_steps - 1),
+            str(total_steps_of_maneuver - 1),
             (steps[-1], rewards[-1]),
             textcoords="offset points",
             xytext=(0, 10),
@@ -213,7 +213,7 @@ class RewardWeightTuner:
             fontweight="bold",
         )
 
-        self.ax_reward.set_title(f"奖励曲线（总步数：{total_steps}）")
+        self.ax_reward.set_title(f"奖励曲线（总步数：{total_steps_of_maneuver}）")
         self.ax_reward.set_ylabel("奖励")
         self.ax_reward.legend(loc="best")
         self.ax_reward.grid(True, linestyle=":", alpha=0.6)
@@ -233,7 +233,7 @@ class RewardWeightTuner:
             steps, np.abs(result_r) / total_abs * 100, color="green", label="结果奖励"
         )
         self.ax_weight.set_title(
-            f"各奖励成分在回报中的权重占比（总步数：{total_steps}）"
+            f"各奖励成分在回报中的权重占比（总步数：{total_steps_of_maneuver}）"
         )
         self.ax_weight.set_xlabel("倒计时（步）")
         self.ax_weight.set_ylabel("占比（%）")

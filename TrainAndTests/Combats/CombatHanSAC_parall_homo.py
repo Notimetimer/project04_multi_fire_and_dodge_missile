@@ -445,7 +445,7 @@ def run_HanSAC_simulation(
     num_workers=10,
     mission_name='HanSAC无名',
     lr=1e-4,                    # 论文 lr=1e-4
-    max_steps=4 * 165e4,
+    max_steps_of_maneuver=4 * 165e4,
     gamma=0.9,                  # 论文 γ=0.9
     tau=0.05,                   # 论文式(39) τ=0.05
     batch_size=128,             # 论文 batch=128
@@ -665,8 +665,8 @@ def run_HanSAC_simulation(
         json.dump(copy.deepcopy(elite_elo_ratings), f, ensure_ascii=False, indent=2)
 
     # 训练循环变量
-    total_steps = available_opps.get("__LAST_UPDATE_STEP__", 0)
-    current_max_steps = int(max_steps)
+    total_steps_of_maneuver = available_opps.get("__LAST_UPDATE_STEP__", 0)
+    current_max_steps_of_maneuver = int(max_steps_of_maneuver)
 
     ema_score, ema_step = 0.5, 0
     target_p1 = 0.65
@@ -678,7 +678,7 @@ def run_HanSAC_simulation(
         # 即时流式回传；master 事件驱动收取，转移在各 worker 的 lane 内按时间维堆叠（worker
         # 间数据隔离），攒够 update_batch_points 个决策点后堆叠→push_stacked 临时降维入池，
         # 并按 points_per_update（论文口径 1 决策点 : 1 次更新）触发 SAC 更新。
-        decision_points_total = int(total_steps / action_cycle_multiplier)
+        decision_points_total = int(total_steps_of_maneuver / action_cycle_multiplier)
         next_test_dp = decision_points_total + test_interval_dp
         pending_points = 0
         # 吞吐观测窗口：dp/s（采样）、updates/s（更新密度）、ms/update 与 master 更新占用率，
@@ -780,7 +780,7 @@ def run_HanSAC_simulation(
                     pending_points += msg['n_points']
                     perf_win_dp += msg['n_points']
                     decision_points_total += msg['n_points']
-                    total_steps = decision_points_total * action_cycle_multiplier
+                    total_steps_of_maneuver = decision_points_total * action_cycle_multiplier
 
                 elif msg.get('type') == 'episode_end':
                     metrics = msg['metrics']
@@ -800,7 +800,7 @@ def run_HanSAC_simulation(
                         available_opps["__CURRENT_MAIN__"] = main_agent_elo
                         elite_elo_ratings[opp_name] = new_adv_elo
 
-                    if decision_points_total * action_cycle_multiplier >= current_max_steps:
+                    if decision_points_total * action_cycle_multiplier >= current_max_steps_of_maneuver:
                         stopping = True
                     if stopping:
                         idle_ranks.add(r)   # 不再派新局，worker 阻塞等待即为安全空闲
@@ -931,7 +931,7 @@ def run_HanSAC_simulation(
                     logger.add("train/supervised_fire_loss", m.get('loss_fire', 0.0), step_axis)
                     logger.add("train_plus/fire_buffer_size", m.get('fire_buffer', 0.0), step_axis)
 
-                print(f"Step {total_steps}: Batch WinRate {batch_wins}/{n_win_eps}, "
+                print(f"Step {total_steps_of_maneuver}: Batch WinRate {batch_wins}/{n_win_eps}, "
                       f"ELO {main_agent_elo:.0f}, Buffer {len(agent.buffer)}")
 
                 # ELO 相对位置（基于 elite 池中的真实 Elo，available_opps 仅存版本号不可再用）
@@ -963,7 +963,7 @@ def run_HanSAC_simulation(
                 print(f"Saved fire records buffer to {fire_buffer_path}. Size: {len(agent.fire_buffer)}")
 
                 # 全量历史记录（训练状态元数据只存 available_opps）
-                available_opps["__LAST_UPDATE_STEP__"] = total_steps
+                available_opps["__LAST_UPDATE_STEP__"] = total_steps_of_maneuver
                 available_opps["__LAST_UPDATE_BATCH__"] = batch_idx
 
                 # 保存全量日志
@@ -1002,7 +1002,7 @@ def run_HanSAC_simulation(
                     curr_rate = 0.0 if ref_spread == 0 else (main_agent_elo - ref_min) / ref_spread
 
                     # Elo分数没有稳定不许记录
-                    if total_steps >= WARM_UP_STEPS:
+                    if total_steps_of_maneuver >= WARM_UP_STEPS:
                         logger.add("Elo_Centered/Current_rate_normed %", curr_rate * 100, step_axis)
 
                     # 池容量占用（规则 + NN 总数）
@@ -1046,13 +1046,13 @@ def run_HanSAC_simulation(
                 # 推进测试窗口阈值
                 next_test_dp = decision_points_total + test_interval_dp
 
-        print(f"\n--- Target steps reached: {total_steps} / {current_max_steps} ---")
+        print(f"\n--- Target steps reached: {total_steps_of_maneuver} / {current_max_steps_of_maneuver} ---")
         print("All simulation workers are now idling safely.")
         if not pause_on_finish:
             print("pause_on_finish=0, exiting training.")
             break
         try:
-            inp = input(f"Enter new max_steps (current {total_steps}), or press Enter to exit: ")
+            inp = input(f"Enter new max_steps_of_maneuver (current {total_steps_of_maneuver}), or press Enter to exit: ")
         except (EOFError, OSError):   # 无 stdin（后台/管道运行）时自动退出而非挂起
             print("No stdin available. Exiting training.")
             break
@@ -1061,9 +1061,9 @@ def run_HanSAC_simulation(
             break # 退出外层 while True 循环
         try:
             new_max = int(inp)
-            if new_max > total_steps:
-                current_max_steps = new_max
-                print(f"Continuing training until {current_max_steps} steps.")
+            if new_max > total_steps_of_maneuver:
+                current_max_steps_of_maneuver = new_max
+                print(f"Continuing training until {current_max_steps_of_maneuver} steps.")
             else:
                 print("Input steps less than current. Exiting...")
                 break # 退出外层 while True 循环
@@ -1110,7 +1110,7 @@ if __name__ == '__main__':
             num_workers=2,
             mission_name='HanSAC_homo_JPO_debug',
             lr=1e-4,
-            max_steps=120 * action_cycle_multiplier,
+            max_steps_of_maneuver=120 * action_cycle_multiplier,
             gamma=0.9,
             tau=0.05,
             batch_size=32,
@@ -1146,7 +1146,7 @@ if __name__ == '__main__':
             num_workers=15,
             mission_name='HanSAC_homo_JPO',
             lr=1e-4,
-            max_steps=MAX_DEC_STEPS * action_cycle_multiplier,
+            max_steps_of_maneuver=MAX_DEC_STEPS * action_cycle_multiplier,
             gamma=0.9,
             tau=0.05,
             batch_size=128,

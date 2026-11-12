@@ -83,7 +83,7 @@ if __name__=='__main__':
 
     steps_count = 0
 
-    total_steps = 0
+    total_steps_of_maneuver = 0
 
     training_start_time = time.time()
     launch_time_count = 0

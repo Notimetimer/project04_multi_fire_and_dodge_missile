@@ -35,7 +35,7 @@ if __name__=='__main__':
         mission_name=mission_name,
         actor_lr = 1e-4,
         critic_lr = 5e-4,
-        max_steps = 20e6,
+        max_steps_of_maneuver = 20e6,
         gamma=0.97,
         lmbda=0.985,
         epochs=4,
@@ -64,7 +64,7 @@ if __name__=='__main__':
         compete_old_rate = 0.2, # “复习”概率
         K_FACTOR = 16,  # 32 原先振荡太大了
         randomized_birth = 1,
-        save_interval = 1, # 触发更新至少要经过多少批采样
+        update_interval_of_batch = 1, # 触发更新至少要经过多少批采样
         num_runs = 3, # 测试回合重复次数  3
         device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
         vertices = None,

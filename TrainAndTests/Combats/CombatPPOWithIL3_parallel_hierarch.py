@@ -904,7 +904,7 @@ def run_MLP_simulation(
     actor_lr_init_il = 1e-4,
     critic_lr_init_il = 5e-4,
     IL_epoches=180,
-    max_steps=4 * 165e4,
+    max_steps_of_maneuver=4 * 165e4,
     hidden_dim=None,
     gamma=0.995,
     lmbda=0.995,
@@ -952,7 +952,7 @@ def run_MLP_simulation(
     compete_old_rate = 0.2,
     K_FACTOR = 16,  # 32 原先振荡太大了
     randomized_birth = 1,
-    save_interval = 1, # 注意：现在的含义是经过多少次 Batch (每Batch = num_workers个回合)
+    update_interval_of_batch = 1, # 注意：现在的含义是经过多少次 Batch (每Batch = num_workers个回合)
     opp_greedy_rate = 0, # 对手贪婪率
     num_runs = 3, # 测试回合重复次数
     device = torch.device("cpu"),
@@ -1415,7 +1415,7 @@ def run_MLP_simulation(
 
 
     # 训练循环变量
-    total_steps = elo_ratings.get("__LAST_UPDATE_STEP__", 0)
+    total_steps_of_maneuver = elo_ratings.get("__LAST_UPDATE_STEP__", 0)
     batch_idx = elo_ratings.get("__LAST_UPDATE_BATCH__", 0)
     last_il_update_batch_idx = batch_idx
     if collape_recover["collapsed"]:
@@ -1423,9 +1423,9 @@ def run_MLP_simulation(
         student_agent.reset_optimizer() # 恢复训练清除动量
     else:
         actor_freeze_until = -1
-    trigger = trigger0 + (total_steps // trigger_delta) * trigger_delta
+    trigger = trigger0 + (total_steps_of_maneuver // trigger_delta) * trigger_delta
     
-    current_max_steps = int(max_steps)
+    current_max_steps_of_maneuver = int(max_steps_of_maneuver)
     
     # 全局 Buffer (用于攒够 Batch 训练)
     empty_transition_dict = {'obs': [], 'states': [], 'actions': [], 'next_states': [], 'rewards': [], 'dones': [], 'active_masks': []}
@@ -1466,16 +1466,16 @@ def run_MLP_simulation(
     # 主循环 (Master Process)
     # =========================================================
     while True:
-        while total_steps < current_max_steps:
-            if total_steps < 5e3:
+        while total_steps_of_maneuver < current_max_steps_of_maneuver:
+            if total_steps_of_maneuver < 5e3:
                 fire_mask = 0 # 0 # 全程开启开火mask
             else:
                 fire_mask = 0
             # --- 【修改】同步并行测试阶段 ---
             # 只有测试跑完并处理完名人堂，才进入下一步的采样和仿真
             # --- 1. 并行测试触发逻辑 (Async) ---
-            if total_steps >= trigger:
-                print(f"\n>>> Triggering Parallel Test at steps {total_steps}...")
+            if total_steps_of_maneuver >= trigger:
+                print(f"\n>>> Triggering Parallel Test at steps {total_steps_of_maneuver}...")
                 # 1. 深度拷贝当前 Actor 权重到 CPU 内存
                 current_weights = {k: v.cpu().clone() for k, v in student_agent.actor.state_dict().items()}
 
@@ -1548,11 +1548,11 @@ def run_MLP_simulation(
                 outcomes_perish = {rule_num: p_t_ for rule_num, score, result2, wins, loses, draws, p_t_ in test_results}
 
                 for r_num, score in outcomes.items():
-                    logger.add(f"test/agent_vs_rule{r_num}", score, total_steps)
-                    logger.add(f"test/agent_vs_rule{r_num}_win_rate", outcomes_wins[r_num], total_steps)
-                    logger.add(f"test/agent_vs_rule{r_num}_lose_rate", outcomes_loses[r_num], total_steps)
-                    logger.add(f"test/agent_vs_rule{r_num}_draw_rate", outcomes_draws[r_num], total_steps)
-                    # logger.add(f"test/agent_vs_rule{r_num}_return", outcomes_return[r_num], total_steps)
+                    logger.add(f"test/agent_vs_rule{r_num}", score, total_steps_of_maneuver)
+                    logger.add(f"test/agent_vs_rule{r_num}_win_rate", outcomes_wins[r_num], total_steps_of_maneuver)
+                    logger.add(f"test/agent_vs_rule{r_num}_lose_rate", outcomes_loses[r_num], total_steps_of_maneuver)
+                    logger.add(f"test/agent_vs_rule{r_num}_draw_rate", outcomes_draws[r_num], total_steps_of_maneuver)
+                    # logger.add(f"test/agent_vs_rule{r_num}_return", outcomes_return[r_num], total_steps_of_maneuver)
                     print(f"  [Test Result] Rule_{r_num}: {score} (return: {outcomes_return[r_num]:.2f})")
 
                 # 记录第一种测试的平均指标（所有对手的平均Score、胜负平比例和超视距双杀率）
@@ -1561,11 +1561,11 @@ def run_MLP_simulation(
                 avg_lose_rate = np.mean(list(outcomes_loses.values()))
                 avg_draw_rate = np.mean(list(outcomes_draws.values()))
                 avg_perish_together = np.mean(list(outcomes_perish.values()))
-                logger.add("test/avg_score", avg_score, total_steps)
-                logger.add("test/avg_win_rate", avg_win_rate, total_steps)
-                logger.add("test/avg_lose_rate", avg_lose_rate, total_steps)
-                logger.add("test/avg_draw_rate", avg_draw_rate, total_steps)
-                logger.add("test/BVR perish together", avg_perish_together, total_steps)
+                logger.add("test/avg_score", avg_score, total_steps_of_maneuver)
+                logger.add("test/avg_win_rate", avg_win_rate, total_steps_of_maneuver)
+                logger.add("test/avg_lose_rate", avg_lose_rate, total_steps_of_maneuver)
+                logger.add("test/avg_draw_rate", avg_draw_rate, total_steps_of_maneuver)
+                logger.add("test/BVR perish together", avg_perish_together, total_steps_of_maneuver)
 
                 # 记录第二种测试结果 (test_No_random)
                 outcomes_nr = {rule_num: score for rule_num, score, result2, wins, loses, draws, p_t_ in test_results_no_random}
@@ -1576,11 +1576,11 @@ def run_MLP_simulation(
                 outcomes_perish_nr = {rule_num: p_t_ for rule_num, score, result2, wins, loses, draws, p_t_ in test_results_no_random}
 
                 for r_num, score in outcomes_nr.items():
-                    logger.add(f"test_No_random/agent_vs_rule{r_num}", score, total_steps)
-                    logger.add(f"test_No_random/agent_vs_rule{r_num}_win_rate", outcomes_wins_nr[r_num], total_steps)
-                    logger.add(f"test_No_random/agent_vs_rule{r_num}_lose_rate", outcomes_loses_nr[r_num], total_steps)
-                    logger.add(f"test_No_random/agent_vs_rule{r_num}_draw_rate", outcomes_draws_nr[r_num], total_steps)
-                    # logger.add(f"test_No_random/agent_vs_rule{r_num}_return", outcomes_return_nr[r_num], total_steps)
+                    logger.add(f"test_No_random/agent_vs_rule{r_num}", score, total_steps_of_maneuver)
+                    logger.add(f"test_No_random/agent_vs_rule{r_num}_win_rate", outcomes_wins_nr[r_num], total_steps_of_maneuver)
+                    logger.add(f"test_No_random/agent_vs_rule{r_num}_lose_rate", outcomes_loses_nr[r_num], total_steps_of_maneuver)
+                    logger.add(f"test_No_random/agent_vs_rule{r_num}_draw_rate", outcomes_draws_nr[r_num], total_steps_of_maneuver)
+                    # logger.add(f"test_No_random/agent_vs_rule{r_num}_return", outcomes_return_nr[r_num], total_steps_of_maneuver)
                     print(f"  [Test No Random] Rule_{r_num}: {score} (return: {outcomes_return_nr[r_num]:.2f})")
 
                 # 记录第二种测试的平均指标（所有对手的平均Score、胜负平比例和超视距双杀率）
@@ -1589,11 +1589,11 @@ def run_MLP_simulation(
                 avg_lose_rate_nr = np.mean(list(outcomes_loses_nr.values()))
                 avg_draw_rate_nr = np.mean(list(outcomes_draws_nr.values()))
                 avg_perish_together_nr = np.mean(list(outcomes_perish_nr.values()))
-                logger.add("test_No_random/avg_score", avg_score_nr, total_steps)
-                logger.add("test_No_random/avg_win_rate", avg_win_rate_nr, total_steps)
-                logger.add("test_No_random/avg_lose_rate", avg_lose_rate_nr, total_steps)
-                logger.add("test_No_random/avg_draw_rate", avg_draw_rate_nr, total_steps)
-                logger.add("test_No_random/BVR perish together", avg_perish_together_nr, total_steps)
+                logger.add("test_No_random/avg_score", avg_score_nr, total_steps_of_maneuver)
+                logger.add("test_No_random/avg_win_rate", avg_win_rate_nr, total_steps_of_maneuver)
+                logger.add("test_No_random/avg_lose_rate", avg_lose_rate_nr, total_steps_of_maneuver)
+                logger.add("test_No_random/avg_draw_rate", avg_draw_rate_nr, total_steps_of_maneuver)
+                logger.add("test_No_random/BVR perish together", avg_perish_together_nr, total_steps_of_maneuver)
 
                 # 名人堂判定：如果全胜则保存并加入池子
                 if all(score > 0.5 for score in outcomes_nr.values()): # 原先为outcomes.values()
@@ -1626,13 +1626,13 @@ def run_MLP_simulation(
                 #     'ema_delta_psi_threat': ema_delta_psi_threat,
                 #     'ema_delta_theta': ema_delta_theta
                 # })
-                # logger.add(f"SPECIAL/开火权重", fire_reward_weight, total_steps)
-                # logger.add(f"SPECIAL/0 W_d_fire", fire_inside_weight[0], total_steps)
-                # logger.add(f"SPECIAL/1 W_t_since_fire", fire_inside_weight[1], total_steps)
-                # logger.add(f"SPECIAL/2 W_AA_fire", fire_inside_weight[2], total_steps)
-                # logger.add(f"SPECIAL/3 W_psi_fire", fire_inside_weight[3], total_steps)
-                # logger.add(f"SPECIAL/4 W_v_fire", fire_inside_weight[4], total_steps)
-                # logger.add(f"SPECIAL/5 W_theta_fire", fire_inside_weight[5], total_steps)
+                # logger.add(f"SPECIAL/开火权重", fire_reward_weight, total_steps_of_maneuver)
+                # logger.add(f"SPECIAL/0 W_d_fire", fire_inside_weight[0], total_steps_of_maneuver)
+                # logger.add(f"SPECIAL/1 W_t_since_fire", fire_inside_weight[1], total_steps_of_maneuver)
+                # logger.add(f"SPECIAL/2 W_AA_fire", fire_inside_weight[2], total_steps_of_maneuver)
+                # logger.add(f"SPECIAL/3 W_psi_fire", fire_inside_weight[3], total_steps_of_maneuver)
+                # logger.add(f"SPECIAL/4 W_v_fire", fire_inside_weight[4], total_steps_of_maneuver)
+                # logger.add(f"SPECIAL/5 W_theta_fire", fire_inside_weight[5], total_steps_of_maneuver)
             
             if not adj_r_w:
                 fire_inside_weight = None
@@ -1709,7 +1709,7 @@ def run_MLP_simulation(
                     'blue_birth': bb,
                     # 'R_cage_range': R_cage_range, # 将范围传给Worker
                     'fire_mask': fire_mask,
-                    'end_reward_weight': 0.3 + np.clip(total_steps/18e3, 0, 1)*(0.4-0.3), # 1.0
+                    'end_reward_weight': 0.3 + np.clip(total_steps_of_maneuver/18e3, 0, 1)*(0.4-0.3), # 1.0
                     'fire_inside_weight': fire_inside_weight,
                     'fire_reward_weight': fire_reward_weight,
                 }
@@ -1738,7 +1738,7 @@ def run_MLP_simulation(
                 batch_results.append(res)
             
             # --- 3. 数据聚合与处理 ---
-            batch_total_steps = 0
+            batch_total_steps_of_maneuver = 0
             batch_wins = 0
             batch_loss_cnt = 0
             batch_draw_cnt = 0        # 新增统计
@@ -1827,7 +1827,7 @@ def run_MLP_simulation(
                 result_str = "Win" if metrics['win'] else ("Lose" if metrics['lose'] else "Draw")
                 worker_metrics_buffer.append(f"{opp_name}: {result_str}")
                 
-                batch_total_steps += metrics['steps']
+                batch_total_steps_of_maneuver += metrics['steps']
                 batch_total_return += metrics['return'] # 已是固定±100终局的归一化回报
                 batch_total_event_return += metrics['event_return']
                 batch_total_m_fired += metrics['m_fired']
@@ -1941,7 +1941,7 @@ def run_MLP_simulation(
                 print(f"  [Batch {batch_idx}] Results: {', '.join(worker_metrics_buffer)}")
 
             # 更新全局计数
-            total_steps += batch_total_steps
+            total_steps_of_maneuver += batch_total_steps_of_maneuver
             batch_idx += 1
             
             # --- 3.5 记录批次聚合指标 ---
@@ -1959,30 +1959,30 @@ def run_MLP_simulation(
             # 使用带有偏差修正的滤波值
             filtered_score = ema_score
             if use_RND and rnd_mse is not None:
-                logger.add("train_plus/RND_mse", rnd_mse, total_steps)
-            logger.add("train_plus/batch_score", batch_score, total_steps)
-            logger.add("train_plus/filtered_score", filtered_score, total_steps)
-            logger.add("train_plus/target_p1", target_p1, total_steps)
+                logger.add("train_plus/RND_mse", rnd_mse, total_steps_of_maneuver)
+            logger.add("train_plus/batch_score", batch_score, total_steps_of_maneuver)
+            logger.add("train_plus/filtered_score", filtered_score, total_steps_of_maneuver)
+            logger.add("train_plus/target_p1", target_p1, total_steps_of_maneuver)
 
             # 记录开火策略指标 - 蓝方（本方），使用原始批次均值
             if batch_blue_avg_fire_interval is not None:
-                logger.add("special/1 开火间隔时长", batch_blue_avg_fire_interval, total_steps)
+                logger.add("special/1 开火间隔时长", batch_blue_avg_fire_interval, total_steps_of_maneuver)
             if batch_blue_avg_fire_delta_psi is not None:
-                logger.add("special/2 开火abs(delta_psi)", batch_blue_avg_fire_delta_psi*180/pi, total_steps)
+                logger.add("special/2 开火abs(delta_psi)", batch_blue_avg_fire_delta_psi*180/pi, total_steps_of_maneuver)
             if batch_blue_avg_fire_distance is not None:
-                logger.add("special/3 开火距离", batch_blue_avg_fire_distance, total_steps)
+                logger.add("special/3 开火距离", batch_blue_avg_fire_distance, total_steps_of_maneuver)
             if batch_blue_avg_fire_AA_hor is not None:
-                logger.add("special/4 开火abs(AA_hor)", batch_blue_avg_fire_AA_hor*180/pi, total_steps)
+                logger.add("special/4 开火abs(AA_hor)", batch_blue_avg_fire_AA_hor*180/pi, total_steps_of_maneuver)
             if batch_blue_avg_fire_altitude is not None:
-                logger.add("special/0 开火高度", batch_blue_avg_fire_altitude, total_steps)
+                logger.add("special/0 开火高度", batch_blue_avg_fire_altitude, total_steps_of_maneuver)
             if batch_blue_avg_fire_theta is not None:
-                logger.add("special/5 fire_theta", batch_blue_avg_fire_theta*180/pi, total_steps)
+                logger.add("special/5 fire_theta", batch_blue_avg_fire_theta*180/pi, total_steps_of_maneuver)
             if batch_blue_avg_ATA is not None:
-                logger.add("special/6 ATA30", batch_blue_avg_ATA*180/pi, total_steps)
+                logger.add("special/6 ATA30", batch_blue_avg_ATA*180/pi, total_steps_of_maneuver)
             if batch_blue_avg_delta_psi_threat is not None:
-                logger.add("special/7 delta_psi_threat", batch_blue_avg_delta_psi_threat*180/pi, total_steps)
+                logger.add("special/7 delta_psi_threat", batch_blue_avg_delta_psi_threat*180/pi, total_steps_of_maneuver)
             if batch_blue_avg_delta_theta is not None:
-                logger.add("special/8 delta_theta30", batch_blue_avg_delta_theta*180/pi, total_steps)
+                logger.add("special/8 delta_theta30", batch_blue_avg_delta_theta*180/pi, total_steps_of_maneuver)
             
             # [新增] 保存 EMA 状态和控制器状态到 special.json
             special_data = {
@@ -2001,19 +2001,19 @@ def run_MLP_simulation(
                 json.dump(special_data, f, ensure_ascii=False, indent=2)
             
             # 记录平均回报与胜率
-            logger.add("train/1 avg_episode_return", batch_total_return / num_workers, total_steps)
-            logger.add("train_plus/Avg event return", batch_total_event_return / num_workers, total_steps)
-            logger.add("train/2 win", batch_wins / num_workers, total_steps)
-            logger.add("train/2 lose", batch_loss_cnt / num_workers, total_steps)
-            logger.add("train/2 draw", batch_draw_cnt / num_workers, total_steps)
-            logger.add("train/2 BVR perish together", batch_bvr_perish_together_cnt / num_workers, total_steps)
-            logger.add("train/2 BVR not end", (batch_draw_cnt-batch_bvr_perish_together_cnt) / num_workers, total_steps)
+            logger.add("train/1 avg_episode_return", batch_total_return / num_workers, total_steps_of_maneuver)
+            logger.add("train_plus/Avg event return", batch_total_event_return / num_workers, total_steps_of_maneuver)
+            logger.add("train/2 win", batch_wins / num_workers, total_steps_of_maneuver)
+            logger.add("train/2 lose", batch_loss_cnt / num_workers, total_steps_of_maneuver)
+            logger.add("train/2 draw", batch_draw_cnt / num_workers, total_steps_of_maneuver)
+            logger.add("train/2 BVR perish together", batch_bvr_perish_together_cnt / num_workers, total_steps_of_maneuver)
+            logger.add("train/2 BVR not end", (batch_draw_cnt-batch_bvr_perish_together_cnt) / num_workers, total_steps_of_maneuver)
             # 找最好的智能体
-            logger.add("agent/ episode_step", batch_idx * num_workers, total_steps)
-            logger.add("agent/ batch_step", batch_idx, total_steps)
+            logger.add("agent/ episode_step", batch_idx * num_workers, total_steps_of_maneuver)
+            logger.add("agent/ batch_step", batch_idx, total_steps_of_maneuver)
 
             # --- 5. 更新，保存与维护 (Checkpoint & Pool) ---
-            if batch_idx % save_interval == 0 and \
+            if batch_idx % update_interval_of_batch == 0 and \
                 len(transition_dict['dones']) >= transition_dict_threshold:
                 # # --- 4. 执行训练 (PPO Update) ---
                 # # 当收集的数据量超过 capacity 时更新
@@ -2036,11 +2036,11 @@ def run_MLP_simulation(
                 avg_pool_elo = np.mean([elo_ratings[k] for k in target_pool_keys])
                 # 计算 Elo 差值 x (当前主分 - 池子均分)
                 x_elo_diff = main_agent_elo - avg_pool_elo
-                logger.add("train_plus/elo_diff_x", x_elo_diff, total_steps)
+                logger.add("train_plus/elo_diff_x", x_elo_diff, total_steps_of_maneuver)
                 
                 # 学习率warm_up
-                actor_lr = min(actor_lr0, actor_lr0 * total_steps/1e6)
-                critic_lr = min(critic_lr0, critic_lr0 * total_steps/1e6)
+                actor_lr = min(actor_lr0, actor_lr0 * total_steps_of_maneuver/1e6)
+                critic_lr = min(critic_lr0, critic_lr0 * total_steps_of_maneuver/1e6)
                 student_agent.set_learning_rate(actor_lr=actor_lr, critic_lr=critic_lr)
 
                 if batch_idx <= actor_freeze_until:
@@ -2048,7 +2048,7 @@ def run_MLP_simulation(
                 else:
                     freeze_actor = 0
                 # # critic先收敛
-                # if total_steps < 5e3:
+                # if total_steps_of_maneuver < 5e3:
                 #     freeze_actor = 1
                 
                 max_fire_logits = 4.0
@@ -2071,9 +2071,9 @@ def run_MLP_simulation(
 
                     fire_sl_batch = random.sample(list(fire_records_buffer), min(int(supervised_fire_batch_size), len(fire_records_buffer)))
                     student_agent.supervised_fire_update(fire_sl_batch, epochs=1, batch_size=int(supervised_fire_batch_size), fire_lr_ratio=1)
-                    logger.add("train_plus/supervised_fire_buffer_size", len(fire_records_buffer), total_steps)
-                    logger.add("train_plus/supervised_fire_samples", batch_fire_supervised, total_steps)
-                    logger.add("train/7b supervised_fire_loss", getattr(student_agent, 'last_supervised_fire_loss', 0.0), total_steps)
+                    logger.add("train_plus/supervised_fire_buffer_size", len(fire_records_buffer), total_steps_of_maneuver)
+                    logger.add("train_plus/supervised_fire_samples", batch_fire_supervised, total_steps_of_maneuver)
+                    logger.add("train/7b supervised_fire_loss", getattr(student_agent, 'last_supervised_fire_loss', 0.0), total_steps_of_maneuver)
 
 
                 # # 开火概率保护，如果策略向满开火/不开一发坍缩，直接用有监督暴力修正开火概率
@@ -2094,35 +2094,35 @@ def run_MLP_simulation(
                     else:
                         ppo_grad_ema = 0.95 * ppo_grad_ema + 0.05 * current_ppo_grad
 
-                alpha_il_real = alpha_il #  * np.clip(1 - total_steps/5e6, 0.1, 1)
+                alpha_il_real = alpha_il #  * np.clip(1 - total_steps_of_maneuver/5e6, 0.1, 1)
 
                 # [Modification] 保留原有梯度监控代码
                 actor_pre_clip_grad = student_agent.pre_clip_actor_grad
                 critic_pre_clip_grad = student_agent.pre_clip_critic_grad
 
                 # 梯度监控
-                # logger.add("train/5 actor_pre_clip_grad", actor_pre_clip_grad, total_steps)
-                # logger.add("train/6 critic_pre_clip_grad", critic_pre_clip_grad, total_steps)
+                # logger.add("train/5 actor_pre_clip_grad", actor_pre_clip_grad, total_steps_of_maneuver)
+                # logger.add("train/6 critic_pre_clip_grad", critic_pre_clip_grad, total_steps_of_maneuver)
                 # 损失函数监控
-                logger.add("train/7 actor_loss", student_agent.actor_loss, total_steps)
-                logger.add("train/8 critic_loss", student_agent.critic_loss, total_steps)
+                logger.add("train/7 actor_loss", student_agent.actor_loss, total_steps_of_maneuver)
+                logger.add("train/8 critic_loss", student_agent.critic_loss, total_steps_of_maneuver)
                 # 强化学习actor特殊项监控
-                logger.add("train/9 entropy", student_agent.entropy_mean, total_steps)
-                logger.add("train/9 entropy_cat", student_agent.entropy_cat, total_steps)
-                logger.add("train/9 entropy_bern", student_agent.entropy_bern, total_steps)
-                logger.add("train_plus/max_fire_prob", student_agent.max_fire_prob, total_steps)
-                logger.add("train_plus/min_fire_prob", student_agent.min_fire_prob, total_steps)
+                logger.add("train/9 entropy", student_agent.entropy_mean, total_steps_of_maneuver)
+                logger.add("train/9 entropy_cat", student_agent.entropy_cat, total_steps_of_maneuver)
+                logger.add("train/9 entropy_bern", student_agent.entropy_bern, total_steps_of_maneuver)
+                logger.add("train_plus/max_fire_prob", student_agent.max_fire_prob, total_steps_of_maneuver)
+                logger.add("train_plus/min_fire_prob", student_agent.min_fire_prob, total_steps_of_maneuver)
 
-                # logger.add("train/10 advantage", student_agent.advantage, total_steps) 
+                # logger.add("train/10 advantage", student_agent.advantage, total_steps_of_maneuver) 
                 # 强化学习
-                # logger.add("train/10 explained_var", student_agent.explained_var, total_steps)
-                # logger.add("train/10 approx_kl", student_agent.approx_kl, total_steps)
-                # logger.add("train/10 clip_frac", student_agent.clip_frac, total_steps)
+                # logger.add("train/10 explained_var", student_agent.explained_var, total_steps_of_maneuver)
+                # logger.add("train/10 approx_kl", student_agent.approx_kl, total_steps_of_maneuver)
+                # logger.add("train/10 clip_frac", student_agent.clip_frac, total_steps_of_maneuver)
                 
                 # [新增] 诊断监控
-                logger.add("train_plus/td_error_var", student_agent.td_error_var, total_steps)
+                logger.add("train_plus/td_error_var", student_agent.td_error_var, total_steps_of_maneuver)
 
-                print(f"Step {total_steps}: Batch WinRate {batch_wins}/{num_workers}, ELO {main_agent_elo:.0f}")
+                print(f"Step {total_steps_of_maneuver}: Batch WinRate {batch_wins}/{num_workers}, ELO {main_agent_elo:.0f}")
 
                 # 原本是在这里清空Buffer的，但是现在要在搅拌之后清空，所以移到了后面
                 
@@ -2142,7 +2142,7 @@ def run_MLP_simulation(
 
                 # B. 经典胜率精英池维护
                 # 只有自博弈能够更新精英Elo和胜率表，否则只能更新普通胜率和Elo表
-                if total_steps >= WARM_UP_STEPS:
+                if total_steps_of_maneuver >= WARM_UP_STEPS:
                     # 复制当前主代理的蓝方行为统计到该历史版本，记录它"作为蓝方时"的行为特征
                     if "__CURRENT_MAIN__" in Elite_Fire_Stats:
                         Elite_Fire_Stats[actor_key] = copy.deepcopy(Elite_Fire_Stats["__CURRENT_MAIN__"])
@@ -2157,14 +2157,14 @@ def run_MLP_simulation(
                 # 目标：记录所有产生过的 Agent 的最后一次已知 Elo，无论它是否在精英池里
                 # 无论是否进入精英池，全量表都要记录
                 elo_ratings[actor_key] = main_agent_elo
-                elo_ratings["__LAST_UPDATE_STEP__"] = total_steps
+                elo_ratings["__LAST_UPDATE_STEP__"] = total_steps_of_maneuver
                 elo_ratings["__LAST_UPDATE_BATCH__"] = batch_idx
                 
                 # -----------------------------------------------------------
                 # 逻辑分支 B: 定期重刷精英池 (每 1M step)
                 # -----------------------------------------------------------
-                if total_steps > 0 and total_steps % 1e6 == 0:
-                    print(f"\n>>> [Elite Pool Refresh] Refreshing elite_elo_ratings at {total_steps} steps...")
+                if total_steps_of_maneuver > 0 and total_steps_of_maneuver % 1e6 == 0:
+                    print(f"\n>>> [Elite Pool Refresh] Refreshing elite_elo_ratings at {total_steps_of_maneuver} steps...")
                     # 从 elo_ratings 中选出 Elo 最高的 min(当前非Rule数量, MAX_HISTORY_SIZE) 个非 Rule 智能体
                     non_rule_elo = {k: v for k, v in elo_ratings.items() if not k.startswith("Rule") and not k.startswith("__")}
                     current_non_rule_count = len([k for k in elite_elo_ratings.keys() if not k.startswith("Rule") and not k.startswith("__")])
@@ -2210,7 +2210,7 @@ def run_MLP_simulation(
                     # 这里为了简单，直接遍历
                     # sorted_keys = sorted(valid_elos.keys())
                     
-                    logger.add("Elo/Main_Agent_Raw", main_agent_elo, total_steps)
+                    logger.add("Elo/Main_Agent_Raw", main_agent_elo, total_steps_of_maneuver)
                     
                     # 记录主智能体在当前所有 ELO 中的归一化排名位置：
                     # (主elo - min_elo) / (max_elo - min_elo)，当分母为0时取0.5
@@ -2230,18 +2230,18 @@ def run_MLP_simulation(
 
                     # 记录与 Rule 阈值的差值 (维持旧指标名)
                     elo_diff_to_thres = main_agent_elo - rule_elo_thres
-                    logger.add("Elo_Centered/EloDiffToMean", elo_diff_to_thres, total_steps)
+                    logger.add("Elo_Centered/EloDiffToMean", elo_diff_to_thres, total_steps_of_maneuver)
                     
                     # 新增：记录 ELO 极差（max - min），用于判断 PFSP sigma 是否合适...
                     elo_spread = float(max_elo - min_elo)
                     print('elo分极差：', elo_spread)
-                    logger.add("Elo/Spread", elo_spread, total_steps)
+                    logger.add("Elo/Spread", elo_spread, total_steps_of_maneuver)
 
                     curr_rate = 0.5 if elo_spread == 0 else (main_agent_elo - min_elo) / elo_spread
 
                     # Elo分数没有稳定不许记录
-                    if total_steps >= WARM_UP_STEPS:
-                        logger.add("Elo_Centered/Current_rate_normed %", curr_rate * 100, total_steps)
+                    if total_steps_of_maneuver >= WARM_UP_STEPS:
+                        logger.add("Elo_Centered/Current_rate_normed %", curr_rate * 100, total_steps_of_maneuver)
                     
                     
                     # # 仅对高门槛使用
@@ -2271,11 +2271,11 @@ def run_MLP_simulation(
                     # student_agent.set_learning_rate(actor_lr, critic_lr)
 
                     hist_count = len([k for k in valid_elos if not k.startswith("Rule")])
-                    logger.add("Elo/History_Pool_Size", hist_count, total_steps)
+                    logger.add("Elo/History_Pool_Size", hist_count, total_steps_of_maneuver)
 
                     # 记录详细分数
                     # 记录最新个体的绝对分和相对均值的居中分
-                    logger.add("Elo_Centered/Latest_Best", main_agent_elo - mean_elo, total_steps)
+                    logger.add("Elo_Centered/Latest_Best", main_agent_elo - mean_elo, total_steps_of_maneuver)
 
                     # 3. 提取所有的 Rule 对手并遍历，一步到位记录 Rule信息 和 差值
                     rule_keys = [k for k in valid_elos.keys() if k.startswith("Rule_")]
@@ -2283,10 +2283,10 @@ def run_MLP_simulation(
                         rule_elo = float(valid_elos[rk])
                         
                         # 记录 Rule 的绝对分与居中分
-                        logger.add(f"Elo_Raw/{rk}", rule_elo, total_steps)
+                        logger.add(f"Elo_Raw/{rk}", rule_elo, total_steps_of_maneuver)
                         
                         # 直接计算并记录 最强个体 vs 规则对手 的差值
-                        logger.add(f"Elo_Diff/Latest_vs_{rk}", main_agent_elo - rule_elo, total_steps)
+                        logger.add(f"Elo_Diff/Latest_vs_{rk}", main_agent_elo - rule_elo, total_steps_of_maneuver)
 
                 # --- 例行保存优化器状态和步数 ---
                 torch.save({
@@ -2306,26 +2306,26 @@ def run_MLP_simulation(
                     print(f"Saved fire records buffer to {fire_buffer_path}. Size: {len(fire_records_buffer)}")
                     
                 # print(f"Optimizers routinely saved to optimizers_state.pt")
-                elo_ratings["__LAST_UPDATE_STEP__"] = total_steps
+                elo_ratings["__LAST_UPDATE_STEP__"] = total_steps_of_maneuver
                 elo_ratings["__LAST_UPDATE_BATCH__"] = batch_idx
                 with open(full_json_path, "w", encoding="utf-8") as f:
                     json.dump(elo_ratings, f, ensure_ascii=False, indent=2)
 
-        # --- [新增] 达到 max_steps 后的交互逻辑 ---
-        print(f"\n--- Target steps reached: {total_steps} / {current_max_steps} ---")
+        # --- [新增] 达到 max_steps_of_maneuver 后的交互逻辑 ---
+        print(f"\n--- Target steps reached: {total_steps_of_maneuver} / {current_max_steps_of_maneuver} ---")
         # 【新增】明确告知用户 Worker 当前状态
         print("All simulation workers are now idling safely. System is paused.") 
         
-        inp = input(f"Enter new max_steps (current {total_steps}), or press Enter to exit: ")
+        inp = input(f"Enter new max_steps_of_maneuver (current {total_steps_of_maneuver}), or press Enter to exit: ")
         
         if not inp.strip():
             print("No input provided. Exiting training.")
             break # 退出外层 while True 循环
         try:
             new_max = int(inp)
-            if new_max > total_steps:
-                current_max_steps = new_max
-                print(f"Continuing training until {current_max_steps} steps.")
+            if new_max > total_steps_of_maneuver:
+                current_max_steps_of_maneuver = new_max
+                print(f"Continuing training until {current_max_steps_of_maneuver} steps.")
             else:
                 print("Input steps less than current. Exiting...")
                 break # 退出外层 while True 循环
