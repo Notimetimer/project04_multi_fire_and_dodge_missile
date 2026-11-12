@@ -37,7 +37,7 @@ python TrainAndTests/Combats/二对二训练同构训练MAPPO.py
 
 ## 初步结果
 
-以下为不同规模对抗下的训练后自博弈片段（TacView 回放录制）。
+以下为2v2训练后在不同规模下部署的测试片段（TacView 回放录制）。
 
 | 2v2 | 4v4 | 10v10 |
 | --- | --- | --- |
