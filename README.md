@@ -1,6 +1,6 @@
 # 多机空战强化学习（Multi-UAV Air Combat RL）
 
-基于 **JSBSim 六自由度飞控** + **MAPPO 同构自博弈** 的多机空战训练框架，支持 3v3 红蓝对抗、PFSP 对手池自博弈、TacView 可视化回放与 TensorBoard 训练监控。
+基于 **JSBSim 六自由度飞控** + **MAPPO 同构自博弈** 的多机空战训练框架，支持 多对多 红蓝对抗、PFSP 对手池自博弈、TacView 可视化回放与 TensorBoard 训练监控。
 
 本项目当前的主训练入口为 [`TrainAndTests/Combats/二对二训练同构训练MAPPO.py`](TrainAndTests/Combats/二对二训练同构训练MAPPO.py)，本文档以该入口为起点，梳理它的完整调用链。
 
