@@ -1,6 +1,6 @@
 import os, sys
 from _context import *
-from TrainAndTests.Combats.CombatMAPPO_parall_hetero import *
+from TrainAndTests.Combats.废案.CombatMAPPO_parall_hetero import *
 from datetime import datetime
 from prepare_il_datas_hierarchical import run_rules
 

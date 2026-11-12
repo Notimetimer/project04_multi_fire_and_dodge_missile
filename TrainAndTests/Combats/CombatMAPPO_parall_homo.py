@@ -454,6 +454,7 @@ def run_MLP_simulation(
     K_FACTOR=16,
     randomized_birth=1,
     update_interval_of_batch=1,
+    save_interval_of_batch=10, # 每10个batch保存一次
     test_interval_dp=3333,     # 测试窗口触发间隔：累计 2000 决策点（decision_points）触发一次完整测试+日志+保存
     transition_dict_threshold=2048,
     mini_batch_size_mixed=256,
@@ -728,7 +729,7 @@ def run_MLP_simulation(
                             'num_runs': num_runs,
                             'vertices': vertices,
                             'dt_move': dt_move,
-                            'dt_maneuver': 0.2, # dt_maneuver,
+                            'dt_maneuver': 0.2, # dt_maneuver, # 测试的时候需要精细，训练的时候可以粗略
                             'action_cycle_multiplier': action_cycle_multiplier,
                             'red_init_num': red_init_num,
                             'blue_init_num': blue_init_num,
@@ -763,7 +764,7 @@ def run_MLP_simulation(
 
                 # 将本次测试的胜负平明细按对手追加到 csv（每测试窗口一轮，一行一个对手）
                 test_csv_path = os.path.join(log_dir, "test_vs_rules.csv")
-                csv_header = ["window_idx", "steps", "rule_num",
+                csv_header = ["test_window_idx", "steps", "rule_num",
                               "wins", "loses", "draws", "score",
                               "perish_together", "num_runs"]
                 _need_header = not os.path.exists(test_csv_path)
@@ -1049,7 +1050,7 @@ def run_MLP_simulation(
 
                 # A. 保存模型（同构单份，无 _uid 后缀）
                 actor_team_key = f"actor_rein{batch_idx}"
-                if batch_idx % 10 == 0:
+                if batch_idx % save_interval_of_batch == 0:
                     torch.save(actor.state_dict(), os.path.join(log_dir, f"{actor_team_key}.pt"))
                     torch.save(critic.state_dict(), os.path.join(log_dir, "critic.pt"))
                     print(f"Saved Checkpoint team: {actor_team_key}")

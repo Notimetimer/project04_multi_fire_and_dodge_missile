@@ -1068,7 +1068,7 @@ class Battle(object):
             'v_enm': 0,
             'cos_enm_AA': -1,
             'sin_enm_AA': 0,
-            # 2611112新增
+            # 261112新增
             'occupied': 0,
             'threat_distance1': 100e3,
             'cos_threat_delta_psi1': -1,
@@ -1266,11 +1266,11 @@ class Battle(object):
                 ego.t_fly_list[current_target_index] = msl.t  # 对应到目标index的开火累计时间
                 ego.attacking_id2times[msl.target_id] = msl.t  # 对应到目标id的开火累计时间
 
-        # 2611112新增
+        # 261112新增
         # 预计算我方已发射导弹的威胁：按 target_id 分组，每组取距离目标最近的 2 枚
         # 计算的是导弹.pos_ 到敌机.pos_ 的欧氏距离，后续在 enm_infos 里用 /50e3 归一化
         threat_map = {}
-        for msl in alive_ego_missiles:
+        for msl in alive_ally_missiles:
             target_id = msl.target_id
             # 找到目标敌机实体：msl.target_id 就是目标 UAV.id
             target_enm = next((u for u in (self.RUAVs + self.BUAVs) if u.id == target_id), None)
@@ -1346,7 +1346,7 @@ class Battle(object):
             else:
                 locked_by_enm = 0
 
-            # 2611112变更
+            # 261112变更
             # 敌机信息 dict：先铺默认底，再覆盖实时字段，威胁字段最后按需覆盖（默认值统一 state_init_mod）
             _threat_default = self.state_init_mod["enm_info"]
             _enm_info = copy.copy(_threat_default)
@@ -1363,7 +1363,7 @@ class Battle(object):
                 'cos_enm_AA': float(cos(AA_hor)),
                 'sin_enm_AA': float(sin(AA_hor)),
             })
-            # 2611112变更
+            # 261112变更
             # 我方威胁导弹覆盖：取距离该敌机最近的 2 枚已发射导弹
             if enm.id in threat_map:
                 _enm_info['occupied'] = 1
@@ -1483,7 +1483,7 @@ class Battle(object):
             for enm in s["enm_infos"]:
                 enm["enm_dist"] /= 50e3
                 enm["v_enm"] /= 340
-                # 2611112新增
+                # 261112新增
                 # 我方威胁导弹距离/速度归一化
                 enm["threat_distance1"] /= 50e3
                 enm["threat_distance2"] /= 50e3
@@ -1519,7 +1519,7 @@ class Battle(object):
             for enm in s["enm_infos"]:
                 enm["enm_dist"] *= 50e3
                 enm["v_enm"] *= 340
-                # 2611112新增
+                # 261112新增
                 # 我方威胁导弹距离/速度反归一化
                 enm["threat_distance1"] *= 50e3
                 enm["threat_distance2"] *= 50e3

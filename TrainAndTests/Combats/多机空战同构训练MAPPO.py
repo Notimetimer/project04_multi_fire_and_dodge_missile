@@ -71,6 +71,8 @@ if __name__=='__main__':
         K_FACTOR = 16,  # 32 原先振荡太大了
         randomized_birth = 1,
         update_interval_of_batch = 1, # 触发更新至少要经过多少批采样
+        save_interval_of_batch = 10, # 每10个batch保存一次
+        test_interval_dp = int(MAX_DEC_STEPS / 300), # 采集300个测试点
         num_runs = 3, # 测试回合重复次数  3
         device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
         # 场地边界：与测试脚本一致，统一从 init_states.json 加载方形顶点（不再传 None 走环境兜底）
