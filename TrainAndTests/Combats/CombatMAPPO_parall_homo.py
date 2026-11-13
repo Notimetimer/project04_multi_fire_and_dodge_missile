@@ -595,7 +595,8 @@ def run_MLP_simulation(
 
     # 并行环境初始化
     mp.set_start_method('spawn', force=True)
-    test_pool = mp.Pool(processes=3, maxtasksperchild=10)
+    # 测试池进程数 = 规则对手数量：每个规则各占一个进程，全部规则在一个测试窗口内并行跑完
+    test_pool = mp.Pool(processes=len(TEST_RULE_IDS), maxtasksperchild=10)
 
     # 启动并行训练 Worker
     workers = []
