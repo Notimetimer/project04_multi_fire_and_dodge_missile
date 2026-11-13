@@ -19,6 +19,7 @@ dt_decide = 2
 dt_maneuver = 2 # 0.2
 action_cycle_multiplier = int(round(dt_decide / dt_maneuver))  # 2s 决策一次
 MAX_DEC_STEPS = 1e6  # 按决策步定训练开支
+NUM_OF_TEST_POINTS = 50 # 300 # 测试点数
 
 # 仿真环境参数
 max_episode_duration = 15 * 60  # 回合最长时间，单位s
@@ -61,6 +62,7 @@ if __name__ == '__main__':
         K_FACTOR=16,
         randomized_birth=1,
         update_interval_of_batch=1,
+        test_interval_dp=int(MAX_DEC_STEPS / NUM_OF_TEST_POINTS),  # 采集50个测试点
         num_runs=3,  # 测试回合重复次数
         red_init_num=red_init_num,    # 与 env_obs_dims.json 的 ally 槽位对齐
         blue_init_num=blue_init_num,  # 与 env_obs_dims.json 的 enm 槽位对齐

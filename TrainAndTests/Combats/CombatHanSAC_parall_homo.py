@@ -592,7 +592,7 @@ def run_HanSAC_simulation(
 
     # 并行环境初始化
     mp.set_start_method('spawn', force=True)
-    test_pool = mp.Pool(processes=3, maxtasksperchild=10)
+    test_pool = mp.Pool(processes=len(TEST_RULE_IDS), maxtasksperchild=10)
 
     # 启动并行训练 Worker
     workers = []
@@ -853,7 +853,7 @@ def run_HanSAC_simulation(
                             test_worker_han,
                             kwds={'model_state_dict': current_ac_weights, 'rules_num': r_idx,
                                   'env_args': args, 'device_name': 'cpu', 'num_runs': num_runs,
-                                  'vertices': vertices, 'dt_move': dt_move, 'dt_maneuver': dt_maneuver,
+                                  'vertices': vertices, 'dt_move': dt_move, 'dt_maneuver': 0.5, # dt_maneuver, # 测试的时候需要精细，训练的时候可以粗略
                                   'action_cycle_multiplier': action_cycle_multiplier,
                                   'red_init_num': red_init_num, 'blue_init_num': blue_init_num,
                                   'red_init_ammo': red_init_ammo, 'blue_init_ammo': blue_init_ammo})

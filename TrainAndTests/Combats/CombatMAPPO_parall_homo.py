@@ -756,7 +756,7 @@ def run_MLP_simulation(
                             'num_runs': num_runs,
                             'vertices': vertices,
                             'dt_move': dt_move,
-                            'dt_maneuver': 0.2, # dt_maneuver, # 测试的时候需要精细，训练的时候可以粗略
+                            'dt_maneuver': 0.5, # dt_maneuver, # 测试的时候需要精细，训练的时候可以粗略
                             'action_cycle_multiplier': action_cycle_multiplier,
                             'red_init_num': red_init_num,
                             'blue_init_num': blue_init_num,

@@ -1,7 +1,9 @@
 '''
 相对上一个备份点的变化：
 1、敌机信息中加入我方所发射导弹对其的影响；
-2、
+2、记录同阵营下发射的导弹对敌机的占用情况与相对位姿关系
+3、修复def step部分report_move_time_rate重复的问题
+4、删去多余的 e2e = False
 '''
 
 import numpy as np
@@ -769,6 +771,7 @@ class Battle(object):
 
         # 导弹发射不在这里执行，这里只处理运动解算，且发射在step之前
         # 运动按照dt_move更新，结果合并到dt_maneuver中
+        # 指令修正与运动解算放在同一子步内，避免“只做指令修正、不推进运动”的空转循环
 
         for j1 in range(int(report_move_time_rate)):
             # 飞机移动
@@ -786,28 +789,20 @@ class Battle(object):
                     rudder = None
                 # print('target_delta_height',target_delta_height)
                 
-                # 多对多彻底放弃端到端控制
-                e2e = False
-
                 # 防撞地系统
                 if self.shielded:
                     # 临近撞地强制拉起
                     if UAV.alt < self.min_alt_safe + 1e3:
                         target_delta_height = max(self.min_alt_safe + 1e3 - UAV.alt, target_delta_height)
-                        e2e = False
                         target_delta_heading = np.clip(target_delta_heading, -pi/3, pi/3)
 
                     # 不许超过限高
                     if UAV.alt > self.max_alt_safe:
                         target_delta_height = min(self.max_alt_safe - UAV.alt, target_delta_height)
-                        e2e = False
 
                     # 速度过低强制加油门
                     if UAV.speed/340 < 0.5:
-                        if e2e:
-                            UAV.target_speed = 1
-                        else:
-                            UAV.target_speed = max(340, target_speed)
+                        UAV.target_speed = max(340, target_speed)
                 
                 # 不准出界
                 if self.no_out:
@@ -832,41 +827,7 @@ class Battle(object):
                 # angle_to_other_rad = atan2(other_uav.pos_[2] - UAV.pos_[2], other_uav.pos_[0] - UAV.pos_[0])
                 # print(f"UAV {UAV.id}({UAV.side}) target_heading: {np.degrees(UAV.target_heading):.2f} deg, angle_to_other: {np.degrees(angle_to_other_rad):.2f} deg")
                 # print("--")
-
-        # 导弹发射不在这里执行，这里只处理运动解算，且发射在step之前
-        # 运动按照dt_move更新，结果合并到dt_maneuver中
-        for j1 in range(int(report_move_time_rate)):
-            # 飞机移动
-            for UAV, action in zip(self.UAVs, flight_cmds):
-                if UAV.dead:
-                    continue
-                # 输入动作与动力运动学状态
-                target_delta_height = action[0]  # 3000 + (action[0] + 1) / 2 * (10000 - 3000)  # 高度使用绝对数值
-                target_delta_heading = action[1]
-                target_speed = action[2]  # 170 + (action[2] + 1) / 2 * (544 - 170)  # 速度使用绝对数值
-
-                # # 动作平滑，用一阶惯性环节
-                # target_height_changing_limit = 5000/(pi/2) * pi / 180 * 60 if UAV.alt>self.min_alt_safe else np.inf # 每秒限制改变俯仰角度数
-                # target_psi_changing_limit = pi / 180 * 90 # 每秒限制航向误差改变度数
-                # target_speed_changing_limit = np.inf
-                # action[0] = np.clip(action[0], 
-                #     UAV.action_memory[0]-target_height_changing_limit*self.dt_move,
-                #     UAV.action_memory[0]+target_height_changing_limit*self.dt_move,
-                #     )
-                # action[1] = np.clip(action[1], 
-                #     UAV.action_memory[1]-target_psi_changing_limit*self.dt_move,
-                #     UAV.action_memory[1]+target_psi_changing_limit*self.dt_move,
-                #     )
-                # action[2] = np.clip(action[2], 
-                #     UAV.action_memory[2]-target_speed_changing_limit*self.dt_move,
-                #     UAV.action_memory[2]+target_speed_changing_limit*self.dt_move,
-                #     )
-                # UAV.action_memory = np.array([
-                #     action[0],
-                #     action[1],
-                #     action[2],
-                # ])
-
+                # ===== 执行动作 =====
                 # 计算当前子步下，实际机头指向与固定目标点之间的动态差角
                 dynamic_delta_psi = sub_of_radian(UAV.target_heading, UAV.psi)
 
