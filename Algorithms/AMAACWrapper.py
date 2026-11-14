@@ -56,7 +56,9 @@ import torch.nn.functional as F
 
 # TIM/TDM 动作空间常量直接 import 自 HanWrapper（单一事实来源，保证对比方法动作空间逐位一致；
 # 仅只读引用，不修改 HanWrapper）
-from Algorithms.HanWrapper import TIM_ACTIONS, TDM_ACTIONS, N_TIM, N_TDM
+from Algorithms.HanWrapper import (JPO_TIM_ACTIONS as TIM_ACTIONS,
+                                   JPO_TDM_ACTIONS as TDM_ACTIONS,
+                                   N_JPO_TIM as N_TIM, N_JPO_TDM as N_TDM)
 
 _MASK_VAL = 1e8  # 掩码填充值（-inf 量级），与 ActorWithATTN/HanWrapper 口径一致
 
