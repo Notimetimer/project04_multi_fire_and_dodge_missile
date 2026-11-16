@@ -33,7 +33,7 @@ if __name__=='__main__':
     TEMPERATURE = 0.3  # 采样温度：<1更贪婪（机动/目标选取决策趋于确定）
     TEST_INIT_NUM = None # 初始每边飞机数目 None 为默认
     USE_TACVIEW = 2 # 可视化方式
-    ENM_CHOSEN_VISABLE = 1 # 是否可看到敌机选取结果 0, 1
+    ENM_CHOSEN_VISABLE = 0 # 是否可看到敌机选取结果 0, 1
     
     args.max_episode_len = 15*60
     args.R_cage = 60.3e3
