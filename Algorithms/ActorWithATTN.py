@@ -179,14 +179,14 @@ class selector(nn.Module):
             e_e = e_e + enm_chosen * self.enm_chosen_embed
 
         # 异构自注意力：三类实体在统一序列上交互，输出 e_f'/e_e'/e_a'
-        e_f_prime, e_e_prime, e_a_prime = self.het_attn(e_f, e_e, e_a, enm_mask, ally_mask)
+        e_f, e_e, e_a = self.het_attn(e_f, e_e, e_a, enm_mask, ally_mask)
 
         # e_f' 作为两路交叉注意力的 query（squeeze seq 维），e_e'/e_a' 分别作为 key/value 源
-        query_state = e_f_prime.squeeze(1)  # (B, d)
+        query_state = e_f.squeeze(1)  # (B, d)
         # 池化层只负责产生分数，调用方直接从原值切片
-        enm_scores = self.enm_attn(query_state, e_e_prime, enm_mask)
+        enm_scores = self.enm_attn(query_state, e_e, enm_mask)
         # 队友信息需要本机query（QKV 交叉注意力加权聚合为单一嵌入，不做离散选取）
-        e_ally = self.ally_attn(query_state, e_a_prime, ally_mask)
+        e_ally = self.ally_attn(query_state, e_a, ally_mask)
 
         # 敌人选取分布和队友选取分布（temperature 仅测试时调节采样平滑度，默认1不改变分布）
         # 缩放后重新铺掩码兜底：掩码槽位统一用 -_MASK_VAL（有限值），温度缩放不会溢出为 -inf
@@ -204,7 +204,7 @@ class selector(nn.Module):
         ent_enm = enm_dist.entropy()
 
         # 直接从原值 gather（不再从 key_proj 投影后的值 gather）
-        e_enm = e_e_prime.gather(1, enm_idx.reshape(-1, 1, 1).expand(-1, 1, self.embed_dim)).squeeze(1)
+        e_enm = e_e.gather(1, enm_idx.reshape(-1, 1, 1).expand(-1, 1, self.embed_dim)).squeeze(1)
 
         # selected_info: concat((B, d), (B, d), (B, d)) -> (B, 3*d)
         # e_f' 直接输出给 pilot，e_e'/e_a' 经交叉注意力选中后切片输出给 pilot
