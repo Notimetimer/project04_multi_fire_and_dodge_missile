@@ -1,5 +1,11 @@
 """HanWrapper：按 Han et al. (2026) JPO 路线实现的异构 Transformer 策略-价值一体网络。
 
+【动作空间变更】TIM 已删除：机动动作与 ActorWithATTN 同步为 vert(3) × hor(7) = 21 个
+TDM/敌机，单一 masked softmax；开火头与手工禁火门控保持不变。告警规避同样与
+ActorWithATTN._warning 同口径（warning=1 时 hor 只开放三线/置尾/九线的对应子集，
+vert 不受限）。下文"TIM/TDM"的原始
+描述保留作历史对照，现行动作空间以本文件常量 TDM_ACTIONS / N_TDM 为准。
+
 论文对照（Addressing Hybrid Action of BVR Engagement With Joint Policy Optimization, IEEE TAES 2026）：
 - 式(9)：fixed(ego)/enm/ally 三类实体各自独立的嵌入矩阵；
 - 式(11)-(13)：每层 9 个类型专属 Q/K/V 投影；
@@ -7,19 +13,22 @@
 - 式(16)：残差 + LayerNorm；实验部分为 2 层、E=32；
 - 式(17)-(18)：ego 嵌入出 TIM 策略/Q 头；每个敌机嵌入经共享 MLP 出 TDM logits、开火 logit、TDM Q；
 - 式(21)：TIM ∪ TDM 拼接为扁平 logits，带 mask 的单一 softmax；
-- 式(19)(20)(26)：开火 = 每敌机 sigmoid 命中概率，训练时 Bernoulli 采样，测试时 argmax + 阈值。
+- 式(19)(20)(26)：开火 = 每敌机 sigmoid 命中概率，训练/测试均 Bernoulli 采样
+  （不设开火阈值，与 PPO 测试口径一致）。
 - 论文实验超参：2 层注意力 E=32；MLP 头 2 隐层×128；kI=kD=0.8；ξ=1.5；Ω̄1=0.8。
 
-已声明偏差（declared_deviations）：论文式(19)(26) 的开火目标恒为 argmax_j πF,j 的 j*，
-与机动动作解耦；本实现为与 ActorWithATTN 的 enm_idx 语义对齐，TDM 动作的开火目标
-绑定其机动目标敌机，TIM 动作仍取 j*。
+已声明偏差（declared_deviations）：
+1) 论文式(19)(26) 的开火目标恒为 argmax_j πF,j 的 j*，与机动动作解耦；本实现为与
+   ActorWithATTN 的 enm_idx 语义对齐，TDM 动作的开火目标绑定其机动目标敌机，TIM 动作仍取 j*。
+（开火门控不再是偏差：已恢复为与 ActorWithATTN/PPO 完全一致的 8 条限制。）
 
 对比用动作空间（idx ↔ (vert, hor) 双向映射表与合法 mask 表均在本文件内部维护）：
 - TIM（目标无关机动，全局共享组，11 个）：(vert,hor) ∈ {0,1,2}×{7,8,9} ∪ {(1,10),(1,11)}；
 - TDM（目标相关机动，每个敌机一份，6 个）：vert 固定为平飞 1，hor ∈ 0~5；
 - TIM/TDM 的组合互不重叠，(vert,hor) ↔ idx 双向唯一；
 - 扁平机动动作数 A = N_TIM + N_enm × N_TDM（2V2 时 11 + 2×6 = 23）。
-- 手工禁火门控全部保留为开火头的硬 mask（锁定、40°锥、15°仰角、<100km、30s 冷却、弹药、敌机存活）。
+- 开火门控与 ActorWithATTN/PPO 一致：可观测、40°锥、锁定、俯仰<15°、距离<100km、
+  30s 冷却、弹药>0、敌机存活。
 
 接口约定与 Algorithms/ActorWithATTN.py 保持一致：
 - get_action(agent_inputs, mask_inputs, rule_inputs, temperature=...) 返回
@@ -41,31 +50,34 @@ _MASK_VAL = 1e8  # 掩码填充值（-inf 量级），与 ActorWithATTN 口径�
 VERT_DIM = 3
 # 对比环境 maneuver_for_1_enm 支持的水平动作索引范围：[0, 12)
 HOR_DIM_FULL = 12
+# 与 ActorWithATTN 同步的水平维度：0追 1左crank 2三线 3置尾 4九线 5右crank 6回中心
+HOR_DIM = 7
 
+# TDM（目标相关机动）：vert 0~2 × hor 0~6，每个敌机一份，共 21 个
+TDM_ACTIONS = tuple((v, h) for v in range(VERT_DIM) for h in range(HOR_DIM))
+N_TDM = len(TDM_ACTIONS)
+
+# 告警规避掩码（与 Algorithms/ActorWithATTN.py 的 _EVADE_HOR_MASK / _warning 完全同一口径）：
+# warning=1 时按 sin_threat_delta_psi 的符号只放行部分水平动作，vert 三个方向不限制。
+# hor 顺序：0 追踪 1 左crank 2 三线 3 置尾 4 九线 5 右crank 6 回中心
+HOR_EVADE_ALLOW = {1: (2, 3), 0: (2, 3, 4), -1: (3, 4)}
+
+# 以下 JPO 原始动作空间常量仅供对比算法 Algorithms/AMAACWrapper.py 只读引用
+# （TIM 11 + 每敌机 TDM 6）；HanSAC 网络已删除 TIM/TDM 原始动作空间，不再使用它们。
 # TIM（目标无关机动）：全局共享组，共 11 个 (vert, hor)
-TIM_ACTIONS = (
+JPO_TIM_ACTIONS = (
     (0, 7), (0, 8), (0, 9),
     (1, 7), (1, 8), (1, 9),
     (2, 7), (2, 8), (2, 9),
     (1, 10), (1, 11),
 )
-N_TIM = len(TIM_ACTIONS)
+N_JPO_TIM = len(JPO_TIM_ACTIONS)
 
 # TDM（目标相关机动）：action_v 固定为平飞 1，hor 0~5，每个敌机一份，共 6 个
-TDM_ACTIONS = tuple((1, h) for h in range(6))
-N_TDM = len(TDM_ACTIONS)
+JPO_TDM_ACTIONS = tuple((1, h) for h in range(6))
+N_JPO_TDM = len(JPO_TDM_ACTIONS)
 
-# 反向映射：(vert, hor) -> 组内 idx；正向映射直接查 TIM_ACTIONS / TDM_ACTIONS 下标
-TIM_INDEX = {a: i for i, a in enumerate(TIM_ACTIONS)}
-TDM_INDEX = {a: i for i, a in enumerate(TDM_ACTIONS)}
-assert not (set(TIM_INDEX) & set(TDM_INDEX)), 'TIM/TDM 动作组合必须互斥'
-
-# mask 表：完整 (VERT_DIM × HOR_DIM_FULL) 网格上标记哪些 (vert, hor) 合法
-VALID_ACTION_MASK = tuple(
-    tuple((v, h) in TIM_INDEX or (v, h) in TDM_INDEX for h in range(HOR_DIM_FULL))
-    for v in range(VERT_DIM)
-)
-assert sum(sum(row) for row in VALID_ACTION_MASK) == N_TIM + N_TDM
+assert len(set(TDM_ACTIONS)) == N_TDM, 'TDM 动作组合必须唯一'
 
 
 
@@ -134,8 +146,37 @@ def _mlp(in_dim, hidden, out_dim):
                          nn.Linear(hidden, out_dim))
 
 
+class EntityBackbone(nn.Module):
+    """式(9)(11)-(16)：三类实体独立嵌入 + n_layers 层异构自注意力。"""
+
+    def __init__(self, fixed_dim, enm_dim, ally_dim, embed_dim=32, n_layers=2):
+        super().__init__()
+        self.fixed_embed = nn.Linear(fixed_dim, embed_dim)
+        self.enm_embed = nn.Linear(enm_dim, embed_dim)
+        self.ally_embed = nn.Linear(ally_dim, embed_dim)
+        self.attn_layers = nn.ModuleList([HetAttnLayer(embed_dim) for _ in range(n_layers)])
+
+    def forward(self, fixed, enm, ally, enm_mask, ally_mask):
+        e_f = self.fixed_embed(fixed.unsqueeze(1))  # (B,1,E)
+        e_e = self.enm_embed(enm)                   # (B,Ne,E)
+        e_a = self.ally_embed(ally)                 # (B,Na,E)
+        for layer in self.attn_layers:
+            e_f, e_e, e_a = layer(e_f, e_e, e_a, enm_mask, ally_mask)
+        return e_f.squeeze(1), e_e  # (B,E), (B,Ne,E)
+
+
 class HanWrapper(nn.Module):
-    """异构 Transformer 骨干 + 扁平混合动作头 + 双 Q + 开火头（策略与价值共享骨干，式 35 联合反传）。"""
+    """异构 Transformer 骨干 + 扁平混合动作头 + 双 Q + 独立开火头。
+
+    已声明偏差（declared_deviations）：
+    1) 策略与价值各自持有独立骨干、参数完全不共享（标准 SAC 口径）；论文式(35)
+       为共享骨干一次反传。
+    2) 双 Q 覆盖"机动 × 开火"联合动作（每敌机 2·N_TDM 个），开火进入 soft value 与
+       策略损失，使 RL 梯度能更新开火头；论文式(19)(28) 把开火排除在 RL 梯度之外。
+    3) 开火 BCE 监督只更新独立 fire_head（backbone 侧 detach），与 PPO 的
+       supervised_fire_update 同口径；论文式(28) 未指定冻结范围。
+    其余结构（式 9-18）与论文一致。
+    """
     def __init__(self, fixed_dim, enm_shape, ally_shape,
                  embed_dim=32, n_layers=2, head_hidden=128, device='cpu', **_unused):
         super().__init__()
@@ -145,23 +186,27 @@ class HanWrapper(nn.Module):
         self.enm_num = self.enm_shape[0]
         self.ally_num = self.ally_shape[0]
         self.embed_dim = embed_dim
-        self.n_maneuver = N_TIM + self.enm_num * N_TDM  # 扁平机动动作数 A
+        self.n_maneuver = self.enm_num * N_TDM  # 扁平机动动作数 A
 
-        # 式(9)：三类实体独立嵌入
-        self.fixed_embed = nn.Linear(fixed_dim, embed_dim)
-        self.enm_embed = nn.Linear(self.enm_shape[1], embed_dim)
-        self.ally_embed = nn.Linear(self.ally_shape[1], embed_dim)
-        # 2 层异构自注意力
-        self.attn_layers = nn.ModuleList([HetAttnLayer(embed_dim) for _ in range(n_layers)])
+        # 式(9)-(16) 策略骨干：采样、部署、开火监督都只走这一条
+        self.actor_backbone = EntityBackbone(fixed_dim, self.enm_shape[1], self.ally_shape[1],
+                                             embed_dim, n_layers)
+        # critic 独立骨干：与策略骨干不共享参数，避免策略梯度移动 critic 的输入表征
+        self.critic_backbone = EntityBackbone(fixed_dim, self.enm_shape[1], self.ally_shape[1],
+                                              embed_dim, n_layers)
 
-        # 式(17)：ego 嵌入 → TIM 策略头 + TIM 双 Q
-        self.tim_pi_head = _mlp(embed_dim, head_hidden, N_TIM)
-        self.tim_q1_head = _mlp(embed_dim, head_hidden, N_TIM)
-        self.tim_q2_head = _mlp(embed_dim, head_hidden, N_TIM)
-        # 式(18)：敌机嵌入 → 共享 MLP → TDM logits + 开火 logit；TDM 双 Q
-        self.opp_pi_head = _mlp(embed_dim, head_hidden, N_TDM + 1)  # 末位为开火 logit
-        self.opp_q1_head = _mlp(embed_dim, head_hidden, N_TDM)
-        self.opp_q2_head = _mlp(embed_dim, head_hidden, N_TDM)
+        # 式(18)：敌机嵌入 → 共享 MLP → TDM logits；双 Q 覆盖"机动 × 开火"联合动作
+        self.opp_pi_head = _mlp(embed_dim, head_hidden, N_TDM)
+        # 开火头独立一层（与 PPO 的 fire_head 同口径）：监督梯度不回流骨干，RL 梯度经联合 Q 更新
+        self.fire_head = nn.Linear(embed_dim, 1)
+        self.opp_q1_head = _mlp(embed_dim, head_hidden, 2 * N_TDM)
+        self.opp_q2_head = _mlp(embed_dim, head_hidden, 2 * N_TDM)
+        self.n_joint = self.enm_num * 2 * N_TDM  # 联合动作数 |A_man × {0,1}|
+
+        # TDM 的 hor 索引：TDM_ACTIONS 按 v 外层、h 内层排列，故 hor = tdm_idx % HOR_DIM。
+        # 告警规避掩码要靠它把 hor 维的允许集合铺到 21 个 TDM 槽位上。
+        self.register_buffer('tdm_hor_idx', torch.arange(N_TDM, dtype=torch.long) % HOR_DIM,
+                             persistent=False)
 
         self.to(device)
 
@@ -196,15 +241,22 @@ class HanWrapper(nn.Module):
         ally_mask = _mask('ally', self.ally_num)
         return fixed, enm, ally, enm_mask, ally_mask
 
-    def _backbone(self, fixed, enm, ally, enm_mask, ally_mask):
-        e_f = self.fixed_embed(fixed.unsqueeze(1))  # (B,1,E)
-        e_e = self.enm_embed(enm)                   # (B,Ne,E)
-        e_a = self.ally_embed(ally)                 # (B,Na,E)
-        for layer in self.attn_layers:
-            e_f, e_e, e_a = layer(e_f, e_e, e_a, enm_mask, ally_mask)
-        return e_f.squeeze(1), e_e  # (B,E), (B,Ne,E)
+    # ------------------------------------------------------------------ 参数分组（actor/critic 独立优化）
+    def actor_parameters(self):
+        """策略侧参数：策略骨干 + 机动头 + 开火头（开火头由 RL 与 BCE 共同更新）。"""
+        return list(self.actor_backbone.parameters()) + list(self.opp_pi_head.parameters()) \
+            + list(self.fire_head.parameters())
 
-    # ------------------------------------------------------------------ 手工禁火门控（全部保留为硬 mask）
+    def fire_parameters(self):
+        """开火监督专用参数：只有独立 fire_head（BCE 不回流骨干，与 PPO 口径一致）。"""
+        return list(self.fire_head.parameters())
+
+    def critic_parameters(self):
+        """价值侧参数：critic 骨干 + 双 Q 头。"""
+        return list(self.critic_backbone.parameters()) \
+            + list(self.opp_q1_head.parameters()) + list(self.opp_q2_head.parameters())
+
+    # ------------------------------------------------------------------ 手工禁火门控
     def _fire_gate(self, rule_inputs, enm_mask, B, device):
         """返回 (B,N) bool：True=允许开火。规则一条不少：
         可观测、40°锥、已锁定、仰角<15°、距离<100km、30s 冷却、弹药>0、敌机存活。"""
@@ -231,27 +283,52 @@ class HanWrapper(nn.Module):
         gate = torch.as_tensor(gate, dtype=torch.bool, device=device) & enm_mask
         return gate
 
+    # ------------------------------------------------------------------ 告警规避掩码（与 PPO 同口径）
+    def _warning_mask(self, rule_inputs, enm_mask, B, device):
+        """返回 (B, Ne, N_TDM) bool：True=该敌机槽位下的这个 TDM 允许被选中。
+
+        与 ActorWithATTN._warning / _EVADE_HOR_MASK 完全同一口径：
+        warning=1 时水平动作只允许 {2 三线, 3 置尾, 4 九线} 中与 sin_threat_delta_psi
+        符号对应的子集（sign=+1 → {2,3}、sign=0 → {2,3,4}、sign=-1 → {3,4}），
+        垂直动作（vert 0/1/2）不限制；warning=0 时不加任何限制。
+        """
+        allow_hor = np.ones((B, HOR_DIM), dtype=bool)
+        rwr = (rule_inputs or {}).get('RWR_infos') or {}
+        if rwr:
+            warning = np.asarray(rwr.get('warning', np.zeros(B)), dtype=np.float32).reshape(-1)
+            sin_dp = np.asarray(rwr.get('sin_threat_delta_psi', np.zeros(B)),
+                                dtype=np.float32).reshape(-1)
+            # 长度对齐不了（异常输入）时退回"全允许"，保证每行至少有一个可选动作
+            if warning.size == B and sin_dp.size == B:
+                warn_idx = warning > 0
+                sign = np.sign(sin_dp)
+                for s, allow in HOR_EVADE_ALLOW.items():
+                    sel = warn_idx & (sign == s)
+                    if sel.any():
+                        allow_hor[sel] = False
+                        allow_hor[np.flatnonzero(sel)[:, None], np.array(allow)] = True
+
+        allow_hor_t = torch.as_tensor(allow_hor, dtype=torch.bool, device=device)  # (B, HOR_DIM)
+        tdm_allow = allow_hor_t[:, self.tdm_hor_idx]                # (B, N_TDM)，hor 维铺到 TDM
+        return enm_mask.unsqueeze(-1) & tdm_allow.unsqueeze(1)      # (B, Ne, N_TDM)
+
     # ------------------------------------------------------------------ 核心前向（可微，SAC 训练与采样共用）
-    def _forward_policy(self, agent_inputs, mask_inputs, rule_inputs):
-        """策略部分前向：扁平机动 logits、掩码与开火门控；不算 Q 与分组熵。"""
+    def _policy_heads(self, e_e, enm_mask, rule_inputs, B):
+        """式(18)：敌机嵌入 → 扁平机动分布、开火 logits/门控、联合（机动×开火）分布。
+
+        机动 mask = 敌机存活 mask × 告警规避 mask（与 ActorWithATTN 的 hor 规避同一口径），
+        因此告警时"追踪/巡逻/crank"这些会迎弹的水平动作概率严格为 0。
+        """
         device = self.device
-        fixed, enm, ally, enm_mask, ally_mask = self._pack(agent_inputs, mask_inputs)
-        B = fixed.shape[0]
-        e_f, e_e = self._backbone(fixed, enm, ally, enm_mask, ally_mask)
+        # 式(18)：敌机嵌入 → TDM logits；开火 logit 由独立 fire_head 产生
+        tdm_logits = self.opp_pi_head(e_e)                       # (B, Ne, N_TDM)
+        fire_logits_raw = self.fire_head(e_e).squeeze(-1)        # (B, Ne)
 
-        # 式(17)：ego 嵌入 → TIM logits；式(18)：敌机嵌入 → TDM logits + fire logit
-        tim_logits = self.tim_pi_head(e_f)                       # (B, N_TIM)
-        opp_out = self.opp_pi_head(e_e)                          # (B, Ne, N_TDM+1)
-        tdm_logits = opp_out[..., :N_TDM]                        # (B, Ne, N_TDM)
-        fire_logits_raw = opp_out[..., N_TDM]                    # (B, Ne)
+        # 机动掩码：敌机 j 的 N_TDM 个 TDM 槽位随敌机存活/有效掩码，
+        # 并叠加告警规避（warning 时只留三线/置尾/九线里与威胁方位对应的那几个 hor）
+        maneuver_mask = self._warning_mask(rule_inputs, enm_mask, B, device).reshape(B, -1)  # (B, A)
 
-        # 机动掩码：TIM 恒有效；敌机 j 的 N_TDM 个 TDM 槽位随敌机存活/有效掩码
-        tdm_mask = enm_mask.unsqueeze(-1).expand(
-            B, self.enm_num, N_TDM).reshape(B, -1)
-        maneuver_mask = torch.cat(
-            (torch.ones(B, N_TIM, dtype=torch.bool, device=device), tdm_mask), dim=-1)  # (B, A)
-
-        logits_flat = torch.cat((tim_logits, tdm_logits.reshape(B, -1)), dim=-1)  # (B, A)
+        logits_flat = tdm_logits.reshape(B, -1)                  # (B, A)
         logits_flat_masked = logits_flat.masked_fill(~maneuver_mask, -_MASK_VAL)
         log_pi = logits_flat_masked - torch.logsumexp(logits_flat_masked, dim=-1, keepdim=True)
         pi = torch.softmax(logits_flat_masked, dim=-1)
@@ -259,16 +336,33 @@ class HanWrapper(nn.Module):
         # 开火：手工门控作为硬 mask 叠加到 logit 上（sigmoid 后≈0）
         fire_gate = self._fire_gate(rule_inputs, enm_mask, B, device)
         fire_logits = fire_logits_raw.masked_fill(~fire_gate, -_MASK_VAL)
+        p_fire = torch.sigmoid(fire_logits).masked_fill(~enm_mask, 0.0)   # (B, Ne)
+
+        # 联合分布 π(机动, 开火) = π(机动|敌机组) · π(开火|该敌机)
+        # 联合索引 = j·(2·N_TDM) + a·2 + f，与 Q 头的 reshape 顺序一致
+        pi_man = pi.reshape(B, self.enm_num, N_TDM)
+        pi_joint = torch.stack(
+            [pi_man * (1.0 - p_fire).unsqueeze(-1),
+             pi_man * p_fire.unsqueeze(-1)], dim=-1).reshape(B, -1)       # (B, 2A)
 
         out = {
             'logits_flat_masked': logits_flat_masked,  # (B, A)
             'log_pi': log_pi, 'pi': pi,                # (B, A)
+            'pi_joint': pi_joint,                      # (B, 2A) 联合分布（Q/熵用）
             'maneuver_mask': maneuver_mask,
             'fire_logits': fire_logits,                # (B, Ne) 已掩码
             'fire_logits_raw': fire_logits_raw,        # (B, Ne) 未掩码（供 BCE）
+            'fire_prob': p_fire,                       # (B, Ne) 已掩码+死亡置零
             'fire_gate': fire_gate,
             'enm_mask': enm_mask,
         }
+        return out
+
+    def _forward_policy(self, agent_inputs, mask_inputs, rule_inputs):
+        """策略部分前向：扁平机动 logits、掩码与开火门控；不算 Q 与分组熵。"""
+        fixed, enm, ally, enm_mask, ally_mask = self._pack(agent_inputs, mask_inputs)
+        e_f, e_e = self.actor_backbone(fixed, enm, ally, enm_mask, ally_mask)
+        out = self._policy_heads(e_e, enm_mask, rule_inputs, fixed.shape[0])
         return out, e_f, e_e
 
     def forward_actor(self, agent_inputs, mask_inputs, rule_inputs):
@@ -280,42 +374,48 @@ class HanWrapper(nn.Module):
         """返回扁平机动分布、双 Q、per-enm 分组熵等全部训练所需量（带梯度）。
 
         扁平顺序：[TIM(11)] + [敌机0 的 TDM(6), 敌机1 的 TDM(6), ...]；开火 logits 单独返回。
+        （TIM 已删除，实际扁平顺序：[敌机0 的 TDM(21), 敌机1 的 TDM(21), ...]。）
         """
-        out, e_f, e_e = self._forward_policy(agent_inputs, mask_inputs, rule_inputs)
-        B = e_f.shape[0]
-        pi, log_pi, enm_mask = out['pi'], out['log_pi'], out['enm_mask']
-
-        q1 = torch.cat((self.tim_q1_head(e_f),
-                        self.opp_q1_head(e_e).reshape(B, -1)), dim=-1)   # (B, A)
-        q2 = torch.cat((self.tim_q2_head(e_f),
-                        self.opp_q2_head(e_e).reshape(B, -1)), dim=-1)   # (B, A)
-
-        # 分组：G0=TIM，G1..GN=各敌机 TDM；组质量、组内条件 log prob、分组熵（式 29-30 所需）
+        fixed, enm, ally, enm_mask, ally_mask = self._pack(agent_inputs, mask_inputs)
+        B = fixed.shape[0]
+        e_f, e_e = self.actor_backbone(fixed, enm, ally, enm_mask, ally_mask)
+        out = self._policy_heads(e_e, enm_mask, rule_inputs, B)
+        pi_j = out['pi_joint']                      # (B, 2A) 联合（机动×开火）分布
+        enm_mask = out['enm_mask']
         eps = 1e-8
-        group_slices = [slice(0, N_TIM)] + [
-            slice(N_TIM + j * N_TDM, N_TIM + (j + 1) * N_TDM) for j in range(self.enm_num)]
-        pr_g = torch.stack([pi[:, sl].sum(-1) for sl in group_slices], dim=-1)  # (B,1+N)
+        log_pi_j = torch.log(pi_j.clamp_min(eps))   # π=0 的槽位贡献 0·log0=0，无污染
+
+        # critic 走独立骨干（参数不共享）：Q 只依赖 critic 自己的表征
+        e_e_c = self.critic_backbone(fixed, enm, ally, enm_mask, ally_mask)[1]
+        # 每敌机 2·N_TDM 个联合动作，索引顺序与 pi_joint 一致：j·(2N) + a·2 + f
+        q1 = self.opp_q1_head(e_e_c).reshape(B, self.enm_num, N_TDM, 2).reshape(B, -1)
+        q2 = self.opp_q2_head(e_e_c).reshape(B, self.enm_num, N_TDM, 2).reshape(B, -1)
+
+        # 分组：G1..GN=各敌机的联合动作组；组质量、组内条件 log prob、分组熵（式 29-30）
+        group_slices = [
+            slice(j * 2 * N_TDM, (j + 1) * 2 * N_TDM) for j in range(self.enm_num)]
+        pr_g = torch.stack([pi_j[:, sl].sum(-1) for sl in group_slices], dim=-1)  # (B,N)
         pr_g_safe = pr_g.clamp(min=eps)
         log_pr_g = torch.log(pr_g_safe)
 
         log_cond = torch.cat(
-            [log_pi[:, sl] - log_pr_g[:, g:g + 1] for g, sl in enumerate(group_slices)], dim=-1)  # (B,A)
+            [log_pi_j[:, sl] - log_pr_g[:, g:g + 1] for g, sl in enumerate(group_slices)],
+            dim=-1)                                                              # (B,2A)
 
-        # 联合熵 H^J 与组内条件熵 H^I / H^D_j（masked 槽位 pi=0，0*有限值=0 不贡献）
-        H_J = -(pi * log_pi).sum(-1)                                          # (B,)
-        H_I = -(pi[:, group_slices[0]] * log_cond[:, group_slices[0]]).sum(-1) / pr_g_safe[:, 0]
+        # 联合熵 H^J 与组内条件熵 H^D_j（掩码槽位 pi=0，0*有限值=0 不贡献）
+        H_J = -(pi_j * log_pi_j).sum(-1)                                         # (B,)
         H_Dj = torch.stack([
-            -(pi[:, sl] * log_cond[:, sl]).sum(-1) / pr_g_safe[:, j + 1]
-            for j, sl in enumerate(group_slices[1:])], dim=-1)                # (B,Ne)
+            -(pi_j[:, sl] * log_cond[:, sl]).sum(-1) / pr_g_safe[:, j]
+            for j, sl in enumerate(group_slices)], dim=-1)                        # (B,Ne)
         # H^D 对存活敌机取均值（式 37 的 1/Ñ Σ 口径）
         enm_mask_f = enm_mask.to(torch.float32)
         H_D = (H_Dj * enm_mask_f).sum(-1) / enm_mask_f.sum(-1).clamp(min=1.0)
 
         out.update({
-            'q1': q1, 'q2': q2,                        # (B, A)
-            'log_cond': log_cond,                      # (B, A) 组内条件 log prob
-            'pr_g': pr_g,                              # (B, 1+Ne)
-            'H_J': H_J, 'H_I': H_I, 'H_D': H_D, 'H_Dj': H_Dj,
+            'q1': q1, 'q2': q2,                        # (B, 2A)
+            'log_cond': log_cond,                      # (B, 2A) 组内条件 log prob
+            'pr_g': pr_g,                              # (B, Ne)
+            'H_J': H_J, 'H_D': H_D, 'H_Dj': H_Dj,
         })
         return out
 
@@ -323,19 +423,22 @@ class HanWrapper(nn.Module):
         """与预留抽象接口对齐：context = (agent_inputs, mask_inputs, rule_inputs)。"""
         agent_inputs, mask_inputs, rule_inputs = context
         out = self.forward_sac(agent_inputs, mask_inputs, rule_inputs)
-        return NetworkOutput(out['logits_flat_masked'], out['q1'], out['q2'], out['maneuver_mask'])
+        # 抽象接口的 valid_actions 与双 Q 同宽（联合动作：每个机动槽位 × 2 个开火位）
+        joint_mask = out['maneuver_mask'].repeat_interleave(2, dim=-1)
+        return NetworkOutput(out['logits_flat_masked'], out['q1'], out['q2'], joint_mask)
 
     # ------------------------------------------------------------------ 动作解码
     def get_action(self, agent_inputs, mask_inputs, rule_inputs, h=None,
-                   temperature=1.0, deterministic=None, fire_threshold=0.8):
-        """一次扁平采样：TIM ∪ TDM 单一 softmax 采样机动；开火独立 Bernoulli（训练）/阈值（测试）。
+                   temperature=1.0, deterministic=None):
+        """一次扁平采样：TDM 单一 softmax 采样机动；开火一律 Bernoulli 概率采样（不设阈值）。
 
-        解码：flat_idx < N_TIM 走 TIM（目标无关，交互目标取开火概率最高的 j*）；
-        否则走敌机 j 的 TDM 组，enm_idx=j；idx→(vert,hor) 映射表见文件头部常量。
-        deterministic=None 时按 temperature<1 推断（兼容 VsBaseline_MA 测试通路的 temperature=0.3）。
+        解码：flat_idx = enm_idx * N_TDM + tdm_idx，再查 TDM_ACTIONS 得 (vert, hor)。
+        deterministic=None 默认 False：测试通路统一用 temperature=0.3 的 Categorical 采样，
+        不再把 temperature<1 推断成 argmax；开火在训练/测试都用 Bernoulli 采样（与 PPO 测试一致）。
+        deterministic=True 仅保留给需要严格 argmax 的调试用途。
         """
         if deterministic is None:
-            deterministic = bool(temperature < 1.0)
+            deterministic = False
         with torch.no_grad():
             out = self.forward_actor(agent_inputs, mask_inputs, rule_inputs)
             logits = out['logits_flat_masked']
@@ -345,27 +448,22 @@ class HanWrapper(nn.Module):
             else:
                 flat_idx = Categorical(logits=logits / max(temperature, 1e-3)).sample()
 
-            # 解码扁平索引 → TIM 或 (敌机 j 的 TDM) → 查内部映射表得 (vert, hor)
+            # 解码扁平索引 → 敌机 j 的 TDM → 查映射表得 (vert, hor)
             device = logits.device
-            tim_table = torch.as_tensor(TIM_ACTIONS, dtype=torch.long, device=device)
             tdm_table = torch.as_tensor(TDM_ACTIONS, dtype=torch.long, device=device)
-            is_tim = flat_idx < N_TIM
-            tim_idx = flat_idx.clamp(max=N_TIM - 1)
-            r = (flat_idx - N_TIM).clamp(min=0)
-            tdm_enm = torch.div(r, N_TDM, rounding_mode='floor')
-            tdm_idx = r % N_TDM
+            enm_idx = torch.div(flat_idx, N_TDM, rounding_mode='floor')
+            tdm_idx = flat_idx % N_TDM
 
-            # 开火概率（已掩码）：TIM 与目标无关，取开火概率最高的敌机 j* 作为交互目标
+            vert_idx = tdm_table[tdm_idx, 0]
+            hor_idx = tdm_table[tdm_idx, 1]
+
+            # 开火概率（已掩码）：与选中的 TDM 敌机绑定
             fire_logits = out['fire_logits']  # (B, Ne) 已掩码
             p_all = torch.sigmoid(fire_logits)
             p_all = p_all.masked_fill(~out['enm_mask'], 0.0)
             j_star = p_all.argmax(dim=-1)
 
-            enm_idx = torch.where(is_tim, j_star, tdm_enm)
-            vert_idx = torch.where(is_tim, tim_table[tim_idx, 0], tdm_table[tdm_idx, 0])
-            hor_idx = torch.where(is_tim, tim_table[tim_idx, 1], tdm_table[tdm_idx, 1])
-
-            # 对选中的 enm_idx 取开火概率；若该敌机 mask 屏蔽（理论上不会），退化为 j*
+            # 机动掩码已屏蔽死敌机，enm_idx 理论上有效；若无效则退化为 j*
             p_primary = p_all.gather(1, enm_idx.unsqueeze(1)).squeeze(1)
             need_fallback = ~out['enm_mask'].gather(1, enm_idx.unsqueeze(1)).squeeze(1)
             if need_fallback.any():
@@ -374,10 +472,9 @@ class HanWrapper(nn.Module):
                                         p_all.gather(1, j_star.unsqueeze(1)).squeeze(1),
                                         p_primary)
 
-            if deterministic:
-                fire = (p_primary > fire_threshold).to(torch.long)
-            else:
-                fire = Bernoulli(probs=p_primary.clamp(0.0, 1.0)).sample().to(torch.long)
+            # 开火一律按 Bernoulli 采样：开火头由 BCE 监督、概率校准到真实命中率，
+            # 用固定阈值（如 0.8）会让部署时几乎不开火（导致测试恒 0 胜、0 击杀）。
+            fire = Bernoulli(probs=p_primary.clamp(0.0, 1.0)).sample().to(torch.long)
 
         return {
             'enm_idx': enm_idx,
@@ -389,18 +486,20 @@ class HanWrapper(nn.Module):
             'fire_prob_primary': float(p_primary.mean().item()) if p_primary.numel() else float('nan'),
         }
 
-    # ------------------------------------------------------------------ 开火监督（式 28，梯度穿骨干）
+    # ------------------------------------------------------------------ 开火监督（式 28，梯度只到独立 fire_head）
     def evaluate_fire(self, agent_inputs, fire_target_idx, hit,
                       mask_inputs=None, reduction='mean'):
         """Lf：历史开火时刻观测 → 当前网络对该敌机的开火 logit → BCE-with-logits。
 
         监督样本都取自真实开火时刻（门控当时已通过），故用未掩码 raw logit；
         mask_inputs 缺省视为全部槽位有效（记录中不含 mask）。
-        不冻结任何参数：梯度经开火头流穿整个异构骨干（式 35 的 LNet 求和反传）。
+        梯度切断：backbone 输出 detach，只有独立 fire_head 收 BCE 梯度
+        （与 PPO 的 supervised_fire_update 冻结其余参数同口径）；
+        开火头本身仍由 SAC 的联合 Q 策略梯度正常更新。
         """
         fixed, enm, ally, enm_mask, ally_mask = self._pack(agent_inputs, mask_inputs)
-        e_f, e_e = self._backbone(fixed, enm, ally, enm_mask, ally_mask)
-        fire_logits = self.opp_pi_head(e_e)[..., N_TDM]  # (B, Ne) raw
+        e_f, e_e = self.actor_backbone(fixed, enm, ally, enm_mask, ally_mask)
+        fire_logits = self.fire_head(e_e.detach()).squeeze(-1)  # (B, Ne) raw，梯度止于 fire_head
 
         B = fixed.shape[0]
         idx = torch.as_tensor(np.asarray(fire_target_idx), dtype=torch.long, device=self.device).reshape(B)

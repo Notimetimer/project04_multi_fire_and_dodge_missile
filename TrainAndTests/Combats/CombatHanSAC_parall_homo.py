@@ -8,12 +8,13 @@
 
 与 MAPPO 版本的核心差异（论文 JPO 路线）：
 - 离策略：worker 流式回传的转移在 master 侧按 worker lane 堆叠隔离，攒够
-  update_batch_points 个决策点后临时降维写入 D_BFM 回放池（1e5），并按
-  points_per_update（论文口径：每次交互 1 次更新）触发 SAC 更新
+  points_per_update 个决策点后临时降维写入 D_BFM 回放池（1e5），每次触发做
+  update_rounds 次 SAC 更新（等效 sample_update_rate = points_per_update/update_rounds
+  个决策点 1 次更新；论文口径为 1 决策点 : 1 次更新）
   （双 Q + 目标网络 τ=0.05 + 三温度自动调节）；转移用 terminated/truncated
   区分环境终结与时限截断，末端转移不足 min_terminal_samples 时不更新（末端门控）；
 - 开火监督 Lf 不再单独冻结更新，而是并入 LNet 一次反传（式 35）；
-- 测试（test_worker_han）按论文设定：联合分布 argmax + 开火命中概率阈值 0.8。
+- 测试（test_worker_han）开火不设阈值：与 PPO 一致，按 sigmoid 命中概率 Bernoulli 采样。
 
 有意简化/差异（相对 MAPPO 版基础设施）：
 - 不支持 enm_chosen_visable（队友目标黑板，默认本就关闭）；
@@ -97,9 +98,14 @@ def create_initial_state_worker(randomized=0):
 
 
 def worker_process_han(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0.07, pomdp=1, vertices=None):
-    """采样 worker：红方学生共享一个 HanWrapper（同构），蓝方为规则或历史 nn。
-    离策略：每个决策点产出 (obs, a_flat, r, next_obs, terminated/truncated) 转移并即时
-    经 pipe 流式回传 master；回合结束发末端转移（区分 terminated/truncated）与回合统计。"""
+    """SB3 式采样 worker：只执行环境步进，红方学生由 master 集中推理。
+
+    协议（对齐 stable-baselines3 SubprocVecEnv 的同步采样）：
+    - RESET：接收 (opp_info, settings)，加载蓝方历史权重并重置环境，回传红方初始观测（READY）；
+    - STEP：接收 master 批量推理出的红方动作，执行 action_cycle_multiplier 帧仿真，
+      回传 next_obs / reward / done / active，回合结束时附带 episode_end 统计；
+    - 蓝方（规则或历史 nn）仍在 worker 本地推理，避免逐帧下发蓝方动作。
+    """
     import torch
     import numpy as np
     from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward import ChooseStrategyEnv
@@ -123,39 +129,44 @@ def worker_process_han(rank, pipe, args, device_worker, dt_maneuver, seed, dt_mo
     fixed_dim, enm_shape, ally_shape = load_obs_dims()
     # settings 未携带时的初始数量/挂载兜底值（与 init_states.json 一致）
     init_cfg = load_init_states()
-    # 红方学生共享一个 ActorWrapper（同构），蓝方历史 nn 对手按蓝机 id 存放
+    # 蓝方历史 nn 对手按蓝机 id 存放；红方学生不再在 worker 侧持有
     actor_dict = {}
-    student_actor = None
+    episode = None
+
+    def _read_obs_all():
+        agent_inputs_, mask_inputs_, rule_inputs_ = {}, {}, {}
+        for uid in env.UAV_ids:
+            agent_input, mask_input, rule_input = env.get_obs(uid, pomdp=pomdp)
+            agent_inputs_[uid] = agent_input
+            mask_inputs_[uid] = mask_input
+            rule_inputs_[uid] = rule_input
+        return agent_inputs_, mask_inputs_, rule_inputs_
+
+    def _obs_triple(oid, agent_inputs_, mask_inputs_, rule_inputs_):
+        return {'agent_input': agent_inputs_[oid],
+                'mask_input': mask_inputs_[oid],
+                'rule_input': take_some_of_rule_inputs(rule_inputs_[oid])}
 
     while True:
         try:
             cmd, packet = pipe.recv()
-            if cmd == 'RUN_EPISODE':
-                student_actor_weights = packet[0]   # 同构单份 state_dict，全队共享
-                opp_name, opp_type, opp_data = packet[1]
-                settings = packet[2]
-                action_cycle_multiplier = settings['action_cycle_multiplier']
+            if cmd == 'RESET':
+                opp_info, settings = packet
+                opp_name, opp_type, opp_data = opp_info
                 red_init_num = settings.get('red_init_num', init_cfg['red_init_num'])
                 blue_init_num = settings.get('blue_init_num', init_cfg['blue_init_num'])
                 red_init_ammo = settings.get('red_init_ammo', init_cfg['red_init_ammo'])
                 blue_init_ammo = settings.get('blue_init_ammo', init_cfg['blue_init_ammo'])
 
-                # 加载红方学生共享 actor 权重（学生 id 与环境红机 id 一致，全队共用一个实例）
-                if student_actor is None:
-                    student_actor = HanWrapper(
-                        fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape,
-                        device=device_worker)
-                student_actor.load_state_dict(student_actor_weights)
-                student_actor.eval()
-
+                # 蓝方历史 nn 权重仍随 RESET 下发（红方学生权重不再需要）
                 blue_nn_weights = opp_data if (opp_type == 'nn' and opp_data) else {}
-                for id, sd in blue_nn_weights.items():
-                    if id not in actor_dict:
-                        actor_dict[id] = HanWrapper(
+                for uid, sd in blue_nn_weights.items():
+                    if uid not in actor_dict:
+                        actor_dict[uid] = HanWrapper(
                             fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape,
                             device=device_worker)
-                    actor_dict[id].load_state_dict(sd)
-                    actor_dict[id].eval()
+                    actor_dict[uid].load_state_dict(sd)
+                    actor_dict[uid].eval()
 
                 rb, bb = settings['red_birth'], settings['blue_birth']
                 env.reset(red_birth_state=rb, blue_birth_state=bb,
@@ -163,85 +174,71 @@ def worker_process_han(rank, pipe, args, device_worker, dt_maneuver, seed, dt_mo
                           red_init_ammo=red_init_ammo, blue_init_ammo=blue_init_ammo,
                           seed=(settings.get('red_shuffle_seed'), settings.get('blue_shuffle_seed')))
 
-                student_ids = [id for id in env.UAV_ids if env.find_uav_with_id(id).side == 'r']
-                # SAC 转移：obs/next_obs 均为 (agent_input, mask_input, rule_input) 三元组
-                # 流式：不在 worker 侧攒局，闭合一条即发一条（master 侧按 worker lane 堆叠隔离）
-                Last_Obs = {id: None for id in student_ids}
-                Last_Actions = {id: None for id in student_ids}
-                Rewards = {id: 0.0 for id in student_ids}
-
-                def _obs_triple(oid):
-                    return {'agent_input': agent_inputs_[oid],
-                            'mask_input': mask_inputs_[oid],
-                            'rule_input': take_some_of_rule_inputs(rule_inputs_[oid])}
-
-                maneuver_cmds_all = {}
-                target_index_all = {}
-                done = False
-                ep_return = 0.0
-                ep_return_by_id = {id: 0.0 for id in student_ids}
-                count = 0
-
-                for count in range(round(args.max_episode_len / dt_maneuver)):
+                red_ids = sorted([id for id in env.UAV_ids if env.find_uav_with_id(id).side == 'r'])
+                episode = {
+                    'opp_name': opp_name,
+                    'opp_data': opp_data,
+                    'settings': settings,
+                    'blue_nn_weights': blue_nn_weights,
+                    'red_ids': red_ids,
+                    'maneuver_cmds_all': {},
+                    'target_index_all': {},
+                    'done': False,
+                    'ep_return': 0.0,
+                    'return_by_id': {id: 0.0 for id in red_ids},
+                    'decisions': 0,
+                    'frames': 0,
+                    'max_decisions': max(1, int(round(args.max_episode_len / dt_maneuver)
+                                             // settings['action_cycle_multiplier'])),
+                }
+                ai_, mi_, ri_ = _read_obs_all()
+                pipe.send({'type': 'ready', 'rank': rank,
+                           'obs': {id: _obs_triple(id, ai_, mi_, ri_) for id in red_ids}})
+            elif cmd == 'STEP':
+                ep = episode
+                actions = packet['actions']
+                action_cycle_multiplier = ep['settings']['action_cycle_multiplier']
+                last_reward = {id: 0.0 for id in ep['red_ids']}
+                done = ep['done']
+                for frame in range(action_cycle_multiplier):
                     if not env.running or done:
                         break
 
-                    agent_inputs_, mask_inputs_, rule_inputs_ = {}, {}, {}
-                    for id in env.UAV_ids:
-                        agent_input, mask_input, rule_input = env.get_obs(id, pomdp=pomdp)
-                        agent_inputs_[id] = agent_input
-                        mask_inputs_[id] = mask_input
-                        rule_inputs_[id] = rule_input
+                    agent_inputs_, mask_inputs_, rule_inputs_ = _read_obs_all()
 
-                    # 决策点
-                    if count % action_cycle_multiplier == 0:
-                        closed_trans = {}
+                    # 决策帧：应用 master 下发的红方动作；非决策帧沿用上一决策点的机动指令
+                    if frame == 0:
+                        ep['decisions'] += 1
                         for id in env.UAV_ids:
                             UAV = env.find_uav_with_id(id)
                             is_student = UAV.side == 'r'
 
-                            # 上一决策点的转移在此闭环：r 为上一周期结算回报，next_obs 为当前观测
-                            if is_student and Last_Obs[id] is not None and count > 0:
-                                closed_trans[id] = {
-                                    'obs': Last_Obs[id], 'actions': Last_Actions[id],
-                                    'rewards': Rewards[id], 'next_obs': _obs_triple(id),
-                                    'terminateds': 0, 'truncateds': 0,
-                                    'active_masks': not UAV.dead}
-
-                            if is_student or id in blue_nn_weights:
-                                # 神经网络决策（红方学生走共享实例 / 蓝方历史 nn 按 id 取）
-                                act_model = student_actor if is_student else actor_dict[id]
+                            if is_student:
+                                a = actions[id]
+                                ep['maneuver_cmds_all'][id] = [int(a['vert']), int(a['hor'])]
+                                ep['target_index_all'][id] = int(a['enm_idx'])
+                                fire_flag = bool(int(a['fire']))
+                                fire_target = int(a['fire_target'])
+                            elif id in ep['blue_nn_weights']:
+                                # 蓝方历史 nn 对手仍在 worker 本地推理
+                                act_model = actor_dict[id]
                                 rule_input4actor = stack_field([take_some_of_rule_inputs(rule_inputs_[id])])
                                 with torch.no_grad():
                                     actor_out = act_model.get_action(
                                         agent_inputs_[id], mask_inputs_[id], rule_input4actor)
-                                vert = int(actor_out['vert_idx'].item())
-                                hor = int(actor_out['hor_idx'].item())
-                                fire = int(actor_out['fire'].item())
-                                enm_idx = int(actor_out['enm_idx'].item())
+                                ep['maneuver_cmds_all'][id] = [int(actor_out['vert_idx'].item()),
+                                                               int(actor_out['hor_idx'].item())]
+                                ep['target_index_all'][id] = int(actor_out['enm_idx'].item())
+                                fire_flag = bool(int(actor_out['fire'].item()))
                                 fire_target = int(actor_out['fire_target'].item())
-                                maneuver_cmds_all[id] = [vert, hor]
-                                target_index_all[id] = enm_idx
-                                fire_flag = bool(fire)
-                                # 记录动作供经验池使用（仅学生，log_prob 为行为策略真实值，update 直接读取）
-                                if is_student:
-                                    Last_Actions[id] = {
-                                        'flat_idx': int(actor_out['flat_idx'].item()),
-                                        'enm_idx': enm_idx, 'vert': vert, 'hor': hor,
-                                        'fire': fire, 'fire_target': fire_target,
-                                    }
                             else:
                                 # 蓝方规则对手
                                 fly_action, fire_action, _ = basic_rules(
-                                    rule_inputs_[id], mask_inputs_[id], rules_num=opp_data)
-                                maneuver_cmds_all[id] = fly_action['do']
-                                target_index_all[id] = int(fly_action['at'])
+                                    rule_inputs_[id], mask_inputs_[id], rules_num=ep['opp_data'])
+                                ep['maneuver_cmds_all'][id] = fly_action['do']
+                                ep['target_index_all'][id] = int(fly_action['at'])
                                 fire_target = int(fire_action['at'])
                                 fire_flag = bool(fire_action['do'])
-
-                            # 决策瞬间的 obs/states 只按学生记录
-                            if is_student:
-                                Last_Obs[id] = _obs_triple(id)
 
                             if fire_flag:
                                 try:
@@ -250,17 +247,13 @@ def worker_process_han(rank, pipe, args, device_worker, dt_maneuver, seed, dt_mo
                                     pass
                             env.radar_action(id, 1)
 
-                        # 流式回传：本决策点闭合的转移立即发给 master（rank 标记供 lane 隔离）
-                        if closed_trans:
-                            pipe.send({'type': 'trans', 'rank': rank,
-                                       'n_points': 1, 'payload': closed_trans})
-
                     # 执行机动
                     flight_cmds = {}
                     for id in env.UAV_ids:
                         try:
                             flight_cmds[id] = env.maneuver_for_1_enm(
-                                id, target_index_all[id], maneuver_cmds_all[id], rule_inputs_[id])
+                                id, ep['target_index_all'].get(id, 0),
+                                ep['maneuver_cmds_all'].get(id, [1, 0]), rule_inputs_[id])
                         except ValueError:
                             flight_cmds[id] = [0.0, 0.0, 0.0]
                     env.step(flight_cmds.values())
@@ -270,53 +263,58 @@ def worker_process_han(rank, pipe, args, device_worker, dt_maneuver, seed, dt_mo
                     for id in env.UAV_ids:
                         done, reward_dict = env.combat_terminate_and_reward(
                             id=id, action_cycle_multiplier=action_cycle_multiplier)
-                        if id in Rewards:
-                            Rewards[id] = sum(reward_dict.values())
-                            ep_return += Rewards[id]
-                            ep_return_by_id[id] += Rewards[id]
+                        if id in ep['return_by_id']:
+                            last_reward[id] = sum(reward_dict.values())
+                            ep_return += last_reward[id]
+                            ep['return_by_id'][id] += last_reward[id]
+                    ep['ep_return'] = ep_return
+                    ep['frames'] += 1
 
-                # 最后一帧转移：terminated=环境终结（不 bootstrap），truncated=时限截断（照常 bootstrap）
+                ep['done'] = bool(done)
                 terminated = bool(done) or (not env.running)
-                final_next = {}
-                for id in student_ids:
-                    if terminated:
-                        final_next[id] = Last_Obs[id]  # 终止帧 next_obs 不参与 bootstrap
-                    else:
-                        # 截断帧需要真实末端观测用于 bootstrap
+                truncated = (not terminated) and ep['decisions'] >= ep['max_decisions']
+                episode_done = bool(terminated or truncated)
+
+                # 终止帧的 next_obs 不参与 bootstrap（与流式版一致，直接置空由 master 回填）
+                next_obs = None
+                if not terminated:
+                    next_obs = {}
+                    for id in ep['red_ids']:
                         ai_, mi_, ri_ = env.get_obs(id, pomdp=pomdp)
-                        final_next[id] = {'agent_input': ai_, 'mask_input': mi_,
-                                          'rule_input': take_some_of_rule_inputs(ri_)}
-                final_trans = {}
-                for id in student_ids:
-                    UAV = env.find_uav_with_id(id)
-                    final_trans[id] = {
-                        'obs': Last_Obs[id], 'actions': Last_Actions[id],
-                        'rewards': Rewards[id], 'next_obs': final_next[id],
-                        'terminateds': int(terminated), 'truncateds': int(not terminated),
-                        'active_masks': not UAV.dead}
-                pipe.send({'type': 'trans', 'rank': rank, 'n_points': 0,
-                           'payload': final_trans})  # 末端转移即时回传，不计决策点
+                        next_obs[id] = {'agent_input': ai_, 'mask_input': mi_,
+                                        'rule_input': take_some_of_rule_inputs(ri_)}
 
-                outcome = env.r_outcome if env.r_outcome is not None else 0
-                fire_hit_records = []
-                for uav in env.UAVs:
-                    fire_hit_records += uav.fire_hit_records
-
-                pipe.send({
-                    'type': 'episode_end', 'rank': rank,
-                    'metrics': {
-                        'steps': count,
-                        'return': ep_return,
-                        'return_by_id': ep_return_by_id,
-                        'win': outcome == 1,
-                        'lose': outcome == -1,
-                        'draw': outcome == 0,
-                        'BVR_perish_together': all(uav.dead for uav in env.UAVs)
-                                               and env.t <= args.max_episode_len - 10,
-                    },
-                    'opp_name': opp_name,
-                    'fire_hit_records': fire_hit_records,
-                })
+                msg = {
+                    'type': 'step_result', 'rank': rank,
+                    'rewards': dict(last_reward),
+                    'active': {id: not env.find_uav_with_id(id).dead for id in ep['red_ids']},
+                    'next_obs': next_obs,
+                    'done': episode_done,
+                    'terminated': bool(terminated),
+                    'truncated': bool(truncated),
+                }
+                if episode_done:
+                    outcome = env.r_outcome if env.r_outcome is not None else 0
+                    # D_f 收全部飞机（红方 + 蓝方规则/历史 NN）的开火记录，与 PPO 口径一致
+                    fire_hit_records = []
+                    for id in env.UAV_ids:
+                        fire_hit_records += env.find_uav_with_id(id).fire_hit_records
+                    msg['episode_end'] = {
+                        'metrics': {
+                            'steps': ep['frames'],
+                            'return': ep['ep_return'],
+                            'return_by_id': dict(ep['return_by_id']),
+                            'win': outcome == 1,
+                            'lose': outcome == -1,
+                            'draw': outcome == 0,
+                            'BVR_perish_together': all(uav.dead for uav in env.UAVs)
+                                                   and env.t <= args.max_episode_len - 10,
+                        },
+                        'opp_name': ep['opp_name'],
+                        'fire_hit_records': fire_hit_records,
+                    }
+                    episode = None
+                pipe.send(msg)
             elif cmd == 'EXIT':
                 break
         except Exception:
@@ -328,7 +326,8 @@ def test_worker_han(model_state_dict, rules_num, env_args, device_name='cpu', nu
                     vertices=None, dt_move=0.07, dt_maneuver=0.2, action_cycle_multiplier=10,
                     red_init_num=2, blue_init_num=2, red_init_ammo=4, blue_init_ammo=4,
                     temperature=None, enm_chosen_visable=0, use_tacview=0):
-    """周期性规则测试：论文设定 —— 联合分布 argmax + 开火命中概率阈值 0.8（deterministic）。"""
+    """周期性规则测试：与 PPO 测试口径对齐 —— 机动用 temperature=0.3 的 Categorical 采样，
+    开火用 Bernoulli 概率采样（不用 argmax，也不设开火阈值）。"""
     import torch
     import numpy as np
     from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward import ChooseStrategyEnv
@@ -360,6 +359,9 @@ def test_worker_han(model_state_dict, rules_num, env_args, device_name='cpu', nu
     kill_count = die_count = 0
     # 多场共用一条 acmi 时间轴：每场结束后累加 env.t，避免轨迹在 t=0 处重叠
     t_bias = 0
+    # 红方开火概率曲线采集：id -> [(全局时间 s, 开火概率)]；每场的时间区间另存一份供画图分隔
+    fire_prob_series = {}
+    episode_spans = []
 
     for _ in range(num_runs):
         rb, bb = create_initial_state_worker(1)
@@ -369,6 +371,10 @@ def test_worker_han(model_state_dict, rules_num, env_args, device_name='cpu', nu
         done = False
         maneuver_cmds_all, target_index_all = {}, {}
         count = 0
+        # 本场红机 id 固定为 1..red_init_num；先建好曲线槽位，死掉的飞机后续不再追加点
+        for id in env.UAV_ids:
+            if env.find_uav_with_id(id).side == 'r':
+                fire_prob_series.setdefault(int(id), [])
         for count in range(round(env_args.max_episode_len / dt_maneuver)):
             if not env.running:
                 break
@@ -382,14 +388,20 @@ def test_worker_han(model_state_dict, rules_num, env_args, device_name='cpu', nu
                     if UAV.side == 'r':
                         rule_input4actor = stack_field([take_some_of_rule_inputs(rule_inputs_[id])])
                         with torch.no_grad():
+                            # 测试部署口径：temperature=0.3 的 Categorical 采样（非 argmax），
+                            # 开火由 get_action 内部按 Bernoulli 采样（不设阈值）
                             actor_out = actor.get_action(
                                 agent_inputs_[id], mask_inputs_[id], rule_input4actor,
-                                deterministic=True)
+                                temperature=(0.3 if temperature is None else float(temperature)),
+                                deterministic=False)
                         maneuver_cmds_all[id] = [int(actor_out['vert_idx'].item()),
                                                  int(actor_out['hor_idx'].item())]
                         target_index_all[id] = int(actor_out['enm_idx'].item())
                         fire_flag = bool(int(actor_out['fire'].item()))
                         fire_target = int(actor_out['fire_target'].item())
+                        # 记录开火概率（= 所选 TDM 敌机的 sigmoid 命中概率，已做禁火掩码回退）
+                        fire_prob_series[int(id)].append(
+                            (t_bias + float(env.t), float(actor_out['fire_prob_primary'])))
                     else:
                         fly_action, fire_action, _ = basic_rules(
                             rule_inputs_[id], mask_inputs_[id], rules_num=rules_num)
@@ -422,6 +434,7 @@ def test_worker_han(model_state_dict, rules_num, env_args, device_name='cpu', nu
 
         # 单场轨迹收尾：清空残余缓存并把时间轴累加，多场写入同一份 acmi 时首尾相接
         env.clear_render(t_bias=t_bias)
+        episode_spans.append((float(t_bias), float(t_bias + env.t)))
         t_bias += env.t
 
         outcome = env.r_outcome if env.r_outcome is not None else 0
@@ -437,22 +450,29 @@ def test_worker_han(model_state_dict, rules_num, env_args, device_name='cpu', nu
     return {'rules_num': rules_num, 'result': result,
             'wins': wins, 'loses': loses, 'draws': draws,
             'perish_togethers': perish_togethers,
-            'kill_count': kill_count, 'die_count': die_count}
+            'kill_count': kill_count, 'die_count': die_count,
+            # 曲线数据：每个红机的 (时间 s, 开火概率) 序列 + 每场的全局时间区间
+            'fire_prob_series': fire_prob_series, 'episode_spans': episode_spans}
 
 
 def run_HanSAC_simulation(
     collape_recover={"collapsed": False, "best_actor_name": None, "actor_frozen_batchs": 5},
     num_workers=10,
     mission_name='HanSAC无名',
-    lr=1e-4,                    # 论文 lr=1e-4
+    lr=3e-5,                    # 论文 lr=1e-4；对齐 PPO 等效更新次数后总步数大减，改 3e-5
+    alpha_lr=3e-4,              # 温度 lr 与网络解耦：α 只在 actor 步更新，有效步数少，需更大步长
     max_steps_of_maneuver=4 * 165e4,
     gamma=0.9,                  # 论文 γ=0.9
     tau=0.05,                   # 论文式(39) τ=0.05
-    batch_size=128,             # 论文 batch=128
-    buffer_size=int(1e5),       # 论文 |D_BFM|=1e5
+    batch_size=512,             # 论文 batch=128；更新次数减少后放大批以降低梯度噪声
+    buffer_size=40000,          # 论文 |D_BFM|=1e5；此处按 2V2 约 80 局容量取 40000
     min_terminal_samples=32,    # 末端门控：池中 terminated+truncated 帧累计达该数才开始更新
-    update_batch_points=16,     # 每攒够多少决策点触发一次 lane flush + 梯度更新
-    points_per_update=1,        # 论文口径：每次交互（决策点）对应 1 次梯度更新
+    points_per_update=128,    # 每攒够多少决策点触发一次 lane flush + 梯度更新
+    update_rounds=6,          # 每次触发做多少次梯度更新（= points_per_update/sample_update_rate）
+    actor_update_every=5,       # actor+温度每 5 次 critic 更新做一次（critic:actor ≥ 5:1）
+    fire_update_every=1,        # 开火 BCE 每次更新都做（对齐 PPO 开火头逐梯度步更新）
+    alpha_min=0.02,             # 温度下界：防止 α 沿"熵高→降 α"一路塌到 0
+    max_grad_norm=5.0,          # actor/critic 各自梯度裁剪阈值（两者独立反传、独立裁剪）
     action_cycle_multiplier=1,
     dt_move=0.07,
     dt_maneuver=0.2,
@@ -530,10 +550,12 @@ def run_HanSAC_simulation(
     # 策略-价值一体网络 + SAC 智能体（含目标网络与三个温度）
     ac = HanWrapper(fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device=device)
     agent = HANSACHybrid(
-        ac, lr=lr, gamma=gamma, tau=tau, batch_size=batch_size,
+        ac, lr=lr, alpha_lr=alpha_lr, gamma=gamma, tau=tau, batch_size=batch_size,
         buffer_size=buffer_size, fire_buffer_size=fire_buffer_size,
         fire_batch_size=fire_batch_size, min_terminal_samples=min_terminal_samples,
-        kI=kI, kD=kD, device=device)
+        kI=kI, kD=kD, device=device,
+        alpha_min=alpha_min, max_grad_norm=max_grad_norm,
+        actor_update_every=actor_update_every, fire_update_every=fire_update_every)
 
     # 日志目录
     logs_dir = os.path.join(project_root, "logs/combat")
@@ -640,6 +662,11 @@ def run_HanSAC_simulation(
     # elite json 里残留的 __ 键必须剔除，否则会被当成对手采样
     elite_elo_ratings = {k: v for k, v in elite_elo_ratings.items()
                          if not k.startswith("__") and _opp_ckpt_exists(k)}
+    # 自博弈关闭（hist_agent_as_opponent=0）：对手池只保留预设规则对手；
+    # 即使续训目录里残留历史 NN 快照，也一律剔除，保证池内不出现自博弈对手
+    if not hist_agent_as_opponent:
+        elite_elo_ratings = {k: v for k, v in elite_elo_ratings.items()
+                             if k.startswith("Rule")}
 
     main_agent_elo = available_opps.get("__CURRENT_MAIN__", 1200)
 
@@ -673,11 +700,11 @@ def run_HanSAC_simulation(
 
     # 主循环
     while True:
-        # ============ 流式主循环（方案 A） ============
-        # worker 按回合接收 assignment（权重按回合粒度同步），回合内每个决策点把闭合转移
-        # 即时流式回传；master 事件驱动收取，转移在各 worker 的 lane 内按时间维堆叠（worker
-        # 间数据隔离），攒够 update_batch_points 个决策点后堆叠→push_stacked 临时降维入池，
-        # 并按 points_per_update（论文口径 1 决策点 : 1 次更新）触发 SAC 更新。
+        # ============ SB3 式同步步级主循环 ============
+        # 与 SB3 VecEnv 一致：master 集中推理红方动作 → 向所有活跃 worker 发 STEP →
+        # 收齐全部回包（步级栅栏）→ 用 master 持有的 obs/action 构造转移并写入各 worker lane；
+        # num_timesteps 按 n_envs（实际被 step 的 worker 数）累加，达到 points_per_update
+        # （train_freq）后做 update_rounds（gradient_steps）次 SAC 更新。
         decision_points_total = int(total_steps_of_maneuver / action_cycle_multiplier)
         next_test_dp = decision_points_total + test_interval_dp
         pending_points = 0
@@ -689,14 +716,16 @@ def run_HanSAC_simulation(
         perf_win_update_time = 0.0
         perf_win_flushes = 0
         local_trans = {r: {} for r in range(num_workers)}  # rank -> uid -> {field: [t=0..]}
+        lane_obs = {}              # rank -> uid -> 当前观测三元组（master 侧持有，供集中推理）
+        active_ranks = set()       # 当前有在跑回合、可继续 step 的 worker
         episodes_window = []      # 本测试窗口内的 (opp_name, metrics)
         last_update_metrics = {}
         gate_notices = 0
         stopping = False
         idle_ranks = set()
 
-        def make_assignment(rank):
-            """PFSP 选对手 + 出生状态 + 最新权重，构成一局 assignment（回合粒度权重同步）。"""
+        def make_episode_setup(rank):
+            """PFSP 选对手 + 出生状态，构成一局的 RESET 参数（红方权重由 master 集中持有，不再下发）。"""
             # 对手池：采样一律从限定容量的 elite_elo_ratings（真实 Elo 表）取
             effective_pool = elite_elo_ratings
 
@@ -745,76 +774,178 @@ def run_HanSAC_simulation(
                 'red_shuffle_seed': int(np.random.randint(0, 2**31 - 1)),
                 'blue_shuffle_seed': int(np.random.randint(0, 2**31 - 1)),
             }
-            current_ac_weights = {k: v.cpu() for k, v in ac.state_dict().items()}
-            return ('RUN_EPISODE', (current_ac_weights, opp_info, settings))
+            return opp_info, settings
 
+        def _check_msg(msg, r):
+            if isinstance(msg, dict) and 'error' in msg:
+                for p in workers:
+                    p.terminate()
+                raise RuntimeError(f"Worker {r} crashed with error:\n{msg['error']}")
+
+        def _collect_ready(ranks):
+            """收齐指定 worker 的 READY（初始观测），用于 RESET 后的屏障对齐。"""
+            pending_r = set(ranks)
+            obs = {}
+            while pending_r:
+                for conn in conn_wait([pipes[r] for r in pending_r]):
+                    r = pipes.index(conn)
+                    try:
+                        msg = conn.recv()
+                    except EOFError:
+                        for p in workers:
+                            p.terminate()
+                        raise RuntimeError(f"Worker {r} crashed silently.")
+                    _check_msg(msg, r)
+                    obs[r] = msg['obs']
+                    pending_r.discard(r)
+            return obs
+
+        # ---- 初始化：向全部 worker 发 RESET，收齐首帧观测 ----
         for r in range(num_workers):
-            pipes[r].send(make_assignment(r))
+            opp_info, settings = make_episode_setup(r)
+            pipes[r].send(('RESET', (opp_info, settings)))
+        lane_obs.update(_collect_ready(range(num_workers)))
+        active_ranks.update(range(num_workers))
 
         while True:
             # 目标达成且所有 worker 已空闲（回合自然结束、未再派新局）→ 退出到提示符
             if stopping and len(idle_ranks) == num_workers:
                 break
-            ready = conn_wait(pipes)
-            for conn in ready:
-                r = pipes.index(conn)
-                try:
-                    msg = conn.recv()
-                except EOFError:
-                    for p in workers:
-                        p.terminate()
-                    raise RuntimeError(f"Worker {r} crashed silently.")
-                if isinstance(msg, dict) and 'error' in msg:
-                    for p in workers:
-                        p.terminate()
-                    raise RuntimeError(f"Worker {r} crashed with error:\n{msg['error']}")
+            if not active_ranks:
+                break
 
-                if msg.get('type') == 'trans':
-                    if stopping:
-                        continue
-                    lane = local_trans[r]
-                    for uid, tr in msg['payload'].items():
+            # ---- 1) master 集中推理：跨 worker 批量前向（红方学生共享同一份权重）----
+            act_batch = {k: [] for k in ('fixed', 'enm', 'ally')}
+            mask_batch = {k: [] for k in ('enm', 'ally')}
+            rule_batch = []
+            order = []   # [(rank, uid)]，与 batch 行索引一一对应
+            for r in sorted(active_ranks):
+                for uid in sorted(lane_obs[r].keys()):
+                    obs = lane_obs[r][uid]
+                    for k in act_batch:
+                        act_batch[k].append(np.asarray(obs['agent_input'][k]))
+                    for k in mask_batch:
+                        mask_batch[k].append(np.asarray(obs['mask_input'][k]))
+                    rule_batch.append(obs['rule_input'])
+                    order.append((r, uid))
+
+            action_packets = {r: {} for r in active_ranks}
+            if order:
+                actor_out = ac.get_action(
+                    {k: np.stack(v) for k, v in act_batch.items()},
+                    {k: np.stack(v) for k, v in mask_batch.items()},
+                    stack_field(rule_batch))
+                for i, (r, uid) in enumerate(order):
+                    action_packets[r][uid] = {
+                        'flat_idx': int(actor_out['flat_idx'][i]),
+                        'enm_idx': int(actor_out['enm_idx'][i]),
+                        'vert': int(actor_out['vert_idx'][i]),
+                        'hor': int(actor_out['hor_idx'][i]),
+                        'fire': int(actor_out['fire'][i]),
+                        'fire_target': int(actor_out['fire_target'][i]),
+                    }
+
+            # ---- 2) 同步步级栅栏：所有活跃 worker 各推进一个决策点 ----
+            stepped_ranks = sorted(active_ranks)
+            for r in stepped_ranks:
+                pipes[r].send(('STEP', {'actions': action_packets[r]}))
+
+            replies = {}
+            pending_r = set(stepped_ranks)
+            while pending_r:
+                for conn in conn_wait([pipes[r] for r in pending_r]):
+                    r = pipes.index(conn)
+                    try:
+                        msg = conn.recv()
+                    except EOFError:
+                        for p in workers:
+                            p.terminate()
+                        raise RuntimeError(f"Worker {r} crashed silently.")
+                    _check_msg(msg, r)
+                    replies[r] = msg
+                    pending_r.discard(r)
+
+            # ---- 3) 收包 → master 用 (obs, action, reward, next_obs, done) 构造转移 ----
+            # num_timesteps 按 n_envs（实际被 step 的 worker 数）累加，与 SB3 口径一致
+            if not stopping:
+                pending_points += len(replies)
+                perf_win_dp += len(replies)
+                decision_points_total += len(replies)
+                total_steps_of_maneuver = decision_points_total * action_cycle_multiplier
+
+            reset_ranks = []
+            for r in stepped_ranks:
+                msg = replies[r]
+                prev_obs = lane_obs[r]
+                sent_actions = action_packets[r]
+                next_obs = msg.get('next_obs')
+
+                if not stopping:
+                    for uid in prev_obs:
+                        action = sent_actions.get(uid)
+                        if action is None:
+                            continue
+                        tr = {
+                            'obs': prev_obs[uid],
+                            'actions': action,
+                            'rewards': float(msg['rewards'].get(uid, 0.0)),
+                            # terminated 帧不 bootstrap：next_obs 置空时回填当前观测（与流式版一致）
+                            'next_obs': next_obs[uid] if next_obs else prev_obs[uid],
+                            'terminateds': int(msg['terminated']),
+                            'truncateds': int(msg['truncated']),
+                            'active_masks': bool(msg['active'].get(uid, True)),
+                        }
+                        lane = local_trans[r]
                         slot = lane.setdefault(uid, {k: [] for k in tr})
                         for k, v in tr.items():
                             slot[k].append(v)
-                    pending_points += msg['n_points']
-                    perf_win_dp += msg['n_points']
-                    decision_points_total += msg['n_points']
-                    total_steps_of_maneuver = decision_points_total * action_cycle_multiplier
 
-                elif msg.get('type') == 'episode_end':
-                    metrics = msg['metrics']
-                    opp_name = msg['opp_name']
-                    episodes_window.append((opp_name, metrics))
-                    fire_records = [x for x in msg.get('fire_hit_records', [])
-                                    if x.get('hit_record') is not None]
-                    agent.push_fire_records(fire_records)
+                if not msg['done']:
+                    lane_obs[r] = next_obs
+                    continue
 
-                    # ELO 更新：仅当对手已入 elite 池时才更新双方 Elo；未入池对手不参与 Elo 记账
-                    actual_score = 1.0 if metrics['win'] else (0.0 if metrics['lose'] else 0.5)
-                    if opp_name in elite_elo_ratings:
-                        prev_main_elo = main_agent_elo
-                        adv_elo = elite_elo_ratings[opp_name]
-                        main_agent_elo = update_elo(prev_main_elo, adv_elo, actual_score, K_FACTOR)
-                        new_adv_elo = update_elo(adv_elo, prev_main_elo, 1.0 - actual_score, K_FACTOR)
-                        available_opps["__CURRENT_MAIN__"] = main_agent_elo
-                        elite_elo_ratings[opp_name] = new_adv_elo
+                # ---- 回合结束：窗口统计 / 开火监督 / Elo（沿用原基础设施） ----
+                ep = msg['episode_end']
+                metrics = ep['metrics']
+                opp_name = ep['opp_name']
+                episodes_window.append((opp_name, metrics))
+                fire_records = [x for x in ep.get('fire_hit_records', [])
+                                if x.get('hit_record') is not None]
+                agent.push_fire_records(fire_records)
 
-                    if decision_points_total * action_cycle_multiplier >= current_max_steps_of_maneuver:
-                        stopping = True
-                    if stopping:
-                        idle_ranks.add(r)   # 不再派新局，worker 阻塞等待即为安全空闲
-                    else:
-                        pipes[r].send(make_assignment(r))
+                # ELO 更新：仅当对手已入 elite 池时才更新双方 Elo；未入池对手不参与 Elo 记账
+                actual_score = 1.0 if metrics['win'] else (0.0 if metrics['lose'] else 0.5)
+                if opp_name in elite_elo_ratings:
+                    prev_main_elo = main_agent_elo
+                    adv_elo = elite_elo_ratings[opp_name]
+                    main_agent_elo = update_elo(prev_main_elo, adv_elo, actual_score, K_FACTOR)
+                    new_adv_elo = update_elo(adv_elo, prev_main_elo, 1.0 - actual_score, K_FACTOR)
+                    available_opps["__CURRENT_MAIN__"] = main_agent_elo
+                    elite_elo_ratings[opp_name] = new_adv_elo
+
+                if decision_points_total * action_cycle_multiplier >= current_max_steps_of_maneuver:
+                    stopping = True
+                if stopping:
+                    idle_ranks.add(r)   # 不再派新局，worker 阻塞等待即为安全空闲
+                    active_ranks.discard(r)
+                else:
+                    opp_info, settings = make_episode_setup(r)
+                    pipes[r].send(('RESET', (opp_info, settings)))
+                    reset_ranks.append(r)
+
+            # 回合结束的 worker 重置后重入屏障（下一轮与其余 worker 同时 step）
+            if reset_ranks:
+                lane_obs.update(_collect_ready(reset_ranks))
+                active_ranks.update(reset_ranks)
 
             # ---- 步数触发：lanes 堆叠 → push_stacked 临时降维入池 → 按比例更新 ----
-            if pending_points >= update_batch_points:
+            if pending_points >= points_per_update:
                 for r, lane in local_trans.items():
                     for uid, fields in lane.items():
                         if fields['terminateds']:
                             agent.push_stacked({k: stack_field(v) for k, v in fields.items()})
                 local_trans = {r: {} for r in range(num_workers)}
-                n_up = max(1, pending_points // max(1, int(points_per_update)))
+                n_up = max(1, int(update_rounds))
                 _t_upd = time.perf_counter()
                 last_update_metrics = agent.update(n_updates=n_up).metrics  # 末端门控未开时返回 {}
                 perf_win_update_time += time.perf_counter() - _t_upd
@@ -923,12 +1054,15 @@ def run_HanSAC_simulation(
                     logger.add("train/8 loss_pi", m.get('loss_pi', 0.0), step_axis)
                     logger.add("train/9 H_J", m.get('H_J', 0.0), step_axis)
                     logger.add("train/9 H_D", m.get('H_D', 0.0), step_axis)
-                    logger.add("train/9 H_I", m.get('H_I', 0.0), step_axis)
                     logger.add("train/9 B_J", m.get('B_J', 0.0), step_axis)
                     logger.add("train/10 alpha_J", m.get('alpha_J', 0.0), step_axis)
                     logger.add("train/10 alpha_D", m.get('alpha_D', 0.0), step_axis)
-                    logger.add("train/10 alpha_I", m.get('alpha_I', 0.0), step_axis)
                     logger.add("train/supervised_fire_loss", m.get('loss_fire', 0.0), step_axis)
+                    # 开火概率统计：只统计决策选中目标位且 fire_gate=True 的样本（禁火位不参与）
+                    logger.add("train/12 max_fire_prob", m.get('fire_prob_max', float('nan')), step_axis)
+                    logger.add("train/13 min_fire_prob", m.get('fire_prob_min', float('nan')), step_axis)
+                    logger.add("train/14 mean_fire_prob", m.get('fire_prob_mean', float('nan')), step_axis)
+                    logger.add("train/15 std_fire_prob", m.get('fire_prob_std', float('nan')), step_axis)
                     logger.add("train_plus/fire_buffer_size", m.get('fire_buffer', 0.0), step_axis)
 
                 print(f"Step {total_steps_of_maneuver}: Batch WinRate {batch_wins}/{n_win_eps}, "
@@ -945,16 +1079,17 @@ def run_HanSAC_simulation(
                 x_elo_diff = main_agent_elo - avg_pool_elo
                 logger.add("train_plus/elo_diff_x", x_elo_diff, step_axis)
 
-                # 定期落盘：actor_rein{batch}.pt 供自博弈池加载，han_agent.pt 供续训
+                # 每个测试窗口都落盘：actor_rein{batch}.pt 供自博弈池加载，han_agent.pt 供续训
+                # （原先每 10 个窗口才存一次，1M 决策点只有 50 个窗口 → 池里只有 5 个历史对手；
+                #   改为每窗口保存一次后，1M 决策点即可攒满 MAX_HISTORY_SIZE=50）
                 actor_team_key = f"actor_rein{batch_idx}"
-                if batch_idx % 10 == 0:
-                    torch.save(ac.state_dict(), os.path.join(log_dir, f"{actor_team_key}.pt"))
-                    torch.save(agent.state_dict(), os.path.join(log_dir, "han_agent.pt"))
-                    print(f"Saved Checkpoint team: {actor_team_key}")
-                    # 每次落盘新的 actor_rein 时记录：横轴当前步数，纵轴 batch_idx
-                    logger.add("checkpoint/actor_rein_idx", batch_idx, step_axis)
-                    # 只注册已落盘的版本到可用注册表（版本号=batch_idx），保证采样时总能加载到权重
-                    available_opps[actor_team_key] = batch_idx
+                torch.save(ac.state_dict(), os.path.join(log_dir, f"{actor_team_key}.pt"))
+                torch.save(agent.state_dict(), os.path.join(log_dir, "han_agent.pt"))
+                print(f"Saved Checkpoint team: {actor_team_key}")
+                # 每次落盘新的 actor_rein 时记录：横轴当前步数，纵轴 batch_idx
+                logger.add("checkpoint/actor_rein_idx", batch_idx, step_axis)
+                # 只注册已落盘的版本到可用注册表（版本号=batch_idx），保证采样时总能加载到权重
+                available_opps[actor_team_key] = batch_idx
 
                 # 保存开火监督数据 buffer
                 fire_buffer_path = os.path.join(log_dir, "fire_records_buffer.pkl")
@@ -1116,8 +1251,8 @@ if __name__ == '__main__':
             batch_size=32,
             buffer_size=int(1e5),
             min_terminal_samples=4,      # 调试：4 条末端帧即开门控，几局内就能看到首次更新
-            update_batch_points=16,
-            points_per_update=1,
+            points_per_update=16,
+            update_rounds=16,
             action_cycle_multiplier=action_cycle_multiplier,
             dt_move=0.07,
             max_episode_duration=15 * 60,
@@ -1145,15 +1280,17 @@ if __name__ == '__main__':
         run_kwargs = dict(
             num_workers=15,
             mission_name='HanSAC_homo_JPO',
-            lr=1e-4,
+            lr=3e-5,
             max_steps_of_maneuver=MAX_DEC_STEPS * action_cycle_multiplier,
             gamma=0.9,
             tau=0.05,
-            batch_size=128,
-            buffer_size=int(1e5),
+            batch_size=512,
+            buffer_size=40000,
             min_terminal_samples=32,
-            update_batch_points=16,
-            points_per_update=1,
+            points_per_update=128,
+            update_rounds=6,
+            actor_update_every=5,
+            fire_update_every=1,
             action_cycle_multiplier=action_cycle_multiplier,
             dt_move=0.07,
             max_episode_duration=15 * 60,
