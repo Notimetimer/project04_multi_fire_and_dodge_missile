@@ -20,6 +20,9 @@
 2. 方案3 的敌机/队友选取不可训练：规则 logits 是观测常量，log_prob_enm 只用于接口与
    PPO 比率对齐，不产生策略梯度。这是方案3的既定假设，不是实现缺陷。
 3. 不使用 agent_inputs['enm_chosen']：规则选取不依赖"队友已选"信息；接口仍接受该键以兼容回放。
+4. 退化处理：全部敌机死亡时固定指向 0 号槽位（最小 id），该行 log_prob_enm=0、ent_enm=0；
+   主方法 ActorWithATTN 在该状态下会退化为全掩码均匀分布。此差异只影响无存活敌机的退化步，
+   正常战斗的观测/动作/奖励/评测协议不变（规则对手 BasicRules_Homo 同样使用 at=0）。
 """
 
 import numpy as np
@@ -80,6 +83,15 @@ class ActorMLPHeads(nn.Module):
         enm_logits = -priority / temperature
         if enm_mask is not None:
             enm_logits = enm_logits.masked_fill(~enm_mask, -_MASK_VAL)
+        # 全部敌机死亡：无合法目标，固定指向 0 号槽位（最小 id，环境默认填充）。
+        # 该行 logits 变为 [0, -1e8, ...]，log_prob=0、熵=0，与规则对手
+        # BasicRules_Homo 无存活敌机时 at=0 的处理一致。
+        no_valid_enm = None if enm_mask is None else ~enm_mask.any(dim=-1, keepdim=True)
+        if no_valid_enm is not None and no_valid_enm.any() and enm_logits.shape[-1] > 0:
+            fallback = torch.full_like(enm_logits, -_MASK_VAL)
+            fallback[..., 0] = 0.0
+            enm_logits = torch.where(no_valid_enm, fallback, enm_logits)
+
         enm_categorical = Categorical(logits=enm_logits)
 
         if enm_idx is None:
