@@ -1,341 +1,342 @@
+"""ActorMLPHeads.py —— 方案3 baseline：规则目标选取（敌机采样 / 队友距离优先聚合）。
+
+与主方法 Algorithms/ActorWithATTN.py 的对照关系（对比公平性）：
+- pilot 直接从 ActorWithATTN 复用（不复制、不改动），机动/开火分支与主方法逐层一致；
+- 观测 (fixed/enm/ally)、mask、规则输入、动作语义、log_prob/entropy 口径、checkpoint 选择规则一致；
+- 唯一被替换的是 selector：本 baseline 不训练目标选取。
+
+规则（字段序取自 Envs/BattleHomo.py 的 ENM_KEYS / ALLY_KEYS；enm 20 维，ally 9 维）：
+- 敌机：距离最小优先（enm_dist，索引 6），|AA| 最大次优先（cos_enm_AA，索引 9，
+  以 1-|cos_enm_AA| 作为极小罚项）；优先级越高 → logits 越大；
+  随后 Categorical 采样，保留 enm_idx / log_prob_enm / ent_enm 的对外接口，
+  但 logits 不含可训练参数（与主方法的"学习型指针网络打分"相对照）。
+- 队友：仅距离最小（ally_dist，索引 4），以 softmax(-ally_dist / temperature) 加权聚合，
+  不做离散选取（与主方法的交叉注意力聚合相对照，且同样支持掩码）。
+
+声明偏差（declared_deviations，合并/写结论前须同步进 run_config.json）：
+1. selector 由"异构自注意力 + 交叉注意力指针网络"改为"规则打分 + Categorical 采样 /
+   规则 softmax 聚合"；实体表示仍由可训练线性嵌入得到（与主方法 selector 的 embed 层同量级），
+   pilot 完全复用。因此本 baseline 对比的是目标选取机制，而非表示容量。
+2. 方案3 的敌机/队友选取不可训练：规则 logits 是观测常量，log_prob_enm 只用于接口与
+   PPO 比率对齐，不产生策略梯度。这是方案3的既定假设，不是实现缺陷。
+3. 不使用 agent_inputs['enm_chosen']：规则选取不依赖"队友已选"信息；接口仍接受该键以兼容回放。
+"""
+
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.distributions import Bernoulli, Categorical
-import torch.nn.functional as F
 
+# pilot / 掩码常量与主方法共用同一份实现（原件只读，不复制）
+from Algorithms.ActorWithATTN import pilot, _MASK_VAL
 
-BRANCH_evade = 0
-BRANCH_B = 1
-BRANCH_attack = 2
-BRANCH_idle = 3
-HORIZONTAL_ACTIONS = (0, 1, 3, 5)
-# 分支语义名：evade=规避(有告警), B=未定义, attack=攻击(有敌机), idle=待命/无动作
-BRANCH_NAMES = ('evade', 'B', 'attack', 'idle')
+# ENM_KEYS / ALLY_KEYS 中的字段索引（顺序见 Envs/BattleHomo.py）
+_ENM_DIST_IDX = 6      # enm_dist
+_ENM_AA_IDX = 9        # cos_enm_AA
+_ALLY_DIST_IDX = 4     # ally_dist
+# enm_dist / ally_dist 在环境中已按 50 km 缩放；1e-3 约等于 50 m，
+# 只用于"近等距"时让 |AA| 次优先，不影响距离主导关系。
+_AA_TIE_BREAK = 1e-3
 
-
-# FIXME 多次重复调用forward方法，没有必要这样，应该改回一次调用的方式
 
 class ActorMLPHeads(nn.Module):
-    def __init__(self, hidden_dims=(256, 256), fixed_dim=28, enm_shape=(2, 10), ally_shape=(1, 9)):
+    """方案3 的规则选择器：可训练实体嵌入 + 不可训练规则打分/聚合。
+
+    输出契约与 ActorWithATTN.selector 完全一致：
+    (selected_info, enm_idx, mini_rule_inputs, log_prob_enm, ent_enm)
+    """
+
+    def __init__(self, fixed_dim, enm_shape, ally_shape, embed_dim=64):
         super().__init__()
         self.fixed_dim = fixed_dim
         self.enm_shape = enm_shape
         self.ally_shape = ally_shape
         self.enm_num = enm_shape[0]
-        self.input_dim = fixed_dim + int(np.prod(enm_shape)) + int(np.prod(ally_shape))
+        self.ally_num = ally_shape[0]
+        self.embed_dim = embed_dim
 
-        layers = []
-        previous_dim = self.input_dim
-        for hidden_dim in hidden_dims:
-            layers.extend((nn.Linear(previous_dim, hidden_dim), nn.ReLU()))
-            previous_dim = hidden_dim
-        self.backbone = nn.Sequential(*layers)
-        # 分支选择头
-        self.branch_head = nn.Linear(previous_dim, 4)
+        # 三类输入各自的嵌入层，与主方法 selector 的 embed 层保持同一结构/维度
+        self.fixed_embed = nn.Linear(fixed_dim, embed_dim)
+        self.enm_embed = nn.Linear(enm_shape[1], embed_dim)
+        self.ally_embed = nn.Linear(ally_shape[1], embed_dim)
 
-        # 分支选择后的维度为什么要+4？
-        branch_condition_dim = previous_dim + 4
-        # 规避头
-        self.evad_head = nn.Linear(branch_condition_dim, 2)
-        # 目标选取头
-        self.target_head = nn.Linear(branch_condition_dim, self.enm_num)
-        # 
-        c_condition_dim = branch_condition_dim + self.enm_num
-        # 水平头
-        self.hor_head = nn.Linear(c_condition_dim, len(HORIZONTAL_ACTIONS))
-        # 火箭头
-        self.fire_head = nn.Linear(c_condition_dim, 1)
-        # 垂直头
-        self.vert_head = nn.Linear(c_condition_dim, 3)
+    def forward(self, agent_inputs, mask_inputs, rule_inputs,
+                enm_idx=None, temperature=1.0):
+        fixed = agent_inputs['fixed']   # (B, fixed_dim)
+        enm = agent_inputs['enm']       # (B, Ne, enm_dim)
+        ally = agent_inputs['ally']     # (B, Na, ally_dim)
+        enm_mask = mask_inputs.get('enm')   # (B, Ne) 或 None
+        ally_mask = mask_inputs.get('ally') # (B, Na) 或 None
 
-    def forward(self, x, branch=None, target=None):
-        features = self.backbone(x)
-        outputs = {
-            'features': features,
-            'branch_logits': self.branch_head(features),
-        }
-        # branch=None时，只返回分支选择头
-        if branch is None:
-            return outputs
-        # 分支选择头
-        branch_one_hot = F.one_hot(branch, num_classes=4).to(features.dtype)
-        branch_features = torch.cat((features, branch_one_hot), dim=-1)
-        outputs['evad_logits'] = self.evad_head(branch_features)
-        # 目标选择头
-        outputs['target_logits'] = self.target_head(branch_features)
+        e_f = self.fixed_embed(fixed)       # (B, d)，作为 pilot 的 query_state
+        e_e = self.enm_embed(enm)           # (B, Ne, d)
+        e_a = self.ally_embed(ally)         # (B, Na, d)
 
-        if target is None:
-            return outputs
-        # 目标选择头
-        target_one_hot = F.one_hot(target, num_classes=self.enm_num).to(features.dtype)
-        c_features = torch.cat((branch_features, target_one_hot), dim=-1)
-        outputs['vert_logits'] = self.vert_head(c_features)
-        outputs['hor_logits'] = self.hor_head(c_features)
-        outputs['fire_logits'] = self.fire_head(c_features).squeeze(-1)
-        return outputs
+        # ── 敌机：距离最小优先、|AA| 最大次优先（规则常量，无可训练参数）──────────
+        enm_distance = enm[..., _ENM_DIST_IDX]
+        cos_aa = enm[..., _ENM_AA_IDX]
+        priority = enm_distance + _AA_TIE_BREAK * (1.0 - cos_aa.abs())
+        enm_logits = -priority / temperature
+        if enm_mask is not None:
+            enm_logits = enm_logits.masked_fill(~enm_mask, -_MASK_VAL)
+        enm_categorical = Categorical(logits=enm_logits)
+
+        if enm_idx is None:
+            enm_idx = enm_categorical.sample()
+
+        log_prob_enm = enm_categorical.log_prob(enm_idx)
+        ent_enm = enm_categorical.entropy()
+
+        e_enm = e_e.gather(
+            1, enm_idx.reshape(-1, 1, 1).expand(-1, 1, self.embed_dim)).squeeze(1)
+
+        # ── 队友：距离最小优先的 softmax 聚合（规则常量权重）──────────────────
+        ally_distance = ally[..., _ALLY_DIST_IDX]
+        ally_logits = -ally_distance / temperature
+        if ally_mask is not None:
+            ally_logits = ally_logits.masked_fill(~ally_mask, -_MASK_VAL)
+        ally_weights = torch.softmax(ally_logits, dim=-1)          # (B, Na)
+        e_ally = torch.einsum('bn,bnd->bd', ally_weights, e_a)     # (B, d)
+
+        # 与主方法同样的三段拼接：fixed / 选中敌机 / 聚合队友
+        selected_info = torch.cat((e_f, e_enm, e_ally), dim=-1)    # (B, 3d)
+
+        # ── rule_inputs 按 enm_idx 抽取，组装 mini_rule_inputs（与主方法同口径）──
+        mini_rule_inputs = {}
+        mini_rule_inputs['ammo'] = rule_inputs.get('ammo')
+        mini_rule_inputs['RWR_infos'] = rule_inputs.get('RWR_infos')
+        mini_rule_inputs['weapon_infos'] = rule_inputs.get('weapon_infos')
+        enm_infos = rule_inputs.get('enm_infos', {})  # dict{key: [B, n_enm]}
+        enm_idx_col = enm_idx.unsqueeze(1)            # (B,) -> (B, 1)
+        mini_rule_inputs['enm_info'] = {}
+        for k, v in enm_infos.items():
+            v_t = torch.as_tensor(v, device=enm_idx.device)
+            mini_rule_inputs['enm_info'][k] = v_t.gather(1, enm_idx_col).squeeze(1)
+
+        return selected_info, enm_idx, mini_rule_inputs, log_prob_enm, ent_enm
 
 
-class ActorMLPWrapper(nn.Module):
-    def __init__(self, network=None, hidden_dims=(256, 256), fixed_dim=28,
-                 enm_shape=(2, 10), ally_shape=(1, 9), device='cpu'):
+class ActorWrapper(nn.Module):
+    """方案3 的 actor 封装：对外契约逐项对齐 ActorWithATTN.ActorWrapper。"""
+
+    def __init__(self, fixed_dim, enm_shape, ally_shape,
+                 embed_dim=64, hidden_dims=(256, 256), device='cpu', ppo_with_bern=1):
         super().__init__()
-        self.net = network or ActorMLPHeads(
-            hidden_dims=hidden_dims,
-            fixed_dim=fixed_dim,
-            enm_shape=enm_shape,
-            ally_shape=ally_shape,
-        ).to(device)
         self.fixed_dim = fixed_dim
+        # fire_included_in_rl 语义与主方法一致：0 时 RL 的 log_prob/熵不含 fire 分支
+        self.fire_included_in_rl = bool(ppo_with_bern)
         self.enm_shape = enm_shape
         self.ally_shape = ally_shape
-        self.enm_num = self.net.enm_num
-        self.input_dim = self.net.input_dim
+        self.enm_num = enm_shape[0]
+        self.ally_num = ally_shape[0]
+        self.input_dim = 3 * embed_dim
+
+        self.selector = ActorMLPHeads(fixed_dim, enm_shape, ally_shape, embed_dim).to(device)
+        self.pilot = pilot(self.input_dim, hidden_dims).to(device)
 
     @property
     def device(self):
         return next(self.parameters()).device
 
-    def _unpack_inputs(self, agent_inputs, rule_inputs=None, mask_inputs=None):
-        if isinstance(agent_inputs, (list, tuple)) and len(agent_inputs) > 0 and isinstance(agent_inputs[0], (list, tuple)) and len(agent_inputs[0]) == 3:
-            rule_inputs = [x[1] for x in agent_inputs]
-            mask_inputs = [x[2] for x in agent_inputs]
-            agent_inputs = [x[0] for x in agent_inputs]
-        elif isinstance(agent_inputs, (list, tuple)) and len(agent_inputs) == 3 and not isinstance(agent_inputs[0], (dict, torch.Tensor, np.ndarray)) and isinstance(agent_inputs[1], dict) and isinstance(agent_inputs[2], dict):
-            agent_inputs, rule_inputs, mask_inputs = agent_inputs
-        return agent_inputs, rule_inputs, mask_inputs
+    def _to_tensor(self, value, dtype, shape):
+        tensor = torch.as_tensor(value, dtype=dtype, device=self.device)
+        if tensor.ndim == len(shape):
+            tensor = tensor.unsqueeze(0)
+        return tensor
 
-    def flatten_agent_inputs(self, agent_inputs):
-        if isinstance(agent_inputs, (list, tuple)):
-            if len(agent_inputs) == 0:
-                raise ValueError('agent_inputs cannot be empty')
-            if isinstance(agent_inputs[0], (list, tuple)) and len(agent_inputs[0]) == 3:
-                agent_inputs = [x[0] for x in agent_inputs]
-            if isinstance(agent_inputs[0], dict):
-                agent_inputs = {
-                    'fixed': np.array([inp['fixed'] for inp in agent_inputs]),
-                    'enm': np.array([inp['enm'] for inp in agent_inputs]),
-                    'ally': np.array([inp['ally'] for inp in agent_inputs])
-                }
-            elif isinstance(agent_inputs[0], torch.Tensor):
-                agent_inputs = torch.stack(agent_inputs)
+    def pack_inputs(self, agent_inputs, mask_inputs):
+        fixed = self._to_tensor(agent_inputs['fixed'], torch.float32, (self.fixed_dim,))
+        enm = self._to_tensor(agent_inputs['enm'], torch.float32, self.enm_shape)
+        ally = self._to_tensor(agent_inputs['ally'], torch.float32, self.ally_shape)
 
-        if isinstance(agent_inputs, torch.Tensor):
-            tensor = agent_inputs.to(device=self.device, dtype=torch.float32)
-            if tensor.ndim == 1:
-                tensor = tensor.unsqueeze(0)
-            if tensor.shape[-1] != self.input_dim:
-                raise ValueError(f'Expected flattened input dimension {self.input_dim}, got {tensor.shape[-1]}')
-            return tensor
+        enm_mask = np.asarray(mask_inputs.get('enm', []), dtype=bool).reshape(-1)
+        if enm_mask.size == 0:
+            enm_mask = np.ones(enm.shape[1], dtype=bool)
+        enm_mask = torch.as_tensor(enm_mask, dtype=torch.bool, device=self.device)
+        if enm_mask.ndim == 1:
+            enm_mask = enm_mask.unsqueeze(0).expand(fixed.shape[0], -1)
 
-        if not isinstance(agent_inputs, dict):
-            raise TypeError('agent_inputs must be a dict, a list of dicts, or a flattened torch.Tensor')
+        ally_mask = np.asarray(mask_inputs.get('ally', []), dtype=bool).reshape(-1)
+        if ally_mask.size == 0:
+            ally_mask = np.ones(ally.shape[1], dtype=bool)
+        ally_mask = torch.as_tensor(ally_mask, dtype=torch.bool, device=self.device)
+        if ally_mask.ndim == 1:
+            ally_mask = ally_mask.unsqueeze(0).expand(fixed.shape[0], -1)
 
-        parts = []
-        batch_size = None
-        specs = (('fixed', (self.fixed_dim,)), ('enm', self.enm_shape), ('ally', self.ally_shape))
-        for key, expected_shape in specs:
-            value = torch.as_tensor(agent_inputs[key], dtype=torch.float32, device=self.device)
-            if tuple(value.shape) == tuple(expected_shape):
-                value = value.unsqueeze(0)
-            elif value.ndim != len(expected_shape) + 1 or tuple(value.shape[1:]) != tuple(expected_shape):
-                raise ValueError(f'agent_inputs[{key!r}] must have shape {expected_shape} or (B, {expected_shape})')
-            if batch_size is None:
-                batch_size = value.shape[0]
-            elif value.shape[0] != batch_size:
-                raise ValueError('All agent input components must have the same batch size')
-            parts.append(value.flatten(start_dim=1))
-        return torch.cat(parts, dim=-1)
+        return (
+            {'fixed': fixed, 'enm': enm, 'ally': ally},
+            {'enm': enm_mask, 'ally': ally_mask},
+        )
 
-    @staticmethod
-    def _as_samples(value, batch_size, name):
-        if isinstance(value, (list, tuple)):
-            if len(value) != batch_size:
-                raise ValueError(f'{name} batch size does not match agent_inputs')
-            return list(value)
-        if batch_size != 1 or not isinstance(value, dict):
-            raise TypeError(f'{name} must be a dict for one sample or a list of dicts for a batch')
-        return [value]
+    def get_action(self, agent_inputs, mask_inputs, rule_inputs,
+                   h=None, temperature=1.0, enm_idx=None):
+        # temperature：玻尔兹曼采样温度，仅测试时使用；训练采样走默认值 1
+        # enm_idx：外部集中指派的敌机槽位，仅部署/测试使用；训练路径必须为 None
+        packed_agent, packed_mask = self.pack_inputs(agent_inputs, mask_inputs)
+        if enm_idx is not None:
+            enm_idx = torch.as_tensor(enm_idx, dtype=torch.long, device=self.device).reshape(-1)
+        selected_info, enm_idx, mini_rule_inputs, log_prob_enm, _ = self.selector(
+            packed_agent, packed_mask, rule_inputs, enm_idx=enm_idx, temperature=temperature,
+        )
+        pilot_logits = self.pilot(selected_info, mini_rule_inputs)
 
-    @staticmethod
-    def _warning(rule_input):
-        warning = rule_input.get('RWR_infos', {}).get('warning', 0)
-        return bool(np.asarray(warning).astype(bool).any())
+        vert_dist = Categorical(logits=pilot_logits['vert'] / temperature)
+        hor_dist = Categorical(logits=pilot_logits['hor'] / temperature)
+        fire_dist = Bernoulli(logits=pilot_logits['fire'].squeeze(-1))
 
-    @staticmethod
-    def _threat_delta_psi(rule_input):
-        rwr = rule_input.get('RWR_infos', {})
-        return float(np.arctan2(rwr.get('sin_threat_delta_psi', 0.0),
-                                rwr.get('cos_threat_delta_psi', 1.0)))
+        vert_idx = vert_dist.sample()
+        hor_idx = hor_dist.sample()
+        fire = fire_dist.sample().to(torch.long)
 
-    def build_rule_masks(self, rule_inputs, mask_inputs, batch_size):
-        rules = self._as_samples(rule_inputs, batch_size, 'rule_inputs')
-        masks = self._as_samples(mask_inputs, batch_size, 'mask_inputs')
-        branch_masks = torch.zeros(batch_size, 4, dtype=torch.bool, device=self.device)
-        target_masks = torch.zeros(batch_size, self.enm_num, dtype=torch.bool, device=self.device)
-        threat_delta_psi = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        log_prob_act = (
+            vert_dist.log_prob(vert_idx)
+            + hor_dist.log_prob(hor_idx)
+            + (fire_dist.log_prob(fire.to(torch.float32)) if self.fire_included_in_rl else 0.0)
+        )
 
-        for index, (rule_input, mask_input) in enumerate(zip(rules, masks)):
-            enemy_mask = np.asarray(mask_input.get('enm', []), dtype=bool).reshape(-1)
-            if enemy_mask.size != self.enm_num:
-                raise ValueError(f"mask_inputs['enm'] must contain {self.enm_num} entries")
-            target_masks[index] = torch.as_tensor(enemy_mask, dtype=torch.bool, device=self.device)
-            warning = self._warning(rule_input)
-            ego_alive = bool(mask_input.get('ego', 1))
-            if not ego_alive:
-                branch_masks[index, BRANCH_idle] = True
-            elif warning:
-                branch_masks[index, BRANCH_evade] = True
-            elif enemy_mask.any():
-                branch_masks[index, BRANCH_attack] = True
-            else:
-                branch_masks[index, BRANCH_idle] = True
-            threat_delta_psi[index] = self._threat_delta_psi(rule_input)
-        return branch_masks, target_masks, threat_delta_psi
-
-    @staticmethod
-    def _masked_logits(logits, mask):
-        if torch.any(~mask.any(dim=-1)):
-            raise ValueError('Every categorical head must have at least one valid action')
-        return logits.masked_fill(~mask, torch.finfo(logits.dtype).min)
-
-    @staticmethod
-    def _choose(distribution, explore):
-        return distribution.sample() if explore else distribution.probs.argmax(dim=-1)
-
-    def forward(self, agent_inputs, rule_inputs=None, mask_inputs=None):
-        agent_inputs, rule_inputs, mask_inputs = self._unpack_inputs(agent_inputs, rule_inputs, mask_inputs)
-        flat_inputs = self.flatten_agent_inputs(agent_inputs)
-        branch_mask, target_mask, threat_delta_psi = self.build_rule_masks(
-            rule_inputs, mask_inputs, flat_inputs.shape[0])
-        outputs = self.net(flat_inputs)
-        outputs.update({
-            'flat_inputs': flat_inputs,
-            'branch_logits': self._masked_logits(outputs['branch_logits'], branch_mask),
-            'branch_mask': branch_mask,
-            'target_mask': target_mask,
-            'threat_delta_psi': threat_delta_psi,
-        })
-        return outputs
-
-    def get_action(self, agent_inputs, rule_inputs=None, mask_inputs=None, explore=True):
-        agent_inputs, rule_inputs, mask_inputs = self._unpack_inputs(agent_inputs, rule_inputs, mask_inputs)
-        outputs = self.forward(agent_inputs, rule_inputs, mask_inputs)
-        branch_dist = Categorical(logits=outputs['branch_logits'])
-        branch = self._choose(branch_dist, explore)
-        conditioned = self.net(outputs['flat_inputs'], branch=branch)
-        target_logits = self._masked_logits(
-            conditioned['target_logits'],
-            outputs['target_mask'] | (branch != BRANCH_attack).unsqueeze(-1))
-        target_dist = Categorical(logits=target_logits)
-        target = self._choose(target_dist, explore)
-        conditioned = self.net(outputs['flat_inputs'], branch=branch, target=target)
-
-        evad_dist = Categorical(logits=conditioned['evad_logits'])
-        vert_dist = Categorical(logits=conditioned['vert_logits'])
-        hor_dist = Categorical(logits=conditioned['hor_logits'])
-        fire_dist = Bernoulli(logits=conditioned['fire_logits'])
-        evad_action = self._choose(evad_dist, explore)
-        vert_action = self._choose(vert_dist, explore)
-        hor_action = self._choose(hor_dist, explore)
-        fire_action = fire_dist.sample().to(torch.long) if explore else (fire_dist.probs >= 0.5).to(torch.long)
-        raw_actions = {
-            'branch': branch,  # 调试信息
-            'evade': evad_action,
-            'target': target,
-            'vert': vert_action,
-            'hor': hor_action,
-            'fire': fire_action,
+        return {
+            'enm_idx': enm_idx,
+            'fire': fire,
+            'hor_idx': hor_idx,
+            'vert_idx': vert_idx,
+            'fire_mask': pilot_logits['fire_mask'],
+            'log_prob_enm': log_prob_enm,
+            'log_prob_act': log_prob_act,
         }
-        env_actions = self.to_env_actions(raw_actions, outputs['threat_delta_psi'])
-        diagnostics = {
-            'branch_probs': branch_dist.probs,  # 调试信息
-            'target_probs': target_dist.probs,
-            'evad_probs': evad_dist.probs,
-            'vert_probs': vert_dist.probs,
-            'hor_probs': hor_dist.probs,
-            'fire_probs': fire_dist.probs,
-        }
-        return env_actions, raw_actions, diagnostics
 
-    def to_env_actions(self, actions, threat_delta_psi):
-        results = []
-        batch_size = actions['branch'].shape[0]
-        for index in range(batch_size):
-            branch = int(actions['branch'][index].item())
-            target = int(actions['target'][index].item())
-            if branch == BRANCH_evade:
-                if int(actions['evade'][index].item()) == 0:
-                    maneuver = [2, 3]
-                else:
-                    maneuver = [2, 2 if threat_delta_psi[index].item() > 0 else 4]
-                fire = False
-            elif branch == BRANCH_attack:
-                maneuver = [int(actions['vert'][index].item()), HORIZONTAL_ACTIONS[int(actions['hor'][index].item())]]
-                fire = bool(actions['fire'][index].item())
+    def evaluate_actions(self, agent_inputs, mask_inputs, rule_inputs,
+                         actions, h=None, max_std=None):
+        """训练接口：严格用回放观测/掩码/规则与已采样动作重算新策略 log_prob 与熵。
+
+        注意入参顺序与 ActorWithATTN 一致：(agent_inputs, mask_inputs, rule_inputs, actions)，
+        MAPPOHybrid.update 按该位置顺序调用。
+        """
+        device = self.device
+
+        fixed = torch.as_tensor(agent_inputs['fixed'], dtype=torch.float32, device=device)
+        enm = torch.as_tensor(agent_inputs['enm'], dtype=torch.float32, device=device)
+        ally = torch.as_tensor(agent_inputs['ally'], dtype=torch.float32, device=device)
+        enm_mask = torch.as_tensor(np.asarray(mask_inputs['enm']), dtype=torch.bool, device=device)
+        ally_mask = torch.as_tensor(np.asarray(mask_inputs['ally']), dtype=torch.bool, device=device)
+
+        enm_idx = torch.as_tensor(actions['enm_idx'], dtype=torch.long, device=device)
+        vert_idx = torch.as_tensor(actions['vert'], dtype=torch.long, device=device)
+        hor_idx = torch.as_tensor(actions['hor'], dtype=torch.long, device=device)
+        fire = torch.as_tensor(actions['fire'], dtype=torch.long, device=device)
+
+        selected_info, _, mini_rule_inputs, log_prob_enm, ent_enm = self.selector(
+            {'fixed': fixed, 'enm': enm, 'ally': ally},
+            {'enm': enm_mask, 'ally': ally_mask},
+            rule_inputs, enm_idx=enm_idx,
+        )
+
+        pilot_logits = self.pilot(selected_info, mini_rule_inputs)
+        vert_dist = Categorical(logits=pilot_logits['vert'])
+        hor_dist = Categorical(logits=pilot_logits['hor'])
+        fire_dist = Bernoulli(logits=pilot_logits['fire'].squeeze(-1))
+
+        log_prob_vert = vert_dist.log_prob(vert_idx)
+        log_prob_hor = hor_dist.log_prob(hor_idx)
+        log_prob_fire = (fire_dist.log_prob(fire.to(torch.float32))
+                         if self.fire_included_in_rl else torch.zeros_like(log_prob_vert))
+        log_prob_act = log_prob_vert + log_prob_hor + log_prob_fire
+
+        fire_mask = pilot_logits['fire_mask'].to(torch.float32)
+        ent_vert = vert_dist.entropy()
+        ent_hor = hor_dist.entropy()
+        ent_fire = (fire_dist.entropy() * fire_mask
+                    if self.fire_included_in_rl else torch.zeros_like(ent_vert))
+        ent_act = ent_vert + ent_hor + ent_fire
+
+        with torch.no_grad():
+            fire_prob = torch.sigmoid(pilot_logits['fire'].squeeze(-1))
+            fire_allowed = fire_mask.bool()
+            if fire_allowed.any():
+                fire_prob_max = fire_prob[fire_allowed].max().item()
+                fire_prob_min = fire_prob[fire_allowed].min().item()
             else:
-                maneuver = [1, 0]
-                fire = False
-            results.append({
-                'branch': BRANCH_NAMES[branch],  # 调试信息
-                'flight_action': {'do': maneuver, 'at': target},
-                'fire_action': {'do': fire, 'at': target},
-                'radar_action': 1 if branch == BRANCH_attack else 0,
-            })
-        return results[0] if batch_size == 1 else results
+                fire_prob_max = float('nan')
+                fire_prob_min = float('nan')
 
-    def evaluate_actions(self, agent_inputs, rule_inputs=None, mask_inputs=None, actions=None):
-        if actions is None and mask_inputs is None and rule_inputs is not None:
-            actions = rule_inputs
-            rule_inputs = None
+        entropy = ent_enm + ent_act
+        log_prob = log_prob_enm + log_prob_act
 
-        agent_inputs, rule_inputs, mask_inputs = self._unpack_inputs(agent_inputs, rule_inputs, mask_inputs)
-        outputs = self.forward(agent_inputs, rule_inputs, mask_inputs)
+        return {
+            'log_prob': log_prob,
+            'log_prob_enm': log_prob_enm,
+            'log_prob_act': log_prob_act,
+            'entropy': entropy,
+            'entropy_details': {
+                'enm': ent_enm,
+                'vert': ent_vert,
+                'hor': ent_hor,
+                'fire': ent_fire,
+                'act': ent_act,
+            },
+            'fire_prob_max': fire_prob_max,
+            'fire_prob_min': fire_prob_min,
+        }
 
-        if isinstance(actions, (list, tuple)):
-            actions_dict = {}
-            for k in ['branch', 'target', 'evade', 'vert', 'hor', 'fire']:
-                if k in actions[0]:
-                    actions_dict[k] = [d[k] for d in actions if k in d]
-            actions = actions_dict
+    def evaluate_fire(self, agent_inputs, enm_idx, hit,
+                      mask_inputs=None, rule_inputs=None, reduction='mean'):
+        """有监督开火头：与 ActorWithATTN.evaluate_fire 同一路径与语义。"""
+        device = self.device
+        fixed = torch.as_tensor(agent_inputs['fixed'], dtype=torch.float32, device=device)
+        enm = torch.as_tensor(agent_inputs['enm'], dtype=torch.float32, device=device)
+        ally = torch.as_tensor(agent_inputs['ally'], dtype=torch.float32, device=device)
+        if fixed.ndim == 1:
+            fixed = fixed.unsqueeze(0)
+        if enm.ndim == 2:
+            enm = enm.unsqueeze(0)
+        if ally.ndim == 2:
+            ally = ally.unsqueeze(0)
+        batch_size = fixed.shape[0]
 
-        def _to_tensor(val, dtype):
-            if isinstance(val, torch.Tensor):
-                return val.to(device=self.device, dtype=dtype).reshape(-1)
-            return torch.as_tensor(np.array(val), dtype=dtype, device=self.device).reshape(-1)
+        enm_idx = torch.as_tensor(np.asarray(enm_idx), dtype=torch.long, device=device).reshape(-1)
+        hit = torch.as_tensor(np.asarray(hit), dtype=torch.float32, device=device).reshape(-1)
+        if enm_idx.numel() != batch_size or hit.numel() != batch_size:
+            raise ValueError('enm_idx/hit 长度必须等于观测 batch：%d/%d vs %d'
+                             % (enm_idx.numel(), hit.numel(), batch_size))
 
-        branch = _to_tensor(actions['branch'], torch.long)
-        target = _to_tensor(actions['target'], torch.long)
-        evad_action = _to_tensor(actions['evade'], torch.long)
-        vert_action = _to_tensor(actions['vert'], torch.long)
-        hor_action = _to_tensor(actions['hor'], torch.long)
-        fire_action = _to_tensor(actions['fire'], torch.float32)
+        if mask_inputs is None:
+            enm_mask = torch.ones(batch_size, enm.shape[1], dtype=torch.bool, device=device)
+            ally_mask = torch.ones(batch_size, ally.shape[1], dtype=torch.bool, device=device)
+        else:
+            enm_mask = torch.as_tensor(np.asarray(mask_inputs['enm']), dtype=torch.bool, device=device)
+            ally_mask = torch.as_tensor(np.asarray(mask_inputs['ally']), dtype=torch.bool, device=device)
+            if enm_mask.ndim == 1:
+                enm_mask = enm_mask.unsqueeze(0).expand(batch_size, -1)
+            if ally_mask.ndim == 1:
+                ally_mask = ally_mask.unsqueeze(0).expand(batch_size, -1)
 
-        conditioned = self.net(outputs['flat_inputs'], branch=branch, target=target)
-        target_logits = self._masked_logits(
-            conditioned['target_logits'],
-            outputs['target_mask'] | (branch != BRANCH_attack).unsqueeze(-1))
-        branch_dist = Categorical(logits=outputs['branch_logits'])
-        target_dist = Categorical(logits=target_logits)
-        evad_dist = Categorical(logits=conditioned['evad_logits'])
-        vert_dist = Categorical(logits=conditioned['vert_logits'])
-        hor_dist = Categorical(logits=conditioned['hor_logits'])
-        fire_dist = Bernoulli(logits=conditioned['fire_logits'])
+        rule_inputs = {} if rule_inputs is None else rule_inputs
 
-        is_a = (branch == BRANCH_evade).to(torch.float32)
-        is_c = (branch == BRANCH_attack).to(torch.float32)
-        log_prob = branch_dist.log_prob(branch)
-        log_prob = log_prob + is_a * evad_dist.log_prob(evad_action)
-        log_prob = log_prob + is_c * (
-            target_dist.log_prob(target) + vert_dist.log_prob(vert_action)
-            + hor_dist.log_prob(hor_action) + fire_dist.log_prob(fire_action))
-        entropy = branch_dist.entropy() + is_a * evad_dist.entropy()
-        entropy = entropy + is_c * (
-            target_dist.entropy() + vert_dist.entropy() + hor_dist.entropy() + fire_dist.entropy())
-        
-        entropy_details = {'cat': None, 'bern': None, 'cont': None}
-        outputs['cat'] = None
-        outputs['bern'] = None
-        outputs['cont'] = None
-        return log_prob.unsqueeze(-1), entropy.unsqueeze(-1), entropy_details, outputs, None
+        selected_info, _, mini_rule_inputs, _, _ = self.selector(
+            {'fixed': fixed, 'enm': enm, 'ally': ally},
+            {'enm': enm_mask, 'ally': ally_mask},
+            rule_inputs, enm_idx=enm_idx,
+        )
 
+        if rule_inputs:
+            fire_logits = self.pilot(selected_info, mini_rule_inputs)['fire'][:, 0]
+        else:
+            fire_logits = self.pilot.fire_head(self.pilot.backbone(selected_info))[:, 0]
+
+        return F.binary_cross_entropy_with_logits(fire_logits, hit, reduction=reduction)
+
+    def save(self, path='actor.pt'):
+        torch.save({
+            'selector': self.selector.state_dict(),
+            'pilot': self.pilot.state_dict(),
+        }, path)
+
+    def load(self, path='actor.pt', device=None):
+        target = device or self.device
+        checkpoint = torch.load(path, map_location=target)
+        self.selector.load_state_dict(checkpoint['selector'])
+        self.pilot.load_state_dict(checkpoint['pilot'])
+
+
+# 兼容只读文件 Algorithms/MAPPOHybrid.py 顶部的 import（该文件按规范不可修改）
+ActorMLPWrapper = ActorWrapper

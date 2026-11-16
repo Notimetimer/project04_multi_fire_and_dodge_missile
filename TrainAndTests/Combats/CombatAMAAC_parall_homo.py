@@ -419,6 +419,32 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
             break
 
 
+def creat_initial_state():
+    """复制 VsBaseline_MA.creat_initial_state（主方法周期性测试同款出生状态），
+    供内置 test_worker_amaac 使用，保证评测出生状态协议与主方法一致。"""
+    # 飞机出生状态指定
+    blue_height = 9000
+    red_height = 9000
+    red_psi = np.pi/2
+    blue_psi = - red_psi
+    red_N = 0
+    red_E = - 55e3
+    blue_N = red_N
+    blue_E = -red_E
+    if np.random.uniform(0, 1) < 0.5: # 随机换边（与 CombatMAPPO_parall_homo 初始状态一致）
+        red_E = - red_E
+        blue_E = - blue_E
+        red_psi = - red_psi
+        blue_psi = - blue_psi
+    DEFAULT_RED_BIRTH_STATE = {'position': np.array([red_N, red_height, red_E]),
+                        'psi': red_psi
+                        }
+    DEFAULT_BLUE_BIRTH_STATE = {'position': np.array([blue_N, blue_height, blue_E]),
+                                'psi': blue_psi
+                                }
+    return DEFAULT_RED_BIRTH_STATE, DEFAULT_BLUE_BIRTH_STATE
+
+
 def test_worker_amaac(model_state_dict, rules_num,
                 env_args, device_name='cpu', num_runs=3,
                 vertices=None, save_record=False, use_tacview=2,

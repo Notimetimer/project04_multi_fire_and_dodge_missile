@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import os
 import json
 from Algorithms.Utils import compute_advantage
-from Algorithms.ActorMLPHeads import ActorMLPWrapper, ActorMLPHeads
+# from Algorithms.ActorMLPHeads import ActorMLPWrapper, ActorMLPHeads
 
 class MAPPOHybrid:
     def __init__(self, actor, critic, actor_lr, critic_lr,
