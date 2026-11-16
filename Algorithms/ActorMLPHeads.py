@@ -1,4 +1,4 @@
-"""ActorMLPHeads.py —— 方案3 baseline：规则目标选取（敌机采样 / 队友距离优先聚合）。
+"""ActorMLPHeads.py —— baseline：规则目标选取（敌机采样 / 队友距离优先聚合）。
 
 与主方法 Algorithms/ActorWithATTN.py 的对照关系（对比公平性）：
 - pilot 直接从 ActorWithATTN 复用（不复制、不改动），机动/开火分支与主方法逐层一致；
@@ -17,7 +17,7 @@
 1. selector 由"异构自注意力 + 交叉注意力指针网络"改为"规则打分 + Categorical 采样 /
    规则 softmax 聚合"；实体表示仍由可训练线性嵌入得到（与主方法 selector 的 embed 层同量级），
    pilot 完全复用。因此本 baseline 对比的是目标选取机制，而非表示容量。
-2. 方案3 的敌机/队友选取不可训练：规则 logits 是观测常量，log_prob_enm 只用于接口与
+2. 敌机/队友选取不可训练：规则 logits 是观测常量，log_prob_enm 只用于接口与
    PPO 比率对齐，不产生策略梯度。这是方案3的既定假设，不是实现缺陷。
 3. 不使用 agent_inputs['enm_chosen']：规则选取不依赖"队友已选"信息；接口仍接受该键以兼容回放。
 4. 退化处理：全部敌机死亡时固定指向 0 号槽位（最小 id），该行 log_prob_enm=0、ent_enm=0；
@@ -77,8 +77,18 @@ class ActorMLPHeads(nn.Module):
         e_a = self.ally_embed(ally)         # (B, Na, d)
 
         # ── 敌机：距离最小优先、|AA| 最大次优先（规则常量，无可训练参数）──────────
-        enm_distance = enm[..., _ENM_DIST_IDX]
-        cos_aa = enm[..., _ENM_AA_IDX]
+        # 优先用 rule_inputs['enm_infos'] 的字典字段（键名即 Envs/BattleHomo.py 的 ENM_KEYS），
+        # 不依赖观测展平后的硬编码下标；rule_inputs 缺该字段时回退到观测列。
+        rule_enm_infos = (rule_inputs or {}).get('enm_infos') or {}
+        if 'enm_dist' in rule_enm_infos and 'cos_enm_AA' in rule_enm_infos:
+            # rule_inputs 中的距离是未缩放的米，按环境的 50 km 归一化口径对齐观测列
+            enm_distance = torch.as_tensor(rule_enm_infos['enm_dist'], dtype=e_e.dtype,
+                                           device=e_e.device) / 50e3
+            cos_aa = torch.as_tensor(rule_enm_infos['cos_enm_AA'], dtype=e_e.dtype,
+                                     device=e_e.device)
+        else:
+            enm_distance = enm[..., _ENM_DIST_IDX]
+            cos_aa = enm[..., _ENM_AA_IDX]
         priority = enm_distance + _AA_TIE_BREAK * (1.0 - cos_aa.abs())
         enm_logits = -priority / temperature
         if enm_mask is not None:
