@@ -182,6 +182,8 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                 env.reset(red_birth_state=rb, blue_birth_state=bb,
                           red_init_num=red_init_num, blue_init_num=blue_init_num,
                           red_init_ammo=red_init_ammo, blue_init_ammo=blue_init_ammo,
+                          red_init_formation = settings.get('init_foramtion_shape'), 
+                          blue_init_formation = settings.get('init_foramtion_shape'),
                           seed=(red_shuffle_seed, blue_shuffle_seed))
 
                 # 经验只按学生（红方）id 收集（蓝方为规则或历史 nn，不参与训练）
@@ -486,6 +488,7 @@ def run_MLP_simulation(
     supervised_fire_batch_size = 128, # [新增] 每次监督更新从缓冲中采样的批大小
     ppo_with_bern = 1, # [新增] 0 时 PPO 更新跳过开火头 fc_bern（log_prob 不计入 bern 项）
     enm_chosen_visable = 0, # 是否能看到队友的敌机选取
+    init_foramtion_shape = 'wall',
 ):
     """多智能体 MAPPO 训练主函数。
     同构：全队共享一套 ActorWrapper/critic_wrapper/MAPPOHybrid，经验按学生 id 收集、更新前合并。
@@ -874,6 +877,7 @@ def run_MLP_simulation(
                     'blue_shuffle_seed': int(np.random.randint(0, 2**31 - 1)),
                     'enm_chosen_visable': enm_chosen_visable,
                     'ppo_with_bern': ppo_with_bern,
+                    'init_foramtion_shape': init_foramtion_shape,
                 }
 
                 pipes[rank].send(('RUN_EPISODE', (current_actor_weights, opp_info, settings)))
