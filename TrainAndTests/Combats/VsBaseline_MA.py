@@ -77,6 +77,7 @@ def test_worker(model_state_dict, rules_num,
                 red_init_num=init_cfg['red_init_num'], blue_init_num=init_cfg['blue_init_num'],
                 red_init_ammo=init_cfg['red_init_ammo'], blue_init_ammo=init_cfg['blue_init_ammo'],
                 red_alive_num=None, blue_alive_num=None,
+                red_init_formation = 'wall', blue_init_formation = 'wall', # 初始队形
                 temperature=1.0,  # 玻尔兹曼采样温度，仅本测试函数使用；训练 worker_process 不传此参数
                 enm_chosen_visable=0,  # 0 不修改 enm_chosen；1 把“本轮队友已选敌机”写进本机观测
                 ):
@@ -132,6 +133,7 @@ def test_worker(model_state_dict, rules_num,
                 red_alive_num=red_alive_num, blue_alive_num=blue_alive_num,
                 # 红蓝各自独立的位置打乱种子（np.random 已在函数入口固定，序列可复现且场间不同）
                 seed=(int(np.random.randint(0, 2**31 - 1)), int(np.random.randint(0, 2**31 - 1))),
+                red_init_formation = red_init_formation, blue_init_formation = blue_init_formation, # 初始队形
                 )
             # 初始存活的飞机数量
             initial_alive_r = len(test_env.alive_r_uavs)
