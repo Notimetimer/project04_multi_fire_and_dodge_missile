@@ -412,7 +412,7 @@ if __name__=='__main__':
     TEMPERATURE = 0.3  # 采样温度：<1更贪婪（机动/目标选取决策趋于确定）
 
     args.max_episode_len = 15*60
-    args.R_cage = 60.3e3
+    args.R_cage = 62.00e3
 
     # 构建场地边界，南北长54km，东西宽100km的长方形边界
     vertices = load_init_states()['vertices']
@@ -434,7 +434,7 @@ if __name__=='__main__':
     latest_batch = max(b for b, _, _ in parsed)
     
     # 加载的版本号
-    loaded_version = 10 # latest_batch
+    loaded_version = latest_batch
     
     model_state_dict = {
         uid: torch.load(path, map_location='cpu')

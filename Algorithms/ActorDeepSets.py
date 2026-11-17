@@ -66,11 +66,14 @@ def _masked_pool(entity_seq, mask):
         mask = torch.ones(entity_seq.shape[:2], dtype=torch.bool, device=entity_seq.device)
     valid = mask.unsqueeze(-1)
     weight = valid.to(entity_seq.dtype)
+    has_entity = valid.any(dim=1)  # (B, 1)：该行是否存在有效实体
     denom = weight.sum(dim=1).clamp(min=1.0)
     mean = (entity_seq * weight).sum(dim=1) / denom
     masked_max = entity_seq.masked_fill(~valid, torch.finfo(entity_seq.dtype).min)
     peak = masked_max.max(dim=1).values
-    peak = torch.where(torch.isfinite(peak), peak, torch.zeros_like(peak))
+    # 全掩码行的 peak 是 finfo.min（有限值），isfinite 挡不住，必须按 has_entity 显式置零，
+    # 否则 -3.4e38 进入 context 的 Linear 会溢出成 ±inf，反传出现 NaN 并把网络参数污染。
+    peak = torch.where(has_entity, peak, torch.zeros_like(peak))
     return torch.cat((mean, peak), dim=-1)
 
 

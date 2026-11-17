@@ -48,7 +48,7 @@ if __name__=='__main__':
     args = parser.parse_args()
     
     args.max_episode_len = 15*60
-    args.R_cage = 60.3e3
+    args.R_cage = 62.00e3
 
     # 构建场地边界，南北长54km，东西宽100km的长方形边界
     vertices = load_init_states()['vertices']

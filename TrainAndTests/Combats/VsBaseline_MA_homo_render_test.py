@@ -43,7 +43,7 @@ if __name__ == '__main__':
     SEED = 42
 
     args.max_episode_len = 15 * 60
-    args.R_cage = 60.3e3
+    args.R_cage = 62.00e3
 
     # 场地边界与默认机数/挂载统一来自 init_states.json
     init_cfg = load_init_states()

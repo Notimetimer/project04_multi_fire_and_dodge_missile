@@ -78,7 +78,7 @@ def test_worker(model_state_dict, rules_num,
                 env_args, device_name='cpu', num_runs=3,
                 vertices=None, save_record=False, use_tacview=USE_TACVIEW,
                 dt_move=0.07,
-                dt_maneuver=0.2,
+                dt_maneuver=0.5,
                 action_cycle_multiplier=1,
                 min_alt_safe=2000,
                 red_init_num=init_cfg['red_init_num'], blue_init_num=init_cfg['blue_init_num'],
@@ -413,35 +413,48 @@ if __name__=='__main__':
     TEMPERATURE = 0.3  # 采样温度：<1更贪婪（机动/目标选取决策趋于确定）
 
     args.max_episode_len = 15*60
-    args.R_cage = 60.3e3
+    args.R_cage = 62.00e3
 
     # 构建场地边界，南北长54km，东西宽100km的长方形边界
     vertices = load_init_states()['vertices']
 
-    # 加载指定训练目录下最新一批 actor（异构：每架红机一份权重，打包为 {id: state_dict}）
+    # 加载指定训练目录下最新一批 actor。
+    # 同构训练只保存单份 actor_rein{batch}.pt；异构（每架一份）才是 actor_rein{batch}_{id}.pt，
+    # 因此这里用两种都覆盖的模式，避免同构目录被 *_*.pt 模式排除掉。
     upper_log_dir = r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat"
     LOG_DIR = os.path.join(upper_log_dir, 
-                           "MAPPO_hetero-run-20261018-001650"
+                           "2MAPPO_homo_HANATTN_SLA_1_blackboard_0-run-20261117-095219"
                            )
-    actor_files = glob.glob(os.path.join(LOG_DIR, "actor_rein*_*.pt"))
+    actor_files = glob.glob(os.path.join(LOG_DIR, "actor_rein*.pt"))
     if not actor_files:
-        raise FileNotFoundError(f"未在 {LOG_DIR} 找到 actor_rein*_*.pt")
-    # 文件名形如 actor_rein{batch}_{id}.pt，解析出 (batch, id) 后取最大 batch 的一批
+        raise FileNotFoundError(f"未在 {LOG_DIR} 找到 actor_rein*.pt")
+    # 文件名形如 actor_rein{batch}.pt 或 actor_rein{batch}_{id}.pt，解析出 (batch, id, path)
     parsed = []
     for f in actor_files:
-        m = re.match(r'actor_rein(\d+)_(\d+)\.pt', os.path.basename(f))
+        m = re.match(r'actor_rein(\d+)(?:_(\d+))?\.pt', os.path.basename(f))
         if m:
-            parsed.append((int(m.group(1)), int(m.group(2)), f))
+            uid = None if m.group(2) is None else int(m.group(2))
+            parsed.append((int(m.group(1)), uid, f))
     latest_batch = max(b for b, _, _ in parsed)
     
-    # 加载的版本号
-    loaded_version = 10 # latest_batch
+    # 加载的版本号：默认取目录内最新一批，避免拿早期弱策略做离线评测；
+    # 需要回看某个历史 checkpoint 时把 latest_batch 改成具体数字即可。
+    loaded_version = latest_batch
     
-    model_state_dict = {
-        uid: torch.load(path, map_location='cpu')
-        for b, uid, path in parsed if b == loaded_version
-    }
-    print(f"加载最新 actor：batch={loaded_version}，红机 id={sorted(model_state_dict.keys())}")
+    # 同构（无 id 后缀）→ 传单份 state_dict，test_worker 会让所有红机共享；
+    # 异构（有 id 后缀）→ 组装 {id: state_dict}。
+    homo_files = [p for b, uid, p in parsed if b == loaded_version and uid is None]
+    hetero_files = [(uid, p) for b, uid, p in parsed if b == loaded_version and uid is not None]
+    if homo_files:
+        model_state_dict = torch.load(homo_files[0], map_location='cpu')
+        print(f"加载 actor（同构）：batch={loaded_version}，所有红机共享同一份权重")
+    elif hetero_files:
+        model_state_dict = {
+            uid: torch.load(path, map_location='cpu') for uid, path in hetero_files
+        }
+        print(f"加载 actor（异构）：batch={loaded_version}，红机 id={sorted(model_state_dict.keys())}")
+    else:
+        raise FileNotFoundError(f"未在 {LOG_DIR} 找到 batch={loaded_version} 的 actor_rein 权重")
 
     stats = test_worker(
         model_state_dict, RULES_NUM, args, num_runs=N_EPISODES, vertices=vertices,

@@ -771,7 +771,7 @@ def _run_env(args):
 
     env_args = argparse.Namespace()
     env_args.max_episode_len = args.max_time
-    env_args.R_cage = 60.3e3
+    env_args.R_cage = 62.00e3
     env = ChooseStrategyEnv(env_args, tacview_show=2, vertices=vertices)
     env.dt_move = args.dt_move
 

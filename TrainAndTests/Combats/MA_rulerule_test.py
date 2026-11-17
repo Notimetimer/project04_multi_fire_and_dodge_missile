@@ -256,7 +256,7 @@ if __name__ == '__main__':
     BLUE_RULES_NUM = 5  # 蓝方规则编号
 
     args.max_episode_len = 15*60
-    args.R_cage = 60.3e3
+    args.R_cage = 62.00e3
 
     # 构建场地边界，南北长 54km，东西宽 100km 的长方形边界
     vertices = load_init_states()['vertices']

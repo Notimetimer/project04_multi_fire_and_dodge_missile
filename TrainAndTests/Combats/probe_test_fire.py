@@ -21,7 +21,7 @@ from _context import take_some_of_rule_inputs, load_obs_dims, stack_field, load_
 
 ACTOR = os.path.join(project_root, 'logs', 'combat', 'MAPPO_homo1v1-run-20261028-201129', 'actor_rein50.pt')
 
-args = argparse.Namespace(max_episode_len=15 * 60, R_cage=60.3e3)
+args = argparse.Namespace(max_episode_len=15 * 60, R_cage=62.00e3)
 vertices = load_init_states()['vertices']
 env = ChooseStrategyEnv(args, tacview_show=0, vertices=vertices)
 env.dt_move = 0.07

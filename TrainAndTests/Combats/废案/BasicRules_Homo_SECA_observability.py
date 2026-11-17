@@ -514,7 +514,7 @@ def run(args):
     init_cfg = load_init_states()
     env_args = argparse.Namespace()
     env_args.max_episode_len = args.max_time
-    env_args.R_cage = 60.3e3
+    env_args.R_cage = 62.00e3
     tacview_show = 2 if args.acmi else 0
     env = ChooseStrategyEnv(env_args, tacview_show=tacview_show,
                             vertices=init_cfg["vertices"])

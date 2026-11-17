@@ -36,7 +36,7 @@ if __name__ == '__main__':
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     args.max_episode_len = 15 * 60
-    args.R_cage = 60.3e3
+    args.R_cage = 62.00e3
 
     # 场地边界与默认机数/挂载统一来自 init_states.json
     init_cfg = load_init_states()
