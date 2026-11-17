@@ -402,11 +402,14 @@ class HanWrapper(nn.Module):
             [log_pi_j[:, sl] - log_pr_g[:, g:g + 1] for g, sl in enumerate(group_slices)],
             dim=-1)                                                              # (B,2A)
 
-        # 联合熵 H^J 与组内条件熵 H^D_j（掩码槽位 pi=0，0*有限值=0 不贡献）
-        H_J = -(pi_j * log_pi_j).sum(-1)                                         # (B,)
-        H_Dj = torch.stack([
-            -(pi_j[:, sl] * log_cond[:, sl]).sum(-1) / pr_g_safe[:, j]
-            for j, sl in enumerate(group_slices)], dim=-1)                        # (B,Ne)
+        # 熵目标只覆盖机动：开火位不参与 H^J / H^D_j，避免 α 把开火概率压向 0.5
+        # （开火由联合 Q 期望与 BCE 监督决定，不再被熵正则拉平；掩码槽位 pi=0，0*有限值=0）
+        pi_man = out['pi'].reshape(B, self.enm_num, N_TDM)                       # (B,Ne,N_TDM)
+        log_pi_man = out['log_pi'].reshape(B, self.enm_num, N_TDM)
+        H_J = -(pi_man * log_pi_man).sum(-1).sum(-1)                             # (B,) 机动熵
+        pr_man = pi_man.sum(-1, keepdim=True)                                    # (B,Ne,1) 组质量
+        log_cond_man = log_pi_man - torch.log(pr_man.clamp_min(eps))
+        H_Dj = -(pi_man * log_cond_man).sum(-1) / pr_man.squeeze(-1).clamp_min(eps)  # (B,Ne)
         # H^D 对存活敌机取均值（式 37 的 1/Ñ Σ 口径）
         enm_mask_f = enm_mask.to(torch.float32)
         H_D = (H_Dj * enm_mask_f).sum(-1) / enm_mask_f.sum(-1).clamp(min=1.0)

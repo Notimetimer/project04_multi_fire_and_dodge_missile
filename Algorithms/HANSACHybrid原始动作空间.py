@@ -123,7 +123,7 @@ class HANSACHybrid:
                  buffer_size=int(1e5),
                  fire_buffer_size=1000, fire_batch_size=128, fire_min_samples=100,
                  min_terminal_samples=32,
-                 kI=0.8, kD=0.8, xi=1.5, alpha_init=0.2, max_grad_norm=5.0,
+                 kI=0.4, kD=0.4, xi=1.5, alpha_init=0.2, max_grad_norm=5.0,
                  device='cpu'):
         self.ac = networks
         self.ac_target = copy.deepcopy(networks)

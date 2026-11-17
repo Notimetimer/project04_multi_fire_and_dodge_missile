@@ -30,7 +30,7 @@ max_episode_duration = 15 * 60  # 回合最长时间，单位s
 if __name__ == '__main__':
     # 自博弈总开关：True = 历史权重入池 + PFSP 自博弈；
     # False = 关闭自博弈，对手池只保留 init_elo_ratings 里的预设规则对手
-    SELF_PLAY = False
+    SELF_PLAY = 1
     # 训练前自动按 init_states.json 刷新 env_obs_dims.json，省去人工重跑生成器
     runpy.run_path(os.path.join(os.path.dirname(os.path.abspath(__file__)), '读取环境参数并存json.py'),
                    run_name='__main__')
@@ -44,7 +44,7 @@ if __name__ == '__main__':
         alpha_lr=1e-4,                # 3e-4 → 1e-4：α 步长远大于网络 lr 会让温度一两个窗口就贴底
         alpha_min=0.02,               # 温度下界：α_D 曾塌到 0.003，熵正则实际失效
         max_steps_of_maneuver=MAX_DEC_STEPS * action_cycle_multiplier,
-        gamma=0.9,
+        gamma=0.85, # 0.9
         tau=0.001,                    # 0.05 → 0.005 → 0.001：目标网络软更新步更小，避免外漂
         batch_size=1024,              # 512 → 1024：降梯度噪声（SAC 内部超参，不改环境/奖励/评测）
         buffer_size=40000,  # 约容纳 80 局（2V2：每决策点 2 条转移）
@@ -84,7 +84,7 @@ if __name__ == '__main__':
         pause_on_finish=1,             # 达标后进入续训提示符（前台运行时手动续训/退出）
         fire_buffer_size=1000,         # 论文 |D_f|=1e3
         fire_batch_size=128,
-        kI=0.8, kD=0.8,                # 论文期望熵系数 kI=kD=0.8
+        kI=0.4, kD=0.4,                # kD：机动目标熵占最大熵的比例（0.4；kI 已废弃）
     )
     end_time = datetime.now()
     print(f"Simulation end: {end_time.isoformat(sep=' ', timespec='seconds')}")

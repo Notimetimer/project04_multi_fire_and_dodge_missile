@@ -479,7 +479,7 @@ def run_HanSAC_simulation(
     pause_on_finish=1,          # 达标后是否进入续训提示符（后台/调试运行设 0 直接退出）
     fire_buffer_size=1000,      # 论文 |D_f|=1e3
     fire_batch_size=128,        # 论文开火监督批 128
-    kI=0.8, kD=0.8,             # 论文期望熵系数
+    kI=0.4, kD=0.4,             # 论文期望熵系数
     **_unused,
 ):
     """HanSAC 主训练函数：离策略 SAC + 开火命中监督（式 35 联合反传）+ 自博弈。"""
@@ -1139,7 +1139,7 @@ if __name__ == '__main__':
             pause_on_finish=0,           # 调试：跑完直接退出，不进续训提示符
             fire_buffer_size=1000,
             fire_batch_size=128,
-            kI=0.8, kD=0.8,
+            kI=0.4, kD=0.4,
         )
     else:
         run_kwargs = dict(
@@ -1174,7 +1174,7 @@ if __name__ == '__main__':
             resume_dir=None,
             fire_buffer_size=1000,
             fire_batch_size=128,
-            kI=0.8, kD=0.8,
+            kI=0.4, kD=0.4,
         )
 
     run_HanSAC_simulation(**run_kwargs)

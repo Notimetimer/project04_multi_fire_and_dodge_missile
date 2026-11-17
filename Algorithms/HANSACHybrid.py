@@ -4,16 +4,18 @@
 - 式(29)-(30)：联合目标 J^J = Σ πJ·Q + αJ·H^J；TIM/TDM 目标在其上加组内条件熵项
   （本实现把 αI·Pr(TIM)·H^I 与 αD·Σ_j Pr(TDM_j)·H^D_j 直接并入软值函数与策略损失，
   与"indicator 加权"形式在期望意义下等价）；
+- 熵目标只覆盖机动：H^J 为 Ne·N_TDM 个机动槽位上的熵，H^D_j 为敌机组内 TDM 条件熵；
+  开火位不进入熵目标（|AD|=N_TDM），开火只由联合 Q 期望与 Lf(BCE) 驱动；
 - 式(31)-(33)：双 Q 的 TD 目标，软值含联合熵与分组熵，target 网络软更新（式 39，τ 由调用方设定）；
 - 式(34)：策略损失 Lπ；式(35)：本实现不沿用论文的共享骨干单次联合反传，改为
   actor / critic 各自独立骨干与独立优化器、分步反传（标准 SAC 口径，见类 docstring 偏差声明）；
   （更新节奏：Q 每次更新都反传，π/温度每 actor_update_every 次更新反传一次，
    Lf 每 fire_update_every 次更新反传一次，各自在自己的参数上裁剪梯度。）
-- 式(36)-(38)：αI/αD/αJ 三个温度分别自动调节；期望熵 Ḅ^I=kI·log|AI|、Ḅ^D=kD·log|AD|，
-  Ḅ^J 按式(48) 由当前组质量自适应合成（Pr(TIM)·Ḅ^I + Σ Pr(TDM_j)·Ḅ^D + H(Γ)）；
+- 式(36)-(38)：αD/αJ 两个温度自动调节（TIM 已删除，αI 一并移除）；目标熵按"占最大熵的比例"设定：
+  Ḅ^D=kD·log(N_TDM)、Ḅ^J_Ñ=kD·log(Ñ·N_TDM)，kD=0.4（有意偏差：式(48) 的 log(Ñ)+Ḅ^D 约占 84%）；
 - 经验回放：D_BFM（机动转移，容量 1e5）与 D_f（开火命中记录，容量 1e3，批 128）；
-- 开火进 RL 梯度（已声明偏差）：双 Q 覆盖"机动 × 开火"联合动作，开火位进入 soft value、
-  策略损失与熵项，因此 RL 梯度可以更新独立 fire_head；Lf（式 28）只做 BCE 且 backbone
+- 开火进 RL 梯度（已声明偏差）：双 Q 覆盖"机动 × 开火"联合动作，开火位进入 soft value 与
+  策略损失（不进入熵目标），因此 RL 梯度可以更新独立 fire_head；Lf（式 28）只做 BCE 且 backbone
   已 detach，梯度只落在 fire_head（与 PPO 的 supervised_fire_update 同口径）。
 
 数据约定（与 CombatHanSAC_parall_homo.worker_process_han 对齐）：
@@ -126,7 +128,7 @@ class HANSACHybrid:
     已声明偏差：
     1) actor 与 critic 各自持有独立骨干、独立优化器（标准 SAC 口径），取代论文式(35)
        的共享骨干单次反传；
-    2) 双 Q 覆盖"机动 × 开火"联合动作，开火进入 policy/Q/熵项（论文把开火排除在 RL 梯度外）；
+    2) 双 Q 覆盖"机动 × 开火"联合动作，开火进入 policy/Q，但不参与熵目标（熵只约束机动）；
     3) Lf 只更新独立 fire_head，backbone 侧 detach（与 PPO 的 supervised_fire_update 同口径）。
     （TIM 已删除：αI/H_I 一并移除，实际只保留 αD/per-Ñ αJ 两类温度。）"""
 
@@ -135,7 +137,7 @@ class HANSACHybrid:
                  buffer_size=int(1e5),
                  fire_buffer_size=1000, fire_batch_size=128, fire_min_samples=100,
                  min_terminal_samples=32,
-                 kI=0.8, kD=0.8, xi=1.5, alpha_init=0.2, alpha_min=0.02, max_grad_norm=5.0,
+                 kI=0.4, kD=0.4, xi=1.5, alpha_init=0.2, alpha_min=0.02, max_grad_norm=5.0,
                  device='cpu',
                  actor_update_every=5, fire_update_every=1):
         self.ac = networks
@@ -171,12 +173,13 @@ class HANSACHybrid:
         # 每次 α 步后把 log α 夹到 ln(alpha_min)，保证熵正则始终在场。
         self.alpha_min = float(alpha_min)
 
-        # 期望熵：H̄D = kD·log|AD|（论文取 kI=kD=0.8）
-        # 联合动作含开火位，故 |AD| = 2·N_TDM（机动 × {不发射, 发射}）；
-        # TIM 已删除：kI/ξ 仅为入口兼容保留，不参与计算；
-        # 式(48) 在 |AI|→0 的极限下退化为 H̄J_Ñ = log(Ñ) + H̄D（Ñ=0 取 0 占位）。
-        self.B_D = float(kD * np.log(2 * N_TDM))
-        self.B_J_table = [float(np.log(n) + self.B_D) if n > 0 else 0.0
+        # 期望熵：机动目标熵 = kD × 最大熵（kD 现表示"目标熵/最大熵"比例，默认 0.4）
+        # 熵目标只覆盖机动，开火位不计入；组内条件熵 ḄD = kD·log(N_TDM)，
+        # 联合机动熵 ḄJ_Ñ = kD·log(Ñ·N_TDM)（Ñ=0 取 0 占位）。
+        # 有意偏差：论文式(48) 为 log(Ñ)+ḄD（2V2 时约占最大熵 84%），本实现统一压到 kD 比例；
+        # TIM 已删除：kI/ξ 仅为入口兼容保留，不参与计算。
+        self.B_D = float(kD * np.log(N_TDM))
+        self.B_J_table = [float(kD * np.log(n * N_TDM)) if n > 0 else 0.0
                           for n in range(self.enm_num + 1)]
 
         self.buffer = ReplayBuffer(buffer_size)                    # D_BFM
@@ -337,7 +340,7 @@ class HANSACHybrid:
 
             # ---------------- 温度更新（式 36-38，熵全部 detach；与 actor 同步） ----------------
             # 式(37)：TDM 熵只统计 Ñ>0 的样本；
-            # 式(38)：联合熵按存活敌机数 Ñ 分桶，每桶独立温度，期望值查 B_J_table（固定 ξ，式 48）
+            # 式(38)：联合熵按存活敌机数 Ñ 分桶，每桶独立温度，期望值查 B_J_table（ḄJ_Ñ = kD·log(Ñ·N_TDM)）
             # （TIM 已删除：式(36) 的 αI 项不再存在）
             surv = out_pi['enm_mask'].any(-1).to(torch.float32)          # Ñ>0 过滤
             n_surv = (surv * active).sum().clamp(min=1.0)
