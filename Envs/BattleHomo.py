@@ -467,7 +467,7 @@ class Battle(object):
             UAV.got_a_miss = 0 # 发射的导弹脱靶
             UAV.got_a_kill = 0 # 发射的导弹命中目标
             UAV.can_let_go = 0 # 发射的导弹锁定目标
-            
+            UAV.i_can_guide_msl = 0  # 我可以为导弹提供制导吗？
             if is_red:
                 self.RUAVsTable[UAV.id] = UAV
             else:
@@ -894,6 +894,8 @@ class Battle(object):
                     UAV.move(elevator, aileron, throttle, relevant_height=True, e2e=True, rudder=rudder, dt=self.dt_move)
                 else:
                     UAV.move(target_delta_height, target_delta_heading, target_speed, relevant_height=True, e2e=0, rudder=rudder)
+                # 清空制导状态
+                UAV.i_can_guide_msl = 0  # 我可以为导弹提供制导吗？
 
             # 导弹移动
             self.update_entity_states() # 先把存活的导弹找出来
@@ -926,6 +928,7 @@ class Battle(object):
                     if uav.id == missile.launcher_id:
                         if uav.can_offer_guidance(missile, self.UAVs):
                             has_datalink = True
+                            uav.i_can_guide_msl = 1  # 我可以为导弹提供制导
                 last_vmt_, last_pmt_, _, _, _, _, _, _, _, _ = \
                     missile.step(target_info, dt=self.dt_move, datalink=has_datalink)
                 # 毁伤判别

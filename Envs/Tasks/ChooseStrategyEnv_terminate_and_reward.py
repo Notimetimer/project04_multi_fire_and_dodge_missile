@@ -94,6 +94,7 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             egoside_unused_msl_num =  self.unused_r_missile_num
             ego_uav_avg_pos_ =        self.alive_r_uav_avg_pos_
             alive_ally_missiles =     self.alive_r_missiles
+            our_prim_visable =        self.prim_r2b_visable
             # 对手侧
             enmside_alive_uavs =      self.alive_b_uavs
             enmside_alive_msls =      self.alive_b_missiles
@@ -108,6 +109,7 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             egoside_unused_msl_num =  self.unused_b_missile_num
             ego_uav_avg_pos_ =        self.alive_b_uav_avg_pos_
             alive_ally_missiles =     self.alive_b_missiles
+            our_prim_visable =        self.prim_b2r_visable
             # 对手侧
             enmside_alive_uavs =      self.alive_r_uavs
             enmside_alive_msls =      self.alive_r_missiles
@@ -116,6 +118,14 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             last_surround_angle =     self.last_b2r_surround_angle
             enm_uav_avg_pos_ =        self.alive_r_uav_avg_pos_
 
+        # 能直接看到几个敌机
+        same_side_ids = self.RUAV_ids if side == 'r' else self.BUAV_ids
+        idx_in_my_team = same_side_ids.index(id)
+        sighted_enm_num = 0
+        for vis in our_prim_visable[idx_in_my_team, :]:
+            sighted_enm_num += 1 if vis==2 else 0
+        
+        
         # 胜负平续判决
         self.close_range_kill() # 允许跑刀
         if getattr(self, 'last_shoot_9x_t', None) != self.t: # 同一帧内多机重复调用只执行一次
@@ -246,7 +256,16 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
             else:
                 # 锁定/被锁定
                 if missile_t_fly >= 30: # 开火后短时间内豁免保持锁定的需要
-                    r_shaping += (ego_has_lock - ego_is_locked) * DENSE_REWARD_WEIGHT * 0.75 # * 1
+                    # 探测有效性奖励
+                    # r_shaping += (ego_has_lock - ego_is_locked) * DENSE_REWARD_WEIGHT * 0.75 # * 1
+                    # 探测数量奖励
+                    r_shaping += (sighted_enm_num - ego_is_locked) * DENSE_REWARD_WEIGHT * 0.75 # * 1
+                
+                if ego.i_can_guide_msl:
+                    r_shaping += DENSE_REWARD_WEIGHT  # 我可以为导弹提供中制导
+                
+                if not ego_is_locked and not ego.dead:
+                    r_shaping += 0.75 * DENSE_REWARD_WEIGHT  # （隐蔽奖励）
                 
                 # 漏选/未选取目标惩罚：如果有alive enm uav没有被己方任何飞机或者导弹选中，全队扣分
                 enm_allocateIDs4missile = [missile.target_id for missile in alive_ally_missiles]
