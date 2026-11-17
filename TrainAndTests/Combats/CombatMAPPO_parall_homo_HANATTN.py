@@ -12,8 +12,8 @@
 #
 # ---- 算法偏差 declared_deviations（与 run_config.json 同一份清单，见 DECLARED_DEVIATIONS）----
 # 以下 D1~D6 摘自 Algorithms/ActorWithHANATTN.py 模块 docstring 的已声明偏差：
-#   D1 无 ally 输入：HAN encoder 只编码 (ego, enm*) 序列，队友嵌入与 Q/K/V/LayerNorm 全删；
-#      环境仍照常产生 ally 观测，只是 actor 不再读取（Critic 仍读全局状态）。
+#   D1 队友不引出到动作空间：ally token 与 ego/enm 一样参与自注意力（三类实体各自独立
+#      Q/K/V + LayerNorm），但动作头只读 ego（TIM）与 enm（TDM/开火），不读 ally 嵌入。
 #   D2 未实现 RWR 规避掩码：TIM 的 hor 索引 7~11 不在 ActorWithATTN 的规避放行集合 {2,3,4} 内，
 #      照搬会把 TIM 整体禁死，故不做该掩码（与 AMAACWrapper/HanWrapper 一致）。
 #   D3 无 SAC/双 Q：论文用 hybrid SAC（熵自动调节、双 Q、离策略）；本入口只保留 PPO 侧，
@@ -80,8 +80,8 @@ TEST_RULE_IDS = [0, 1, 2, 3]
 DECLARED_DEVIATIONS = [
     "actor: Algorithms.ActorWithHANATTN.ActorWrapper（HAN 异构自注意力 encoder + TIM/TDM 扁平混合动作头），"
     "主方法为 Algorithms.ActorWithATTN.ActorWrapper",
-    "D1 无 ally 输入：HAN encoder 只编码 (ego, enm*) 序列，队友嵌入与 Q/K/V/LayerNorm 全删；"
-    "环境仍产生 ally 观测，actor 不读取（Critic 仍读全局状态）",
+    "D1 队友不引出到动作空间：ally token 与 ego/enm 一样参与自注意力（各自独立 Q/K/V + LayerNorm），"
+    "动作头只读 ego（TIM）与 enm（TDM/开火），不读 ally 嵌入",
     "D2 未实现 RWR 规避掩码：TIM 的 hor 索引 7~11 不在 ActorWithATTN 的规避放行集合 {2,3,4} 内，"
     "照搬会禁死 TIM，故不做（与 AMAACWrapper/HanWrapper 一致）",
     "D3 无 SAC/双 Q：论文为 hybrid SAC，本入口只保留 PPO 侧（采样 + evaluate_actions 重算），"

@@ -2,13 +2,14 @@
 
 论文对照（Addressing Hybrid Action of BVR Engagement With Joint Policy Optimization,
 Han et al., IEEE TAES 2026）：
-- 式(9)(11)-(16)：fixed(ego) / enm 两类实体各自独立的 Q/K/V 投影（原实现含 ally 一档，
-  本次按需求删除 ally），拼接为统一序列做掩码缩放点积自注意力，残差 + LayerNorm；
-  论文实验为 2 层注意力，本实现层数由 attn_layers 控制、默认 2。
+- 式(9)(11)-(16)：观测被重组为 (ego, enm*, ally*) 三类实体序列；self / teammate /
+  opponent 各自持有独立的 Q/K/V 投影，拼接为统一序列做掩码缩放点积自注意力，
+  残差 + LayerNorm；论文实验为 2 层注意力，本实现层数由 attn_layers 控制、默认 2。
+  队友（ally）token 与其余实体一样参与注意力交互，但动作头不读取它（见偏差 2）。
 - 式(17)(18)：ego 嵌入经 MLP 出 TIM logits；每个敌机嵌入经共享 MLP 出 TDM logits
   与开火 logit（式 18 的 MLP_F / MLP_D 共享前置处理器，输出头独立）。
 - 式(21)：TIM logits 与各敌机 TDM logits 拼接为一个扁平动作向量，带 mask 的单一
-  softmax；本次改造即"一次性带 mask 采样"，不再自回归选敌机 → 选机动。
+  softmax，即"一次性带 mask 采样"，不做自回归选敌机 → 选机动。
 - 式(19)(20)：开火目标 j* = argmax_j πF,j；本仓库沿用 ActorWithATTN/AMAACWrapper 口径，
   对"选中敌机"（TDM 动作为其绑定的敌机，TIM 动作为 j*）取 Bernoulli 采样，并把
   手工禁火规则作为硬 mask 叠到 logit 上（8 条：可观测、40°锥、锁定、俯仰<15°、
@@ -23,7 +24,8 @@ JPO_TIM_ACTIONS / JPO_TDM_ACTIONS / N_JPO_TIM / N_JPO_TDM，单一事实来源�
 已声明偏差（declared_deviations，合并/写结论前须同步进 run_config.json）：
 1. 交叉注意力（PointerNetAttention / CrossAttentionPooling）整体删除：敌机选取由
    扁平 masked softmax 一并完成，不再有独立的指针网络目标分布。
-2. 队友特征不再读取：序列只保留 (ego, enm*)，ally 的嵌入与 Q/K/V/LayerNorm 全删。
+2. 队友 token 参与自注意力编码（与本机、敌机一样持有独立 Q/K/V 与 LayerNorm），
+   但动作头只读本机 token（TIM）与敌机 token（TDM/开火），不把队友嵌入引出到动作空间。
 3. 论文式(19)(26) 的开火目标恒为 j* 且与机动解耦；本实现为与 ActorWithATTN 的
    enm_idx 语义对齐，TDM 动作的开火目标绑定其机动绑定的敌机，TIM 动作取 j*。
 4. 未使用 RWR 规避掩码（与 AMAACWrapper 一致）。原因：TIM 的 hor 索引 7~11 不在
@@ -34,6 +36,8 @@ JPO_TIM_ACTIONS / JPO_TDM_ACTIONS / N_JPO_TIM / N_JPO_TDM，单一事实来源�
    MAPPOHybrid，本文件不含任何 SAC/双 Q/目标网络逻辑。
 6. 无 MHP 命中预测模型与阈值开火（论文 §III-A、算法1）：开火为本仓库统一的学习型
    Bernoulli 头 + 规则硬门控。
+7. 温度只缩放机动 logits（扁平 TIM/TDM 分布），开火 Bernoulli 的 logit 不做温度缩放；
+   采样端与 evaluate_actions 端口径一致。
 
 接口约定与 Algorithms/ActorWithATTN.py / AMAACWrapper.py 保持一致（可被
 MAPPOHybrid 直接驱动）：
@@ -88,10 +92,9 @@ def _mlp(in_dim, hidden):
 class HeterogeneousSelfAttention(nn.Module):
     """异构自注意力层（式 11-13、15、16），保留原有 HanAttention 的核心结构：
 
-    - fixed(ego) 与 enm 两类实体各自持有独立的 Q/K/V 投影（原实现的 ally 一档已删除，
-      队友特征不再参与任何计算）；
-    - 沿 seq 维拼接为统一序列做一次 scaled dot-product 自注意力；
-    - key 侧按 enm 掩码屏蔽阵亡/无效敌机，ego 槽位恒有效（保证每行 softmax 不退化）；
+    - ego / ally / enm 三类实体各自持有独立的 Q/K/V 投影（不同权重矩阵）；
+    - 沿 seq 维拼接为统一序列 (ego, enm*, ally*) 做一次 scaled dot-product 自注意力；
+    - key 侧按 enm / ally 掩码屏蔽阵亡/无效实体，ego 槽位恒有效（保证 softmax 不退化）；
     - 按类型切回后各做残差 + LayerNorm（式 16），使同类层可堆叠到 2 层。
     """
 
@@ -107,51 +110,64 @@ class HeterogeneousSelfAttention(nn.Module):
         self.w_q_e = nn.Linear(embed_dim, embed_dim)
         self.w_k_e = nn.Linear(embed_dim, embed_dim)
         self.w_v_e = nn.Linear(embed_dim, embed_dim)
+        # ally 类独立投影
+        self.w_q_a = nn.Linear(embed_dim, embed_dim)
+        self.w_k_a = nn.Linear(embed_dim, embed_dim)
+        self.w_v_a = nn.Linear(embed_dim, embed_dim)
         # 式(16)：LayerNorm(e + ζV)，按类型各一份
         self.ln_f = nn.LayerNorm(embed_dim)
         self.ln_e = nn.LayerNorm(embed_dim)
+        self.ln_a = nn.LayerNorm(embed_dim)
 
-    def forward(self, e_f, e_e, enm_mask=None):
-        # e_f: (B, 1, D), e_e: (B, Ne, D)；enm_mask: (B, Ne) bool
-        Q = torch.cat((self.w_q_f(e_f), self.w_q_e(e_e)), dim=1)   # (B, 1+Ne, D)
-        K = torch.cat((self.w_k_f(e_f), self.w_k_e(e_e)), dim=1)
-        V = torch.cat((self.w_v_f(e_f), self.w_v_e(e_e)), dim=1)
+    def forward(self, e_f, e_e, e_a, enm_mask=None, ally_mask=None):
+        # e_f: (B, 1, D), e_e: (B, Ne, D), e_a: (B, Na, D)；mask: (B, Ne)/(B, Na) bool
+        Q = torch.cat((self.w_q_f(e_f), self.w_q_e(e_e), self.w_q_a(e_a)), dim=1)  # (B, s, D)
+        K = torch.cat((self.w_k_f(e_f), self.w_k_e(e_e), self.w_k_a(e_a)), dim=1)
+        V = torch.cat((self.w_v_f(e_f), self.w_v_e(e_e), self.w_v_a(e_a)), dim=1)
 
         scores = torch.matmul(Q, K.transpose(-2, -1)) * self.scale  # (B, s, s)
-        if enm_mask is not None:
+        if enm_mask is not None or ally_mask is not None:
             B, s, _ = Q.shape
             N_e = e_e.shape[1]
+            N_a = e_a.shape[1]
             key_valid = torch.ones(B, s, dtype=torch.bool, device=Q.device)
-            key_valid[:, 1:1 + N_e] = enm_mask
+            if enm_mask is not None:
+                key_valid[:, 1:1 + N_e] = enm_mask
+            if ally_mask is not None:
+                key_valid[:, 1 + N_e:1 + N_e + N_a] = ally_mask
             scores = scores.masked_fill(~key_valid.unsqueeze(1), -_MASK_VAL)
 
         out = torch.matmul(torch.softmax(scores, dim=-1), V)        # (B, s, D)
         N_e = e_e.shape[1]
-        e_f_new = self.ln_f(e_f + out[:, 0:1, :])                   # (B, 1, D)
-        e_e_new = self.ln_e(e_e + out[:, 1:1 + N_e, :])             # (B, Ne, D)
-        return e_f_new, e_e_new
+        N_a = e_a.shape[1]
+        e_f_new = self.ln_f(e_f + out[:, 0:1, :])                          # (B, 1, D)
+        e_e_new = self.ln_e(e_e + out[:, 1:1 + N_e, :])                    # (B, Ne, D)
+        e_a_new = self.ln_a(e_a + out[:, 1 + N_e:1 + N_e + N_a, :])        # (B, Na, D)
+        return e_f_new, e_e_new, e_a_new
 
 
 class HANEntityEncoder(nn.Module):
     """观测-实体编码器：类型专属线性嵌入 → n_layers 层 HeterogeneousSelfAttention。
 
-    序列顺序 (ego, enm*)，读取 ego token 与各敌机 token；不再构造/读取 ally 序列。
+    序列顺序 (ego, enm*, ally*)，三类实体都参与注意力；动作头只读 ego 与 enm。
     """
 
-    def __init__(self, fixed_dim, enm_dim, embed_dim=32, attn_layers=2):
+    def __init__(self, fixed_dim, enm_dim, ally_dim, embed_dim=32, attn_layers=2):
         super().__init__()
         self.fixed_embed = nn.Linear(fixed_dim, embed_dim)
         self.enm_embed = nn.Linear(enm_dim, embed_dim)
+        self.ally_embed = nn.Linear(ally_dim, embed_dim)
         self.layers = nn.ModuleList(
             [HeterogeneousSelfAttention(embed_dim) for _ in range(attn_layers)])
 
-    def forward(self, fixed, enm, enm_mask=None):
-        # fixed: (B, F), enm: (B, Ne, De)；mask: (B, Ne) bool
+    def forward(self, fixed, enm, ally, enm_mask=None, ally_mask=None):
+        # fixed: (B, F), enm: (B, Ne, De), ally: (B, Na, Da)；mask: (B, Ne)/(B, Na) bool
         e_f = self.fixed_embed(fixed.unsqueeze(1))   # (B, 1, E)
         e_e = self.enm_embed(enm)                    # (B, Ne, E)
+        e_a = self.ally_embed(ally)                  # (B, Na, E)
         for layer in self.layers:
-            e_f, e_e = layer(e_f, e_e, enm_mask)
-        return e_f.squeeze(1), e_e
+            e_f, e_e, e_a = layer(e_f, e_e, e_a, enm_mask, ally_mask)
+        return e_f.squeeze(1), e_e, e_a
 
 
 class HANPilot(nn.Module):
@@ -191,7 +207,7 @@ class ActorWrapper(nn.Module):
         super().__init__()
         self.fixed_dim = fixed_dim
         self.enm_shape = tuple(enm_shape)
-        # ally_shape 仅为保持构造签名兼容：队友特征不再被读取（见模块 docstring 偏差 2）
+        # 队友作为第三类实体进入自注意力；其输出不接入动作头（见模块 docstring 偏差 2）
         self.ally_shape = tuple(ally_shape)
         self.enm_num = self.enm_shape[0]
         self.ally_num = self.ally_shape[0]
@@ -199,7 +215,8 @@ class ActorWrapper(nn.Module):
         # fire_included_in_rl=0 时 RL 的 log_prob/熵不含 fire 分支（口径同 ActorWithATTN）
         self.fire_included_in_rl = bool(ppo_with_bern)
 
-        self.encoder = HANEntityEncoder(fixed_dim, self.enm_shape[1], embed_dim, attn_layers)
+        self.encoder = HANEntityEncoder(
+            fixed_dim, self.enm_shape[1], self.ally_shape[1], embed_dim, attn_layers)
         self.pilot = HANPilot(embed_dim, mlp_hidden)
 
         # (vert,hor)->组内 idx 反向查找与正向动作表（非参数、不入 state_dict）
@@ -219,26 +236,33 @@ class ActorWrapper(nn.Module):
     def _pack(self, agent_inputs, mask_inputs):
         """接受单样本（无 batch 维）或批量输入，统一成 (B, ...) 张量。
 
-        只读 fixed / enm 与 enm 掩码；agent_inputs['ally'] 与 mask_inputs['ally'] 一律不读。
+        读取 fixed / enm / ally 与 enm / ally 掩码；三类实体都参与自注意力编码，
+        其中 ally 只进入 encoder，不进入动作头。
         """
         device = self.device
         fixed = torch.as_tensor(np.asarray(agent_inputs['fixed']), dtype=torch.float32, device=device)
         enm = torch.as_tensor(np.asarray(agent_inputs['enm']), dtype=torch.float32, device=device)
+        ally = torch.as_tensor(np.asarray(agent_inputs['ally']), dtype=torch.float32, device=device)
         if fixed.ndim == 1:
             fixed = fixed.unsqueeze(0)
         if enm.ndim == 2:
             enm = enm.unsqueeze(0)
+        if ally.ndim == 2:
+            ally = ally.unsqueeze(0)
         B = fixed.shape[0]
 
-        m = None if mask_inputs is None else mask_inputs.get('enm')
-        if m is None or np.asarray(m).size == 0:
-            enm_mask = torch.ones(B, self.enm_num, dtype=torch.bool, device=device)
-        else:
-            enm_mask = torch.as_tensor(np.asarray(m), dtype=torch.bool, device=device)
-            if enm_mask.ndim == 1:
-                enm_mask = enm_mask.unsqueeze(0).expand(B, -1)
-            enm_mask = enm_mask.reshape(B, self.enm_num)
-        return fixed, enm, enm_mask
+        def _mask(key, num):
+            m = None if mask_inputs is None else mask_inputs.get(key)
+            if m is None or np.asarray(m).size == 0:
+                return torch.ones(B, num, dtype=torch.bool, device=device)
+            out = torch.as_tensor(np.asarray(m), dtype=torch.bool, device=device)
+            if out.ndim == 1:
+                out = out.unsqueeze(0).expand(B, -1)
+            return out.reshape(B, num)
+
+        enm_mask = _mask('enm', self.enm_num)
+        ally_mask = _mask('ally', self.ally_num)
+        return fixed, enm, ally, enm_mask, ally_mask
 
     # ------------------------------------------------------------------ 手工禁火门控
     # 与 AMAACWrapper._fire_gate / HanWrapper._fire_gate 完全相同的手工禁火规则
@@ -280,10 +304,10 @@ class ActorWrapper(nn.Module):
         TIM 槽位恒有效，敌机 j 的 TDM 槽位随该敌机的有效掩码一并屏蔽（式 21 的 mask）。
         """
         device = self.device
-        fixed, enm, enm_mask = self._pack(agent_inputs, mask_inputs)
+        fixed, enm, ally, enm_mask, ally_mask = self._pack(agent_inputs, mask_inputs)
         B = fixed.shape[0]
 
-        e_self, e_enm = self.encoder(fixed, enm, enm_mask)
+        e_self, e_enm, _ = self.encoder(fixed, enm, ally, enm_mask, ally_mask)
         heads = self.pilot(e_self, e_enm)
 
         tdm_mask = enm_mask.unsqueeze(-1).expand(
@@ -458,14 +482,14 @@ class ActorWrapper(nn.Module):
         调用方（MAPPOHybrid.supervised_fire_update）只放行 pilot.fire_head 的梯度。
         """
         device = self.device
-        fixed, enm, enm_mask = self._pack(agent_inputs, mask_inputs)
+        fixed, enm, ally, enm_mask, ally_mask = self._pack(agent_inputs, mask_inputs)
         B = fixed.shape[0]
         enm_idx = torch.as_tensor(np.asarray(enm_idx), dtype=torch.long, device=device).reshape(-1)
         hit = torch.as_tensor(np.asarray(hit), dtype=torch.float32, device=device).reshape(-1)
         if enm_idx.numel() != B or hit.numel() != B:
             raise ValueError('enm_idx/hit 长度必须等于观测 batch')
 
-        _, e_enm = self.encoder(fixed, enm, enm_mask)
+        _, e_enm, _ = self.encoder(fixed, enm, ally, enm_mask, ally_mask)
         opp_feat = self.pilot.opp_backbone(e_enm)                    # (B,Ne,H)
         feat_sel = opp_feat.gather(
             1, enm_idx.view(-1, 1, 1).expand(-1, 1, opp_feat.shape[-1])).squeeze(1)

@@ -957,10 +957,10 @@ def run_AMAAC_simulation(
             },
             'seeds': {'global': 42, 'worker': 'worker_process 内按 42 播种（与主方法一致）'},
             'declared_deviations': [
-                '观测元素异构(fixed28/enm11/ally9) -> 类型专属线性嵌入(论文为零填充共享W_o)，注意力机制同式(23)-(25)',
+                '观测元素异构(fixed28/enm20/ally9) -> 类型专属线性嵌入(论文为零填充共享W_o)，注意力机制同式(23)-(25)',
                 'embed_dim=64(论文OFE输出16)，与主方法容量对齐',
                 'TIM/TDM 离散混合动作空间替代论文连续机动+MHP开火(同 HanWrapper)',
-                '无导弹告警嵌入(观测接口无此字段)；网络不消费 enm_chosen 字段；不使用RWR规避掩码(同HanWrapper)',
+                '无独立导弹告警嵌入(仅 fixed 中的单条 RWR 记录随 fixed_embed 进入 self token)；网络不消费 enm_chosen 字段；不使用RWR规避掩码(同HanWrapper)',
                 '无MHP命中预测模型，开火为本仓库统一学习型Bernoulli头+规则硬门控',
                 'critic 按本仓库逐体局部观测调用、self token 读出价值(论文为全体UAV序列CTDE)；get_value 不传掩码',
                 '输出层不取 Tanh(离散logits/无界价值；论文 Tanh 对应连续动作区间)',

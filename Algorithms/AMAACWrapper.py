@@ -6,31 +6,32 @@ An Attention-Based Multiagent Actor–Critic Approach, IEEE TAES 2025）：
   存活/可观测掩码序列 M_ofe 作用于注意力 key 侧；
 - 式(23)-(25)：OFE 注意力层——嵌入序列沿特征维均分为 N_ah=2 头，每头一个线性 W_k，
   Q=K=V=W_k(·) 权重共享（tied），掩码缩放点积注意力，拼接各头后残差 + LayerNorm；
-  actor-critic 只取序列首元素 e_1（self token）；
+  self token 读出价值（critic）与 TIM 机动（actor）；各敌机 token 读出 TDM/开火（偏差 3）；
 - 式(28) / Table III：actor MLP (3 隐层 ×128, ReLU)；
-- 式(29)-(32) / 图6 / Table III：集中式 critic——实体编码序列过 N_c=4 头 tied-QKV
-  注意力层，MLP (3,128) 出价值；
-- Table III：OFE 输出 16（本实现 embed_dim 默认 16，已对齐）、注意力层激活 GELU、
-  MLP 隐层 ReLU；Table II 的 RL 超参（PPO clip 0.1、lr 5e-4、γ_A=0.995、λ1=0.98 等）
-  属训练器配置，由启动器在 run_config.json 声明，不在本网络封装内固定。
+- 式(29)-(32) / 图6 / Table III：集中式 critic——实体编码序列过 N_c=4 头、单层
+  tied-QKV 注意力，MLP (3,128) 出价值；
+- Table III：OFE 输出 16、注意力层激活 GELU、MLP 隐层 ReLU；本实现实际使用
+  embed_dim=64（构造函数默认值与启动器 run_config 一致，属 declared_deviation 2）。
+  Table II 的 RL 超参（PPO clip 0.1、lr 5e-4、γ_A=0.995、λ1=0.98 等）属训练器配置，
+  由启动器在 run_config.json 声明，不在本网络封装内固定。
 
 动作空间（与 HanWrapper 完全同一套 TIM/TDM 构造，import 共享保证对比公平性）：
 - TIM（目标无关机动，11 个）：(vert,hor) ∈ {0,1,2}×{7,8,9} ∪ {(1,10),(1,11)}；
 - TDM（目标相关机动，每敌机 6 个）：vert=1 平飞，hor ∈ 0~5；
 - 扁平机动动作数 A = N_TIM + N_enm × N_TDM（2V2 时 11+2×6=23），单一 masked softmax；
 - 开火 = 每敌机 Bernoulli，手工禁火门控（可观测、40°锥、已锁定、15°仰角、<100km、
-  30s 冷却、弹药、敌机存活）作为硬 mask 叠到 logit 上——与 HanWrapper/ActorWithATTN 同口径。
+  30s 冷却、弹药、敌机存活）作为硬 mask 叠到 logit 上——与 HanWrapper/ActorWithATTN 同口径；
+  温度只缩放机动 logits，开火 Bernoulli 的 logit 不做温度缩放，采样端与 evaluate_actions 一致。
 
 已声明偏差（declared_deviations，合并/写结论前须同步进 run_config.json）：
-1. 论文观测元素统一 10 维零填充 + 共享 W_o；本仓库 fixed(28)/enm(11)/ally(9) 维度异构，
+1. 论文观测元素统一 10 维零填充 + 共享 W_o；本仓库 fixed(28)/enm(20)/ally(9) 维度异构，
    改为类型专属线性嵌入到统一 embed_dim（与 HanWrapper 相同的输入适配），注意力机制本身与式(23)-(25)一致。
-2. 论文 OFE 输出 16 维、告警嵌入 8 维；本实现 embed_dim 默认 16（对齐 Table III），
-   告警嵌入按方位/俯仰两路 Embedding 相加凑 embed_dim（论文 8 维，见 MissileWarningEmbed）。
+2. 论文 OFE 输出 16 维；本实现与启动器 run_config 一致，实际使用 embed_dim=64（构造默认值）。
 3. 论文 actor 输入仅 e_1^ofe（机动为目标无关连续量，开火由 MHP 模型门控）；本实现为适配
    TIM/TDM 离散混合动作空间，TIM 头读 self token，TDM/开火头逐敌机读其实体 token（同 HanWrapper）。
-4. 导弹告警嵌入：本仓库 fixed 仅含最近一枚来袭威胁的 RWR 单条记录（非论文的告警序列），
-   以 [warning, cos, sin, theta, dist] 5 维做 10° 分桶嵌入加到 self token；未使用
-   RWR 规避掩码（与 HanWrapper 一致）。
+4. 论文对来袭告警单独做 Embedding 后加到 self token；本实现未实现独立的告警嵌入，
+   fixed 观测中的单条 RWR 记录随 fixed 一起经 fixed_embed 线性投影进入 self token。
+   未使用 RWR 规避掩码（与 HanWrapper 一致）。
 5. 无 MHP 命中预测模型与阈值开火（论文 §III-A、算法1）：开火为本仓库统一的学习型
    Bernoulli 头 + 规则硬门控，与主方法/HanWrapper 完全相同。
 6. 论文 critic 输入全体 UAV 观测序列、输出全体红机价值序列（CTDE）；本仓库训练管线
@@ -357,6 +358,7 @@ class AMAACActorWrapper(nn.Module):
         log_prob_enm = log π_flat（含 TDM 目标绑定），log_prob_act = log p_fire（可选剔除），
         二者之和为联合动作 log_prob（与 evaluate_actions['log_prob'] 同一语义）。
         enm_idx：外部指派目标槽位（仅部署/测试），限制 TDM 组到该敌机；训练必须为 None。
+        temperature：玻尔兹曼温度，仅缩放机动（TIM/TDM 扁平）分布，不作用于开火分支。
         """
         with torch.no_grad():
             out = self._policy_logits(agent_inputs, mask_inputs, rule_inputs)
@@ -372,8 +374,9 @@ class AMAACActorWrapper(nn.Module):
                     restrict[:, sl] = (enm_idx == j).unsqueeze(-1)
                 logits = logits.masked_fill(~restrict, -_MASK_VAL)
 
-            temp = max(temperature, 1e-3)
-            maneuver_dist = Categorical(logits=logits / temp)
+            # 温度只作用于机动分布；下限仅防止 temperature≈0 时出现除零
+            maneuver_temp = max(float(temperature), 1e-3)
+            maneuver_dist = Categorical(logits=logits / maneuver_temp)
             flat_idx = maneuver_dist.sample()
             log_prob_maneuver = maneuver_dist.log_prob(flat_idx)
 
@@ -381,10 +384,11 @@ class AMAACActorWrapper(nn.Module):
             enm_idx, vert_idx, hor_idx = self._decode_flat(
                 flat_idx, fire_probs, out['enm_mask'])
 
-            # 对选中目标的开火分布（gate 已掩码到 logit 上，被禁火时 p≈0）
+            # 对选中目标的开火分布（gate 已掩码到 logit 上，被禁火时 p≈0）。
+            # 开火 logit 不做温度缩放，直接与 evaluate_actions 同一分布口径。
             fire_logit_sel = out['fire_logits_masked'].gather(
                 1, enm_idx.unsqueeze(1)).squeeze(1)
-            fire_dist = Bernoulli(logits=fire_logit_sel / temp)
+            fire_dist = Bernoulli(logits=fire_logit_sel)
             fire = fire_dist.sample().to(torch.long)
             log_prob_fire = fire_dist.log_prob(fire.to(torch.float32)) \
                 if self.fire_included_in_rl else torch.zeros_like(log_prob_maneuver)
