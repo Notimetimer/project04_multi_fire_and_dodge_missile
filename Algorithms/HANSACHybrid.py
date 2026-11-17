@@ -4,15 +4,16 @@
 - 式(29)-(30)：联合目标 J^J = Σ πJ·Q + αJ·H^J；TIM/TDM 目标在其上加组内条件熵项
   （本实现把 αI·Pr(TIM)·H^I 与 αD·Σ_j Pr(TDM_j)·H^D_j 直接并入软值函数与策略损失，
   与"indicator 加权"形式在期望意义下等价）；
-- 熵目标只覆盖机动：H^J 为 Ne·N_TDM 个机动槽位上的熵，H^D_j 为敌机组内 TDM 条件熵；
-  开火位不进入熵目标（|AD|=N_TDM），开火只由联合 Q 期望与 Lf(BCE) 驱动；
+- 熵目标只覆盖机动：H^J 为 A=N_TIM+Ñ·N_TDM 个机动槽位上的熵，H^I 为 TIM 组内条件熵，
+  H^D_j 为敌机组内 TDM 条件熵；开火位不进入熵目标，开火只由联合 Q 期望与 Lf(BCE) 驱动；
 - 式(31)-(33)：双 Q 的 TD 目标，软值含联合熵与分组熵，target 网络软更新（式 39，τ 由调用方设定）；
 - 式(34)：策略损失 Lπ；式(35)：本实现不沿用论文的共享骨干单次联合反传，改为
   actor / critic 各自独立骨干与独立优化器、分步反传（标准 SAC 口径，见类 docstring 偏差声明）；
   （更新节奏：Q 每次更新都反传，π/温度每 actor_update_every 次更新反传一次，
    Lf 每 fire_update_every 次更新反传一次，各自在自己的参数上裁剪梯度。）
-- 式(36)-(38)：αD/αJ 两个温度自动调节（TIM 已删除，αI 一并移除）；目标熵按"占最大熵的比例"设定：
-  Ḅ^D=kD·log(N_TDM)、Ḅ^J_Ñ=kD·log(Ñ·N_TDM)，kD=0.4（有意偏差：式(48) 的 log(Ñ)+Ḅ^D 约占 84%）；
+- 式(36)-(38)：αI/αD/αJ 三个温度自动调节；目标熵按论文式(48) 的固定 logit ratio ξ 设定：
+  Ḅ^I=kI·log(N_TIM)、Ḅ^D=kD·log(N_TDM)、
+  Ḅ^J_Ñ=log(ξ̄+Ñ)+(ξ̄·Ḅ^I+Ñ·Ḅ^D−ξ̄·log ξ̄)/(ξ̄+Ñ)，ξ̄=ξ·N_TIM/N_TDM；
 - 经验回放：D_BFM（机动转移，容量 1e5）与 D_f（开火命中记录，容量 1e3，批 128）；
 - 开火进 RL 梯度（已声明偏差）：双 Q 覆盖"机动 × 开火"联合动作，开火位进入 soft value 与
   策略损失（不进入熵目标），因此 RL 梯度可以更新独立 fire_head；Lf（式 28）只做 BCE 且 backbone
@@ -40,7 +41,7 @@ import torch
 import torch.nn.functional as F
 from dataclasses import dataclass
 
-from Algorithms.HanWrapper import HanWrapper, N_TDM
+from Algorithms.HanWrapper import HanWrapper, N_TIM, N_TDM
 
 
 @dataclass(frozen=True)
@@ -130,7 +131,7 @@ class HANSACHybrid:
        的共享骨干单次反传；
     2) 双 Q 覆盖"机动 × 开火"联合动作，开火进入 policy/Q，但不参与熵目标（熵只约束机动）；
     3) Lf 只更新独立 fire_head，backbone 侧 detach（与 PPO 的 supervised_fire_update 同口径）。
-    （TIM 已删除：αI/H_I 一并移除，实际只保留 αD/per-Ñ αJ 两类温度。）"""
+    温度：αI（TIM）、αD（TDM）、αJ（按存活敌机数 Ñ 分桶的联合熵）三类，对应论文式(36)-(38)。"""
 
     def __init__(self, networks: HanWrapper,
                  lr=1e-4, alpha_lr=None, gamma=0.9, tau=0.05, batch_size=128,
@@ -160,26 +161,30 @@ class HANSACHybrid:
         # 因此 Lf 不会改动机动表征（与 PPO 的 supervised_fire_update 同口径）
         self.fire_optimizer = torch.optim.Adam(self.ac.fire_parameters(), lr=lr)
 
-        # 温度的 log 参数：αD（式37 Ñ>0）、αJ（式38 按 Ñ 分桶，每桶独立）
+        # 温度的 log 参数：αI（式36 全样本）、αD（式37 Ñ>0）、αJ（式38 按 Ñ 分桶，每桶独立）
         # 温度单独给 lr：α 只在 actor 步（每 actor_update_every 次）更新一次，有效步数远少于网络，
         # 与网络共用 lr 会让 α 几乎不动（H_J 长期高于目标熵）；alpha_lr=None 时退回 lr。
+        self.log_alpha_I = torch.tensor(np.log(alpha_init), device=device, requires_grad=True)
         self.log_alpha_D = torch.tensor(np.log(alpha_init), device=device, requires_grad=True)
         self.log_alpha_J = torch.tensor(np.full(self.enm_num + 1, np.log(alpha_init)),
                                         device=device, requires_grad=True)
         self.alpha_optimizer = torch.optim.Adam(
-            [self.log_alpha_D, self.log_alpha_J],
+            [self.log_alpha_I, self.log_alpha_D, self.log_alpha_J],
             lr=lr if alpha_lr is None else float(alpha_lr))
         # 温度下界：α 会沿"熵高于目标→降 α"一路降到 0，导致组内/联合熵项彻底失效。
         # 每次 α 步后把 log α 夹到 ln(alpha_min)，保证熵正则始终在场。
         self.alpha_min = float(alpha_min)
 
-        # 期望熵：机动目标熵 = kD × 最大熵（kD 现表示"目标熵/最大熵"比例，默认 0.4）
-        # 熵目标只覆盖机动，开火位不计入；组内条件熵 ḄD = kD·log(N_TDM)，
-        # 联合机动熵 ḄJ_Ñ = kD·log(Ñ·N_TDM)（Ñ=0 取 0 占位）。
-        # 有意偏差：论文式(48) 为 log(Ñ)+ḄD（2V2 时约占最大熵 84%），本实现统一压到 kD 比例；
-        # TIM 已删除：kI/ξ 仅为入口兼容保留，不参与计算。
+        # 期望熵（论文式(48) 固定 logit ratio ξ）：ḄI = kI·log(N_TIM)、ḄD = kD·log(N_TDM)，
+        #   ḄJ_Ñ = log(ξ̄+Ñ) + (ξ̄·ḄI + Ñ·ḄD − ξ̄·log ξ̄)/(ξ̄+Ñ)，ξ̄ = ξ·N_TIM/N_TDM；
+        #   Ñ=0 时退化为 ḄI。熵目标只覆盖机动，开火位不计入。
+        self.B_I = float(kI * np.log(N_TIM))
         self.B_D = float(kD * np.log(N_TDM))
-        self.B_J_table = [float(kD * np.log(n * N_TDM)) if n > 0 else 0.0
+        self.xi = float(xi)
+        self.xi_bar = self.xi * N_TIM / N_TDM
+        self.B_J_table = [float(np.log(self.xi_bar + n)
+                                + (self.xi_bar * self.B_I + n * self.B_D
+                                   - self.xi_bar * np.log(self.xi_bar)) / (self.xi_bar + n))
                           for n in range(self.enm_num + 1)]
 
         self.buffer = ReplayBuffer(buffer_size)                    # D_BFM
@@ -206,15 +211,17 @@ class HANSACHybrid:
         self.fire_buffer.extend(records)
 
     # ------------------------------------------------------------------ 内部量
-    def _soft_value_terms(self, out, alpha_D, alpha_J):
+    def _soft_value_terms(self, out, alpha_I, alpha_D, alpha_J):
         """给定 forward_sac 输出，返回 (ΣπQmin 所需 qmin, 熵加权和)（式 32 目标口径）。
         alpha_J 为 per-Ñ 温度向量 (Ne+1,)，按存活敌机数取值；
-        熵项按组概率加权——式(32) 指示子在 πJ 采样下的数学期望。"""
+        熵项按组概率加权——式(32) 指示子在 πJ 采样下的数学期望；
+        pr_g[:,0] 为 TIM 组质量，pr_g[:,1:] 为各敌机 TDM 组质量。"""
         qmin = torch.min(out['q1'], out['q2'])
         n_surv = out['enm_mask'].sum(-1).long()                    # (B,)
         alpha_J_n = alpha_J[n_surv]                                # (B,)
         ent = alpha_J_n * out['H_J'] \
-            + alpha_D * (out['pr_g'] * out['H_Dj']).sum(-1)
+            + alpha_I * (out['pr_g'][:, 0] * out['H_I']) \
+            + alpha_D * (out['pr_g'][:, 1:] * out['H_Dj']).sum(-1)
         return qmin, ent
 
     # ------------------------------------------------------------------ 主更新
@@ -256,8 +263,8 @@ class HANSACHybrid:
                                    dtype=torch.long, device=device)
         fire_bit = torch.as_tensor(np.array([int(t['action'].get('fire', 0)) for t in trans]),
                                    dtype=torch.long, device=device)
-        # 联合动作索引：j·(2·N_TDM) + a·2 + f，与 pi_joint / Q 头的顺序一致
-        joint_idx = (flat_idx // N_TDM) * (2 * N_TDM) + (flat_idx % N_TDM) * 2 + fire_bit
+        # 联合动作索引：a·2 + f（a 为 TIM∪TDM 的扁平机动索引），与 pi_joint / Q 头顺序一致
+        joint_idx = flat_idx * 2 + fire_bit
         reward = torch.as_tensor(np.array([t['reward'] for t in trans], dtype=np.float32),
                                  dtype=torch.float32, device=device)
         terminated = torch.as_tensor(np.array([t['terminated'] for t in trans], dtype=np.float32),
@@ -266,6 +273,7 @@ class HANSACHybrid:
                                  dtype=torch.float32, device=device)
         act_sum = active.sum().clamp(min=1.0)
 
+        alpha_I = self.log_alpha_I.exp().detach()
         alpha_D = self.log_alpha_D.exp().detach()
         alpha_J = self.log_alpha_J.exp().detach()
 
@@ -275,13 +283,15 @@ class HANSACHybrid:
             out_t = ac_t.forward_sac(next_obs['agent_input'], next_obs['mask_input'],
                                      next_obs['rule_input'])
 
-        # 开火概率统计（仅记录、无梯度）：只统计"本批决策实际选中的目标位"（flat_idx→enm_idx）
-        # 且 fire_gate=True 的样本。禁火位（冷却中/敌机已死亡）不参与，非选中敌机也不参与，
-        # 因此 max/min/mean/std 反映的是部署时真正作用在 0.8 阈值上的那个概率。
-        # 本批无有效样本时记 NaN，由 update() 的有限性过滤剔除。
+        # 开火概率统计（仅记录、无梯度）：只统计"本批决策实际选中的目标位"且 fire_gate=True 的样本。
+        # 目标位与 get_action 解码同口径：TIM 取 j*=argmax πF,j，TDM 取其绑定的敌机。
+        # 禁火位（冷却中/敌机已死亡）不参与，非选中敌机也不参与；无有效样本时记 NaN。
         with torch.no_grad():
             p_raw = torch.sigmoid(out['fire_logits_raw'])                     # (B, Ne) 未掩码
-            star_idx = (flat_idx // N_TDM).unsqueeze(1)                       # (B, 1)
+            p_gate = torch.sigmoid(out['fire_logits']).masked_fill(~out['enm_mask'], 0.0)
+            j_star = p_gate.argmax(dim=-1)                                    # (B,)
+            tdm_enm = torch.div((flat_idx - N_TIM).clamp(min=0), N_TDM, rounding_mode='floor')
+            star_idx = torch.where(flat_idx < N_TIM, j_star, tdm_enm).unsqueeze(1)  # (B,1)
             p_star = p_raw.gather(1, star_idx).squeeze(1)                     # (B,)
             gate_star = out['fire_gate'].gather(1, star_idx).squeeze(1)       # (B,)
             if gate_star.any():
@@ -298,7 +308,7 @@ class HANSACHybrid:
 
         # ---------------- 双 Q 的 TD 损失（式 31-33） ----------------
         with torch.no_grad():
-            qmin_t, ent_t = self._soft_value_terms(out_t, alpha_D, alpha_J)
+            qmin_t, ent_t = self._soft_value_terms(out_t, alpha_I, alpha_D, alpha_J)
             V_t = (out_t['pi_joint'] * qmin_t).sum(-1) + ent_t
             y = reward + self.gamma * (1.0 - terminated) * V_t  # 截断帧照常 bootstrap
 
@@ -318,17 +328,17 @@ class HANSACHybrid:
         n_surv_now = out['enm_mask'].sum(-1).long()               # (B,)
         # 指标用 Q 均值：反传后计算图已释放，这里只读数值
         with torch.no_grad():
-            qmin_metric, _ = self._soft_value_terms(out, alpha_D, alpha_J)
+            qmin_metric, _ = self._soft_value_terms(out, alpha_I, alpha_D, alpha_J)
 
         # ---------------- actor 步（每 actor_update_every 次更新做一次） ----------------
         # 策略损失（式 34：−J；熵项不加组概率权重）
         # Q 反传已释放计算图，这里对同一批数据重新前向一次，供策略/温度反传使用。
         if (self.update_count + 1) % self.actor_update_every == 0:
             out_pi = ac.forward_sac(obs['agent_input'], obs['mask_input'], obs['rule_input'])
-            qmin, _ = self._soft_value_terms(out_pi, alpha_D, alpha_J)
+            qmin, _ = self._soft_value_terms(out_pi, alpha_I, alpha_D, alpha_J)
             qmin = qmin.detach()   # actor/critic 分步更新：策略梯度不回传进 critic
             n_surv_pi = out_pi['enm_mask'].sum(-1).long()
-            ent_pi = alpha_J[n_surv_pi] * out_pi['H_J'] \
+            ent_pi = alpha_J[n_surv_pi] * out_pi['H_J'] + alpha_I * out_pi['H_I'] \
                 + alpha_D * out_pi['H_Dj'].sum(-1)   # 阵亡敌机组 H_Dj=0，自动只计入存活组
             Lpi = (-((out_pi['pi_joint'] * qmin).sum(-1) + ent_pi) * active).sum() / act_sum
 
@@ -339,9 +349,9 @@ class HANSACHybrid:
             self._last_loss_pi = float(Lpi.detach().cpu())
 
             # ---------------- 温度更新（式 36-38，熵全部 detach；与 actor 同步） ----------------
-            # 式(37)：TDM 熵只统计 Ñ>0 的样本；
-            # 式(38)：联合熵按存活敌机数 Ñ 分桶，每桶独立温度，期望值查 B_J_table（ḄJ_Ñ = kD·log(Ñ·N_TDM)）
-            # （TIM 已删除：式(36) 的 αI 项不再存在）
+            # 式(36)：TIM 熵用全部样本；式(37)：TDM 熵只统计 Ñ>0 的样本；
+            # 式(38)：联合熵按存活敌机数 Ñ 分桶，每桶独立温度，期望值查 B_J_table（式 48 的 ξ 口径）
+            L_alpha_I = (self.log_alpha_I * ((out_pi['H_I'] - self.B_I) * active).detach().sum() / act_sum)
             surv = out_pi['enm_mask'].any(-1).to(torch.float32)          # Ñ>0 过滤
             n_surv = (surv * active).sum().clamp(min=1.0)
             L_alpha_D = (self.log_alpha_D * ((out_pi['H_D'] - self.B_D) * active * surv).detach().sum() / n_surv)
@@ -353,11 +363,12 @@ class HANSACHybrid:
                                      * ((out_pi['H_J'] - self.B_J_table[n]) * mask_n).detach().sum()
                                      / mask_n.sum())
             L_alpha_J = torch.stack(laj_terms).sum()
-            alpha_loss = L_alpha_D + L_alpha_J
+            alpha_loss = L_alpha_I + L_alpha_D + L_alpha_J
             self.alpha_optimizer.zero_grad()
             alpha_loss.backward()
             self.alpha_optimizer.step()
             with torch.no_grad():
+                self.log_alpha_I.clamp_(min=float(np.log(self.alpha_min)))
                 self.log_alpha_D.clamp_(min=float(np.log(self.alpha_min)))
                 self.log_alpha_J.clamp_(min=float(np.log(self.alpha_min)))
 
@@ -387,8 +398,9 @@ class HANSACHybrid:
             'loss_pi': self._last_loss_pi,
             'loss_fire': self._last_loss_fire,
             'H_J': float(out['H_J'].mean().detach().cpu()),
+            'H_I': float(out['H_I'].mean().detach().cpu()),
             'H_D': float(out['H_D'].mean().detach().cpu()),
-            'alpha_D': float(alpha_D),
+            'alpha_I': float(alpha_I), 'alpha_D': float(alpha_D),
             'alpha_J': float(alpha_J.mean()), 'alpha_J_each': [float(a) for a in alpha_J],
             'B_J': float(np.mean([self.B_J_table[n] for n in n_surv_now.tolist()])),
             'q_mean': float(qmin_metric.mean().detach().cpu()),
@@ -409,6 +421,7 @@ class HANSACHybrid:
             'critic_optimizer': self.critic_optimizer.state_dict(),
             'actor_optimizer': self.actor_optimizer.state_dict(),
             'alpha_optimizer': self.alpha_optimizer.state_dict(),
+            'log_alpha_I': float(self.log_alpha_I.detach().cpu()),
             'log_alpha_D': float(self.log_alpha_D.detach().cpu()),
             'log_alpha_J': [float(a) for a in self.log_alpha_J.detach().cpu()],
             'update_count': self.update_count,
@@ -420,6 +433,7 @@ class HANSACHybrid:
         self.critic_optimizer.load_state_dict(state['critic_optimizer'])
         self.actor_optimizer.load_state_dict(state['actor_optimizer'])
         self.alpha_optimizer.load_state_dict(state['alpha_optimizer'])
+        self.log_alpha_I.data = torch.tensor(state['log_alpha_I'], device=self.device)
         self.log_alpha_D.data = torch.tensor(state['log_alpha_D'], device=self.device)
         self.log_alpha_J.data = torch.tensor(state['log_alpha_J'], device=self.device)
         self.update_count = state.get('update_count', 0)
