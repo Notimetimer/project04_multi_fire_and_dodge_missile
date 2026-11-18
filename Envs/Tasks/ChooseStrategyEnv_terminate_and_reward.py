@@ -257,15 +257,15 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 # 锁定/被锁定
                 if missile_t_fly >= 30: # 开火后短时间内豁免保持锁定的需要
                     # 探测有效性奖励
-                    # r_shaping += (ego_has_lock - ego_is_locked) * DENSE_REWARD_WEIGHT * 0.75 # * 1
+                    r_shaping += (ego_has_lock - ego_is_locked) * DENSE_REWARD_WEIGHT * 0.75 # * 1
                     # 探测数量奖励
-                    r_shaping += (sighted_enm_num - ego_is_locked) * DENSE_REWARD_WEIGHT * 0.75 # * 1
+                    # r_shaping += (sighted_enm_num - ego_is_locked) * DENSE_REWARD_WEIGHT * 0.75 # * 1
                 
                 if ego.i_can_guide_msl:
-                    r_shaping += DENSE_REWARD_WEIGHT  # 我可以为导弹提供中制导
+                    r_shaping += 0.15 * DENSE_REWARD_WEIGHT  # 我可以为导弹提供中制导
                 
-                if not ego_is_locked and not ego.dead:
-                    r_shaping += 0.75 * DENSE_REWARD_WEIGHT  # （隐蔽奖励）
+                # if not ego_is_locked and not ego.dead:
+                #     r_shaping += 0.75 * DENSE_REWARD_WEIGHT  # （隐蔽奖励）
                 
                 # 漏选/未选取目标惩罚：如果有alive enm uav没有被己方任何飞机或者导弹选中，全队扣分
                 enm_allocateIDs4missile = [missile.target_id for missile in alive_ally_missiles]
