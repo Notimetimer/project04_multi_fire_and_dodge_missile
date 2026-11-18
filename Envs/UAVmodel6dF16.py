@@ -251,7 +251,7 @@ class UAVModel(object):
     #         cd = 0.2
     #     return cd / 10
 
-    def move(self, target_height, delta_heading, target_speed, relevant_height=True, relevant_speed=False, with_theta_req=False, e2e=False, rudder=None, dt=None):
+    def move(self, pitch_cmd, lateral_cmd, tangential_cmd, relevant_height=True, relevant_speed=False, with_theta_req=False, e2e=False, rudder=None, dt=None):
         if dt is not None:
             self.dt = dt
             self.sim.set_dt(self.dt)
@@ -261,16 +261,16 @@ class UAVModel(object):
 
         # 单位：m, rad, mm/s, metric公制单位，imperial英制单位
         if relevant_height==False: # 使用绝对高度指令
-            self.set_height = target_height
+            self.set_height = pitch_cmd
         else: # 使用相对高度指令
-            delta_target_height_english = target_height * 3.2808
+            delta_target_height_english = pitch_cmd * 3.2808
             self.set_height = (delta_target_height_english + self.sim["position/h-sl-ft"]) / 3.2808
-        delta_heading = delta_heading  # sub_of_radian(target_delta_heading, sim["attitude/psi-deg"] * pi / 180)
+        
         
         if relevant_speed==False: # 使用绝对速度指令
-            self.set_speed = target_speed
+            self.set_speed = tangential_cmd
         else: # 使用相对速度指令
-            delta_speed_english = target_speed * 3.2808
+            delta_speed_english = tangential_cmd * 3.2808
             self.set_speed = (delta_speed_english + self.sim["velocities/vt-fps"]) / 3.2808
 
         # 角速度
@@ -302,14 +302,14 @@ class UAVModel(object):
         self.psi_v = course_angle * pi/180
 
         current_heading = self.sim["attitude/psi-deg"] * pi / 180
-        target_heading = sub_of_radian(current_heading + delta_heading, 0) * 180/pi
-        # self.target_heading = sub_of_radian(current_heading + delta_heading, 0)  # 目标航向
+        target_heading = sub_of_radian(current_heading + lateral_cmd, 0) * 180/pi
+
         # print("==== 调用了旧的UAVmodel =====")
 
         obs_jsbsim = np.zeros(15)
         # obs_jsbsim[0] = target_theta * pi / 180  # 期望俯仰角 # 测试姿态控制器
         obs_jsbsim[0] = self.set_height / 5000  # 期望高度 # 测试飞行控制器
-        obs_jsbsim[1] = delta_heading  # 期望相对航向角
+        obs_jsbsim[1] = lateral_cmd  # 期望相对航向角
         obs_jsbsim[2] = self.set_speed / 340  # 期望速度
         obs_jsbsim[3] = self.sim["attitude/theta-deg"] * pi / 180  # 当前俯仰角
         obs_jsbsim[4] = self.sim["velocities/vt-fps"] * 0.3048 / 340  # 当前速度
@@ -332,12 +332,12 @@ class UAVModel(object):
             if with_theta_req == False:
                 norm_act = self.PIDController.flight_output(obs_jsbsim, dt=self.dt)  # # 测试飞行控制器
             else:
-                obs_jsbsim[0] = np.clip(target_height, -pi/2, pi/2)  # 高度接口当俯仰角接口用, 输入介于[-1,1]之间
+                obs_jsbsim[0] = np.clip(pitch_cmd, -pi/2, pi/2)  # 高度接口当俯仰角接口用, 输入介于[-1,1]之间
                 norm_act = self.PIDController.att_output(obs_jsbsim, dt=self.dt)
         else: # 直接输出舵偏角
             if rudder is None:
                 rudder = 0.0
-            norm_act = np.array([delta_heading, target_height, rudder, target_speed]) # 端到端控制，不使用方向舵,拿前三个当舵偏角来输入
+            norm_act = np.array([lateral_cmd, pitch_cmd, rudder, tangential_cmd]) # 端到端控制，不使用方向舵,拿前三个当舵偏角来输入
         # print(obs_jsbsim)
 
         self.alpha_air = self.sim["aero/alpha-deg"] * pi / 180  # 当前迎角

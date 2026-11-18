@@ -11,13 +11,12 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-# from controller.Controller_function import *
-# from Envs.MissileModel1 import *  # test
-
-from Controller.F15PIDController2 import *
+from Controller.F15PIDController import *
 from Math_calculates.CartesianOnEarth import NUE2LLH, LLH2NUE
 from Math_calculates.sub_of_angles import *
 from Math_calculates.coord_rotations import *
+from Envs.MissileModel_aim120 import aim120
+from Envs.MissileModel_aim9x import aim9x
 
 # 箔条模型
 class chaffModel(object):
@@ -85,7 +84,10 @@ class UAVModel(object):
         self.max_radar_range = 130e3
 
         # 导弹相关属性
-        self.ammo = 6  # 最大可携带导弹数量
+        self.ammo_9x = 2 # 携带9x数量
+        self.last_9x_launch_time = -5
+
+        self.ammo = 12  # 最大可携带导弹数量
         self.missile_count = 0  # 已发射导弹数量
         self.missile_launch_interval = 10  # 发射间隔 36
         self.last_launch_time = -10  # 上次发射时间
@@ -118,6 +120,8 @@ class UAVModel(object):
         self.o00 = None
         self.start_lon = None
         self.start_lat = None
+        self.turn_rate = 0
+        self.last_params = {}
 
     def reset(self, lon0=118, lat0=30, h0=8000, v0=200, psi0=0, phi0=0, theta0=0, o00=np.array([118, 30])):
         sim = jsbsim.FGFDMExec(None, None)
@@ -247,7 +251,7 @@ class UAVModel(object):
     #         cd = 0.2
     #     return cd / 10
 
-    def move(self, target_height, delta_heading, target_speed, relevant_height=True, relevant_speed=False, with_theta_req=False, e2e=True, rudder=None, dt=None):
+    def move(self, pitch_cmd, lateral_cmd, tangential_cmd, relevant_height=True, relevant_speed=False, with_theta_req=False, e2e=False, rudder=None, dt=None):
         if dt is not None:
             self.dt = dt
             self.sim.set_dt(self.dt)
@@ -257,16 +261,16 @@ class UAVModel(object):
 
         # 单位：m, rad, mm/s, metric公制单位，imperial英制单位
         if relevant_height==False: # 使用绝对高度指令
-            self.set_height = target_height
+            self.set_height = pitch_cmd
         else: # 使用相对高度指令
-            delta_target_height_english = target_height * 3.2808
+            delta_target_height_english = pitch_cmd * 3.2808
             self.set_height = (delta_target_height_english + self.sim["position/h-sl-ft"]) / 3.2808
-        delta_heading = delta_heading  # sub_of_radian(target_delta_heading, sim["attitude/psi-deg"] * pi / 180)
+        
         
         if relevant_speed==False: # 使用绝对速度指令
-            self.set_speed = target_speed
+            self.set_speed = tangential_cmd
         else: # 使用相对速度指令
-            delta_speed_english = target_speed * 3.2808
+            delta_speed_english = tangential_cmd * 3.2808
             self.set_speed = (delta_speed_english + self.sim["velocities/vt-fps"]) / 3.2808
 
         # 角速度
@@ -298,14 +302,43 @@ class UAVModel(object):
         self.psi_v = course_angle * pi/180
 
         current_heading = self.sim["attitude/psi-deg"] * pi / 180
+        target_heading = sub_of_radian(current_heading + lateral_cmd, 0) * 180/pi
 
+        # print("==== 调用了旧的UAVmodel =====")
 
-        elevator = target_height
-        aileron = delta_heading
-        throttle = target_speed
-        rudder = rudder if rudder is not None else 0.0
-        norm_act = np.array([aileron, elevator, rudder, throttle]) # 端到端控制，不使用方向舵,拿前三个当舵偏角来输入
+        obs_jsbsim = np.zeros(15)
+        # obs_jsbsim[0] = target_theta * pi / 180  # 期望俯仰角 # 测试姿态控制器
+        obs_jsbsim[0] = self.set_height / 5000  # 期望高度 # 测试飞行控制器
+        obs_jsbsim[1] = lateral_cmd  # 期望相对航向角
+        obs_jsbsim[2] = self.set_speed / 340  # 期望速度
+        obs_jsbsim[3] = self.sim["attitude/theta-deg"] * pi / 180  # 当前俯仰角
+        obs_jsbsim[4] = self.sim["velocities/vt-fps"] * 0.3048 / 340  # 当前速度
+        obs_jsbsim[5] = self.sim["attitude/phi-deg"] * pi / 180  # 当前滚转角
+        obs_jsbsim[6] = self.sim["aero/alpha-deg"] * pi / 180  # 当前迎角
+        obs_jsbsim[7] = self.sim["aero/beta-deg"] * pi / 180  # 当前侧滑角
+        obs_jsbsim[8] = p
+        obs_jsbsim[9] = q
+        obs_jsbsim[10] = r
+        obs_jsbsim[11] = gamma_angle * pi / 180  # 爬升角
+        obs_jsbsim[12] = sub_of_degree(target_heading, course_angle) * pi / 180  # 相对航迹角
+        obs_jsbsim[13] = self.sim["position/h-sl-ft"] * 0.3048 / 5000  # 高度/5000（英尺转米）
+        obs_jsbsim[14] = self.Ny
+        
+        # norm_act由F16control函数输出
+        # norm_act, self.rnn_states, self.hist_act = F16control(obs_jsbsim, self.rnn_states, self.hist_act)
+        # print(self.side, norm_act)
 
+        if e2e==False: # 通过控制器间接控制
+            if with_theta_req == False:
+                norm_act = self.PIDController.flight_output(obs_jsbsim, dt=self.dt)  # # 测试飞行控制器
+            else:
+                obs_jsbsim[0] = np.clip(pitch_cmd, -pi/2, pi/2)  # 高度接口当俯仰角接口用, 输入介于[-1,1]之间
+                norm_act = self.PIDController.att_output(obs_jsbsim, dt=self.dt)
+        else: # 直接输出舵偏角
+            if rudder is None:
+                rudder = 0.0
+            norm_act = np.array([lateral_cmd, pitch_cmd, rudder, tangential_cmd]) # 端到端控制，不使用方向舵,拿前三个当舵偏角来输入
+        # print(obs_jsbsim)
 
         self.alpha_air = self.sim["aero/alpha-deg"] * pi / 180  # 当前迎角
         self.beta_air = self.sim["aero/beta-deg"] * pi / 180  # 当前侧滑角
@@ -348,6 +381,11 @@ class UAVModel(object):
         # 速度更新位置
         self.pos_ = np.array([self.x, self.y, self.z])
         
+        # 差分求变化率
+        if self.last_params.get('psi_v', None) is not None:
+            self.turn_rate = (self.psi_v - self.last_params['psi_v'])/(self.dt+1e-6)
+        self.last_params['psi_v'] = self.psi_v
+        
         # 箔条更新
         if hasattr(self, 'activated_chaffs'):
             for i in range(len(self.activated_chaffs) - 1, -1, -1):
@@ -364,75 +402,35 @@ class UAVModel(object):
         attack_angle = acos(np.dot(self.vel_, L_) / (distance * speed))
         if distance < 8e3 and attack_angle * 180 / pi < 30:
             return True  # "杀伤锥"
-
-    def can_launch_120(self, target, current_time):
-        can_shoot = True
-        """判断是否可以发射导弹"""
-        if self.dead or target.dead:  # 如果自己或者目标死了，不能发射导弹
-            return False
-
-        # 检查导弹数量限制 fixme
-        if self.ammo < 1:
-            # print('导弹射完')
-            can_shoot = False
-            return False
-
-        # 检查目标是否在探测范围内
-        distance = np.linalg.norm(target.pos_ - self.pos_)
-        if distance > self.missile_max_range or distance < self.missile_min_range:
-            can_shoot = False
-
-        # 检查目标是否在视角范围内
-        target_vector = target.pos_ - self.pos_
-        velocity_vector = self.vel_
-        dot_product = np.dot(target_vector, velocity_vector)
-        norms = np.linalg.norm(target_vector) * np.linalg.norm(velocity_vector)
-        if norms == 0:
-            can_shoot = False
-        cos_angle = np.clip(dot_product / norms, -1.0, 1.0)
-        angle = np.arccos(cos_angle) * 180 / pi
-        if angle > self.missile_launch_angle:
-            can_shoot = False
-
-        # 检查发射间隔
-        missile_launch_interval = self.missile_launch_interval * distance/10e3
-        
-        if current_time - self.last_launch_time < missile_launch_interval:
-            can_shoot = False
-
-        # 可发射区解算
-        if can_shoot:
-            # # test
-            # if distance<40e3:
-            #     can_shoot = True
-
-            from LaunchZone.calc_hit_points_maneuver_from_RWR import hit_prob
-            # 每次计算出的概率保持1s
-            if current_time-self.last_calc_missile_time >= 1: # 0.5
-                shoot_prob = hit_prob(self.pos_, self.vel_,
-                                      target.pos_, target.vel_)
-                self.last_calc_missile_time = current_time
-                self.shoot_prob = shoot_prob
-            else:
-                shoot_prob = self.shoot_prob
-
-            # 随机采样
-            shoot_prob_in_1s = 1-(1-shoot_prob)**(self.dt_fire)
-            if np.random.uniform(0, 1) <= shoot_prob_in_1s:
-                can_shoot = True
-            else:
-                can_shoot = False
-
-            # # 只在不可逃逸区发射
-            # if shoot_prob>=1:
-            #     can_shoot = True
-            # else:
-            #     can_shoot = False
-
-        # 导弹发射概率输出
-        return can_shoot
-
+    
+    # 发射9x
+    def launch_9x(self, target, current_time, aim9x):
+        if self.ammo_9x <= 0 or current_time - self.last_9x_launch_time < 5:
+            return None
+        """发射导弹"""
+        # 创建新导弹
+        new_missile = aim9x(self.pos_, self.vel_, target.pos_, target.vel_, current_time)  # test
+        self.ammo_9x -= 1
+        if self.blue:  # target.red:
+            new_missile.side = 'b'
+            new_missile.id = 301 + self.missile_count
+        if self.red:  # target.blue:
+            new_missile.side = 'r'
+            new_missile.id = 101 + self.missile_count
+        new_missile.launcher_id = self.id  # 发射机id
+        new_missile.target_id = target.id  # 目标机id
+        # print('导弹已发射')
+        # print('发射时间', current_time)
+        self.missile_count += 1
+        self.missile_launch_time.append(current_time)
+        # print(self.side, '已发射', self.missile_count)
+        self.last_9x_launch_time = current_time
+        return new_missile
+    
+    # 发射120
     def launch_120(self, target, current_time, aim120):
+        if self.ammo <= 0:
+            return None
         """发射导弹"""
         # 创建新导弹
         # new_missile = aim120(self.pos_, self.vel_, current_time)
@@ -443,10 +441,6 @@ class UAVModel(object):
         if self.red:  # target.blue:
             new_missile.side = 'r'
             new_missile.id = 101 + self.missile_count
-        # 根据距离调整导弹参数
-        distance = np.linalg.norm(target.pos_ - self.pos_)
-        new_missile.max_g = 40  # 最大过载
-        
         new_missile.launcher_id = self.id  # 发射机id
         new_missile.target_id = target.id  # 目标机id
         # print('导弹已发射')
@@ -456,7 +450,6 @@ class UAVModel(object):
         # print(self.side, '已发射', self.missile_count)
         self.last_launch_time = current_time
         return new_missile
-
 
     # 是否可跟踪目标
     def can_track_target(self, target):
