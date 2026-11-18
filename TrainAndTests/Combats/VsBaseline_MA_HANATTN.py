@@ -152,6 +152,10 @@ def test_worker(model_state_dict, rules_num,
                 red_ids = [i for i in test_env.UAV_ids if test_env.find_uav_with_id(i).side == 'r']
                 # 网络维度统一从 env_obs_dims.json 读取（由 读取环境参数并存json.py 生成）
                 fixed_dim, enm_shape, ally_shape = load_obs_dims()
+                # 部署规模自适应：敌机槽位=本局蓝方机数，队友槽位=本局红方机数-1。
+                # 只改变 mask/fire_gate 的槽位 reshape；网络参数是逐 token 的，2v2 权重可直接用于 4v4/6v6。
+                enm_shape = (len(test_env.BUAVs), enm_shape[1])
+                ally_shape = (max(len(test_env.RUAVs) - 1, 0), ally_shape[1])
                 # 支持异构输入：model_state_dict 可以是单份 state_dict（同构，所有红机共享）
                 # 或 {id: state_dict}（异构，每架红机加载自己的权重）
                 _is_single_sd = isinstance(model_state_dict, dict) and \

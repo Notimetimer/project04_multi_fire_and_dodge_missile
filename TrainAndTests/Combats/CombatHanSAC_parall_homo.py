@@ -978,45 +978,57 @@ def run_HanSAC_simulation(
                 if num_runs > 0:
                     print(f"\n>>> [Per-Batch Test] Testing student team vs rules (batch {batch_idx})...")
                     current_ac_weights = {k: v.cpu() for k, v in ac.state_dict().items()}
-                    test_tasks = []
-                    for r_idx in TEST_RULE_IDS:
-                        obj = test_pool.apply_async(
-                            test_worker_han,
-                            kwds={'model_state_dict': current_ac_weights, 'rules_num': r_idx,
-                                  'env_args': args, 'device_name': 'cpu', 'num_runs': num_runs,
-                                  'vertices': vertices, 'dt_move': dt_move, 'dt_maneuver': 0.5, # dt_maneuver, # 测试的时候需要精细，训练的时候可以粗略
-                                  'action_cycle_multiplier': action_cycle_multiplier,
-                                  'red_init_num': red_init_num, 'blue_init_num': blue_init_num,
-                                  'red_init_ammo': red_init_ammo, 'blue_init_ammo': blue_init_ammo})
-                        test_tasks.append(obj)
-                    test_results = [t.get() for t in test_tasks]
-                    outcomes = {r['rules_num']: r['result'] for r in test_results}
-                    outcomes_perish = {r['rules_num']: r['perish_togethers'] / num_runs
-                                       for r in test_results}
-                    for r_num, score in outcomes.items():
-                        logger.add(f"test/agent_vs_rule{r_num}", score, step_axis)
-                        print(f"  [Test Result] Rule_{r_num}: {score}")
-                    avg_score = float(np.mean(list(outcomes.values())))
-                    logger.add("test/avg_score", avg_score, step_axis)
-                    logger.add("test/BVR perish together",
-                               float(np.mean(list(outcomes_perish.values()))), step_axis)
-                    total_kills = sum(r['kill_count'] for r in test_results)
-                    total_dies = sum(r['die_count'] for r in test_results)
-                    logger.add("test/log_10_KD",
-                               float(np.log10(np.clip(total_kills / (total_dies + 1e-6), 1/20, 20))),
-                               step_axis)
+                    # 三档规模串行：原规模 + 4v4 + 6v6（除场景规模外，规则/局数/温度/dt 等测试协议完全不变）
+                    # 同一档内 4 个规则对手并行；等本档全部返回后再进入下一档，不同规模严格串行
+                    test_scales = [(int(red_init_num), int(blue_init_num))]
+                    for _scale_n in (4, 6):
+                        if (_scale_n, _scale_n) not in test_scales:
+                            test_scales.append((_scale_n, _scale_n))
+                    for scale_red, scale_blue in test_scales:
+                        scale_tag = f"test_{scale_red}v{scale_blue}"
+                        print(f"  [Test Scale] {scale_tag} ...")
+                        test_tasks = []
+                        for r_idx in TEST_RULE_IDS:
+                            obj = test_pool.apply_async(
+                                test_worker_han,
+                                kwds={'model_state_dict': current_ac_weights, 'rules_num': r_idx,
+                                      'env_args': args, 'device_name': 'cpu', 'num_runs': num_runs,
+                                      'vertices': vertices, 'dt_move': dt_move, 'dt_maneuver': 0.5, # dt_maneuver, # 测试的时候需要精细，训练的时候可以粗略
+                                      'action_cycle_multiplier': action_cycle_multiplier,
+                                      # test_worker_han 内部按 red/blue 机数重建 HanWrapper（敌机槽位=蓝方机数），无 alive 参数
+                                      'red_init_num': scale_red, 'blue_init_num': scale_blue,
+                                      'red_init_ammo': red_init_ammo, 'blue_init_ammo': blue_init_ammo})
+                            test_tasks.append(obj)
+                        # 本档阻塞等待全部测试完成后再进入下一档（串行）
+                        test_results = [t.get() for t in test_tasks]
+                        outcomes = {r['rules_num']: r['result'] for r in test_results}
+                        outcomes_perish = {r['rules_num']: r['perish_togethers'] / num_runs
+                                           for r in test_results}
+                        for r_num, score in outcomes.items():
+                            logger.add(f"{scale_tag}/agent_vs_rule{r_num}", score, step_axis)
+                            print(f"  [Test Result] {scale_tag} Rule_{r_num}: {score}")
+                        avg_score = float(np.mean(list(outcomes.values())))
+                        logger.add(f"{scale_tag}/avg_score", avg_score, step_axis)
+                        logger.add(f"{scale_tag}/BVR perish together",
+                                   float(np.mean(list(outcomes_perish.values()))), step_axis)
+                        total_kills = sum(r['kill_count'] for r in test_results)
+                        total_dies = sum(r['die_count'] for r in test_results)
+                        logger.add(f"{scale_tag}/log_10_KD",
+                                   float(np.log10(np.clip(total_kills / (total_dies + 1e-6), 1/20, 20))),
+                                   step_axis)
 
-                    test_csv_path = os.path.join(log_dir, "test_vs_rules.csv")
-                    _need_header = not os.path.exists(test_csv_path)
-                    with open(test_csv_path, 'a', newline='', encoding='utf-8-sig') as _f:
-                        _w = csv.writer(_f)
-                        if _need_header:
-                            _w.writerow(["batch_idx", "steps", "rule_num", "wins", "loses",
-                                         "draws", "score", "perish_together", "num_runs"])
-                        for r in test_results:
-                            _w.writerow([batch_idx, int(step_axis), r['rules_num'], r['wins'],
-                                         r['loses'], r['draws'], float(r['result']),
-                                         float(r['perish_togethers'] / num_runs), num_runs])
+                        # 分规模落盘：统一 test_vs_rules_{r}v{b}.csv（不再读写 test_vs_rules.csv）
+                        test_csv_path = os.path.join(log_dir, f"test_vs_rules_{scale_red}v{scale_blue}.csv")
+                        _need_header = not os.path.exists(test_csv_path)
+                        with open(test_csv_path, 'a', newline='', encoding='utf-8-sig') as _f:
+                            _w = csv.writer(_f)
+                            if _need_header:
+                                _w.writerow(["batch_idx", "steps", "rule_num", "wins", "loses",
+                                             "draws", "score", "perish_together", "num_runs"])
+                            for r in test_results:
+                                _w.writerow([batch_idx, int(step_axis), r['rules_num'], r['wins'],
+                                             r['loses'], r['draws'], float(r['result']),
+                                             float(r['perish_togethers'] / num_runs), num_runs])
 
                 # 窗口内回合统计（替代原批次统计）
                 n_win_eps = len(episodes_window)

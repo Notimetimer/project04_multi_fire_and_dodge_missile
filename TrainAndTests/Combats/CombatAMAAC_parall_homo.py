@@ -543,6 +543,10 @@ def test_worker_amaac(model_state_dict, rules_num,
                 red_ids = [i for i in test_env.UAV_ids if test_env.find_uav_with_id(i).side == 'r']
                 # 网络维度统一从 env_obs_dims.json 读取（由 读取环境参数并存json.py 生成）
                 fixed_dim, enm_shape, ally_shape = load_obs_dims()
+                # 部署规模自适应：敌机槽位=本局蓝方机数，队友槽位=本局红方机数-1。
+                # 只改变 mask/fire_gate 的槽位 reshape；网络参数是逐 token 的，2v2 权重可直接用于 4v4/6v6。
+                enm_shape = (len(test_env.BUAVs), enm_shape[1])
+                ally_shape = (max(len(test_env.RUAVs) - 1, 0), ally_shape[1])
                 # 支持异构输入：model_state_dict 可以是单份 state_dict（同构，所有红机共享）
                 # 或 {id: state_dict}（异构，每架红机加载自己的权重）
                 _is_single_sd = isinstance(model_state_dict, dict) and \
@@ -1162,71 +1166,84 @@ def run_AMAAC_simulation(
                 print(f"\n>>> [Per-Batch Test] Testing student team vs rules (batch {batch_idx})...")
                 # 学生即红方且不改 id：测试环境红机 id 与学生 id 一致，直接下发整队
                 test_team_weights = current_actor_weights
-                test_tasks = []
-                for r_idx in TEST_RULE_IDS:
-                    obj = test_pool.apply_async(
-                        test_worker_amaac,
-                        kwds={
-                            'model_state_dict': test_team_weights,
-                            'rules_num': r_idx,
-                            'env_args': args,
-                            'device_name': 'cpu',
-                            'num_runs': num_runs,
-                            'vertices': vertices,
-                            'dt_move': dt_move,
-                            'dt_maneuver': 0.5, # dt_maneuver, # 测试的时候需要精细，训练的时候可以粗略
-                            'action_cycle_multiplier': action_cycle_multiplier,
-                            'red_init_num': red_init_num,
-                            'blue_init_num': blue_init_num,
-                            'red_init_ammo': red_init_ammo,
-                            'blue_init_ammo': blue_init_ammo,
-                            'temperature': 0.3,  # 测试采样温度：<1趋于贪婪决策
-                            'enm_chosen_visable': enm_chosen_visable,
-                        }
-                    )
-                    test_tasks.append(obj)
+                test_step_axis = total_steps_of_maneuver / action_cycle_multiplier
+                # 三档规模串行：原规模 + 4v4 + 6v6（除场景规模外，规则/局数/温度/dt 等测试协议完全不变）
+                # 同一档内 4 个规则对手并行；等本档全部返回后再进入下一档，不同规模严格串行
+                test_scales = [(int(red_init_num), int(blue_init_num))]
+                for _scale_n in (4, 6):
+                    if (_scale_n, _scale_n) not in test_scales:
+                        test_scales.append((_scale_n, _scale_n))
+                for scale_red, scale_blue in test_scales:
+                    scale_tag = f"test_{scale_red}v{scale_blue}"
+                    print(f"  [Test Scale] {scale_tag} ...")
+                    test_tasks = []
+                    for r_idx in TEST_RULE_IDS:
+                        obj = test_pool.apply_async(
+                            test_worker_amaac,
+                            kwds={
+                                'model_state_dict': test_team_weights,
+                                'rules_num': r_idx,
+                                'env_args': args,
+                                'device_name': 'cpu',
+                                'num_runs': num_runs,
+                                'vertices': vertices,
+                                'dt_move': dt_move,
+                                'dt_maneuver': 0.5, # dt_maneuver, # 测试的时候需要精细，训练的时候可以粗略
+                                'action_cycle_multiplier': action_cycle_multiplier,
+                                'red_init_num': scale_red,
+                                'blue_init_num': scale_blue,
+                                # alive 必须与 init 同传：test_worker_amaac 的 None 兜底会把四个规模值全部重置为 init_states.json
+                                'red_alive_num': scale_red,
+                                'blue_alive_num': scale_blue,
+                                'red_init_ammo': red_init_ammo,
+                                'blue_init_ammo': blue_init_ammo,
+                                'temperature': 0.3,  # 测试采样温度：<1趋于贪婪决策
+                                'enm_chosen_visable': enm_chosen_visable,
+                            }
+                        )
+                        test_tasks.append(obj)
 
-                # 阻塞等待全部测试完成后再进入采样
-                test_results = [t.get() for t in test_tasks]
-                outcomes = {r['rules_num']: r['result'] for r in test_results}
-                outcomes_perish = {r['rules_num']: r['perish_togethers'] / num_runs for r in test_results}
+                    # 本档阻塞等待全部测试完成后再进入下一档（串行）
+                    test_results = [t.get() for t in test_tasks]
+                    outcomes = {r['rules_num']: r['result'] for r in test_results}
+                    outcomes_perish = {r['rules_num']: r['perish_togethers'] / num_runs for r in test_results}
 
-                for r_num, score in outcomes.items():
-                    logger.add(f"test/agent_vs_rule{r_num}", score, total_steps_of_maneuver/action_cycle_multiplier)
-                    print(f"  [Test Result] Rule_{r_num}: {score}")
+                    for r_num, score in outcomes.items():
+                        logger.add(f"{scale_tag}/agent_vs_rule{r_num}", score, test_step_axis)
+                        print(f"  [Test Result] {scale_tag} Rule_{r_num}: {score}")
 
-                # 所有对手的平均Score和超视距双杀率
-                avg_score = np.mean(list(outcomes.values()))
-                avg_perish_together = np.mean(list(outcomes_perish.values()))
-                logger.add("test/avg_score", avg_score, total_steps_of_maneuver/action_cycle_multiplier)
-                logger.add("test/BVR perish together", avg_perish_together, total_steps_of_maneuver/action_cycle_multiplier)
+                    # 本档所有对手的平均Score和超视距双杀率
+                    avg_score = np.mean(list(outcomes.values()))
+                    avg_perish_together = np.mean(list(outcomes_perish.values()))
+                    logger.add(f"{scale_tag}/avg_score", avg_score, test_step_axis)
+                    logger.add(f"{scale_tag}/BVR perish together", avg_perish_together, test_step_axis)
 
-                # 当前策略的 KD 比统计（跨全部对手汇总击杀/死亡，不分对手编号）
-                total_kills = sum(r['kill_count'] for r in test_results)
-                total_dies = sum(r['die_count'] for r in test_results)
-                log_10_KD = np.log10(np.clip(total_kills / (total_dies + 1e-6), 1/20, 20))
-                logger.add("test/log_10_KD", log_10_KD, total_steps_of_maneuver/action_cycle_multiplier)
+                    # 本档 KD 比统计（跨全部对手汇总击杀/死亡，不分对手编号）
+                    total_kills = sum(r['kill_count'] for r in test_results)
+                    total_dies = sum(r['die_count'] for r in test_results)
+                    log_10_KD = np.log10(np.clip(total_kills / (total_dies + 1e-6), 1/20, 20))
+                    logger.add(f"{scale_tag}/log_10_KD", log_10_KD, test_step_axis)
 
-                # 将本次测试的胜负平明细按对手追加到 csv（每 batch 测试一轮，一行一个对手）
-                test_csv_path = os.path.join(log_dir, "test_vs_rules.csv")
-                csv_header = ["batch_idx", "steps", "rule_num",
-                              "wins", "loses", "draws", "score",
-                              "perish_together", "num_runs"]
-                _need_header = not os.path.exists(test_csv_path)
-                with open(test_csv_path, 'a', newline='', encoding='utf-8-sig') as _f:
-                    _w = csv.writer(_f)
-                    if _need_header:
-                        _w.writerow(csv_header)
-                    for r in test_results:
-                        _w.writerow([
-                            batch_idx,
-                            int(total_steps_of_maneuver / action_cycle_multiplier),
-                            r['rules_num'],
-                            r['wins'], r['loses'], r['draws'],
-                            float(r['result']),
-                            float(r['perish_togethers'] / num_runs),
-                            num_runs,
-                        ])
+                    # 分规模落盘：统一 test_vs_rules_{r}v{b}.csv（不再读写 test_vs_rules.csv）
+                    test_csv_path = os.path.join(log_dir, f"test_vs_rules_{scale_red}v{scale_blue}.csv")
+                    csv_header = ["batch_idx", "steps", "rule_num",
+                                  "wins", "loses", "draws", "score",
+                                  "perish_together", "num_runs"]
+                    _need_header = not os.path.exists(test_csv_path)
+                    with open(test_csv_path, 'a', newline='', encoding='utf-8-sig') as _f:
+                        _w = csv.writer(_f)
+                        if _need_header:
+                            _w.writerow(csv_header)
+                        for r in test_results:
+                            _w.writerow([
+                                batch_idx,
+                                int(test_step_axis),
+                                r['rules_num'],
+                                r['wins'], r['loses'], r['draws'],
+                                float(r['result']),
+                                float(r['perish_togethers'] / num_runs),
+                                num_runs,
+                            ])
 
             # 分发采样任务给 Worker
             worker_metrics_buffer = []

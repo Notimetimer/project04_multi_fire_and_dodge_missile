@@ -1,7 +1,7 @@
 import math
 import torch
 import torch.nn as nn
-
+import torch.nn.functional as F
 
 class ResidualSelfAttentionBlock(nn.Module):
     """
@@ -56,20 +56,31 @@ class ResidualSelfAttentionBlock(nn.Module):
         K = self.W_k(H_norm).view(b, N, self.h, self.d_k).transpose(1, 2)  # (b, h, N, d_k)
         V = self.W_v(H_norm).view(b, N, self.h, self.d_k).transpose(1, 2)  # (b, h, N, d_k)
 
+        # 方案A 手写
         # 缩放点积打分
         logits = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)  # (b, h, N, N)
-
         # 屏蔽无效单位（只屏蔽 Key 维度，防止任何单位把注意力分给死掉/不存在的单位）
         if mask is not None:
             invalid_mask = ~mask.bool()[:, None, None, :]                  # (b, 1, 1, N)
             logits = logits.masked_fill(invalid_mask, torch.finfo(logits.dtype).min)
-
         # Softmax 在汇聚前完成，仅用于计算注意力权重
         attn_weights = torch.softmax(logits, dim=-1)                       # (b, h, N, N)
         attn_weights = self.attn_drop(attn_weights)
-
         # 加权聚合 Value，并把多头拼接回 d 维
         attn_out = torch.matmul(attn_weights, V)                           # (b, h, N, d_k)
+        
+        # # 方案B torch2.0自带工具
+        # # 注意：F.scaled_dot_product_attention 的布尔 mask 语义是 True=有效参与，False=屏蔽
+        # # （正好和我们之前定义的 enm_mask / mask 一致，不需要加 ~ 取反！）
+        # attn_mask = mask.bool()[:, None, None, :] if mask is not None else None
+        # # 一步完成：缩放点积 (1/sqrt(d_k)) -> Mask -> Softmax -> Dropout -> 加权乘 V
+        # attn_out = F.scaled_dot_product_attention(
+        #     Q, K, V,
+        #     attn_mask=attn_mask,
+        #     dropout_p=self.dropout_p if self.training else 0.0,
+        # )  # (b, h, N, d_k)
+        
+        
         attn_out = attn_out.transpose(1, 2).contiguous().view(b, N, d)     # (b, N, d)
         attn_out = self.proj_drop(self.W_o(attn_out))                      # (b, N, d)
 
