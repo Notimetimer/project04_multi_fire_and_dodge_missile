@@ -9,7 +9,7 @@ import keyboard  # 需要安装: pip install keyboard
 import sys
 import os
 sys.path.append(project_root)
-from Controller.F16PIDController2 import *
+from Controller.F16PIDController import *
 
 tacview_show = True  # 是否显示Tacview
 model_name = "f16"  # JSBSim模型名称, f15, f16等可用

@@ -5,7 +5,7 @@ try:
 except ImportError:
     from ._context import *
 # from Controller.F16PIDController2_1 import *
-from Controller.F16PIDController2_1 import *
+from Controller.F16PIDController import *
 
 '''
 暂时不处理多策略软平均的问题，随机匹配1条策略并蒸馏

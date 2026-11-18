@@ -39,7 +39,7 @@ from Visualize.tacview_visualize2 import *
 from shapely.geometry import Point
 from Utilities.FlattenDictObs import flatten_obs2 as flatten_obs
 from Utilities.LocateDirAndAgents import *
-from Controller.F16PIDController2_1 import *
+from Controller.F16PIDController import *
 from TrainAndTests.Controls.UPolicyWrapper import *
 from TrainAndTests.Controls.FlightControl_Train_dual_a_out2 import *
 # 临时关闭端到端控制，加回PID控制
