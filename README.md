@@ -100,7 +100,7 @@ flowchart TD
     MATH["Math_calculates/*.py<br/>坐标/角度/气动/边界"]
     TAC["Visualize/tacview_visualize2.py<br/>ACMI 输出"]
     UTIL["Utilities/*.py<br/>观测展平/目录定位"]
-    CTRL["Controller/F16PIDController2_1.py<br/>PID 底层控制"]
+    CTRL["Controller/F16PIDController.py<br/>PID 底层控制"]
     CWRAP["TrainAndTests/Controls/*.py<br/>RL 底层控制封装"]
 
     BATTLE --> UAV
