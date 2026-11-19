@@ -149,7 +149,22 @@ class ChooseStrategyEnv(Battle):
         information_output['fixed'] = flatten_fixed_obs(full_obs)
         information_output['ally'] = ally_array
         information_output['enm'] = enm_array
-        information_output['enm_chosen'] = np.zeros(len(enm_array)) # 占位符，真正填入数据只能在主循环里
+        # 占位符，真正填入数据只能在主循环里
+        # information_output['enm_chosen'] = np.zeros(len(enm_array))
+        # 现在环境可以直接给出
+        information_output['enm_chosen'] = np.array([temp["occupied"] for temp in full_obs["enm_infos"]])
+
+        # [新增] 同步维护“本方在途导弹的攻击目标集合”，供 combat_terminate_and_reward 的漏选惩罚使用：
+        # 原先由主循环在决策步末尾写入 env.allocatedIDs_*，现在随 get_obs 每次调用直接覆盖，
+        # 取本方全部在途导弹的 target_id（与 enm_chosen 的 occupied 同一口径）
+        if id in self.RUAV_ids:
+            our_alive_msl = self.alive_r_missiles
+            self.allocatedIDs_r2b = set([msl.target_id for msl in our_alive_msl])
+        else:
+            our_alive_msl = self.alive_b_missiles
+            self.allocatedIDs_b2r = set([msl.target_id for msl in our_alive_msl])
+        
+        
         mask_output['ally'] = mask_ally
         mask_output['enm'] = mask_enm
 

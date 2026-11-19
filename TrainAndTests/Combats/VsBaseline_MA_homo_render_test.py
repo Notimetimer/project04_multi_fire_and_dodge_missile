@@ -37,7 +37,7 @@ if __name__ == '__main__':
     DT_MOVE = 0.07
     ACTION_CYCLE_MULTIPLIER = 1
     USE_TACVIEW = 2          # 1 动态显示，2 静默写入 acmi_records，0 关闭
-    ENM_CHOSEN_VISABLE = 0   # 与训练 checkpoint 的观测口径一致
+    
     PPO_WITH_BERN = 1
     LOADED_VERSION = None    # actor_rein 的 batch 号；None 表示取目录内最新
     SEED = 42
@@ -103,7 +103,7 @@ if __name__ == '__main__':
             # 红蓝各自独立的出生位置打乱种子，保证场间不同且可复现
             'red_shuffle_seed': int(np.random.randint(0, 2**31 - 1)),
             'blue_shuffle_seed': int(np.random.randint(0, 2**31 - 1)),
-            'enm_chosen_visable': ENM_CHOSEN_VISABLE,
+            
             'ppo_with_bern': PPO_WITH_BERN,
         }
         print(f"\n开始第{k}场对抗")

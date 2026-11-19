@@ -15,11 +15,11 @@ collape_recover={ # 是否是崩盘后恢复
 
 USE_SUPERVISED_FIRE = 1 # 开火命中监督更新开关：仅用 fire_obs->hit_record 监督 fc_bern 头
 PPO_WITH_BERN = 1 # 是否开启PPO的开火训练梯度
-ENM_CHOSEN_VISABLE = 0 # 是否能看到导弹的选择 1
+
 
 _red_n = load_init_states()['red_alive_num']
 # 试次命名约定 <ALGO>_<env>_<tag>_t<NNN>_s<seed>；批量试次时在 tag 后补 tNNN_sSeed
-mission_name = f'{_red_n}v{load_init_states()["blue_alive_num"]}AMAAC_homo_SLA_{USE_SUPERVISED_FIRE}_blackboard_{ENM_CHOSEN_VISABLE}'
+mission_name = f'{_red_n}v{load_init_states()["blue_alive_num"]}AMAAC_homo_SLA_{USE_SUPERVISED_FIRE}'
 
 # 环境/自博弈/评测协议：与主方法启动器《多机空战同构训练MAPPO.py》逐项对齐，
 # 保证对比公平；算法内部超参取 AMAAC 论文 Table II，差异随 run_config.json 落盘。
@@ -83,7 +83,7 @@ if __name__=='__main__':
         supervised_fire_buffer_size = 1000, # 开火记录滚动缓冲容量（FIFO，像off-policy一样滚动更新）
         supervised_fire_batch_size = 128, # 每次监督更新从缓冲中采样的批大小
         ppo_with_bern = PPO_WITH_BERN, # 0 时 PPO 更新跳过开火头 fc_bern（log_prob 不计入 bern 项）
-        enm_chosen_visable = ENM_CHOSEN_VISABLE, # 是否能看到队友的选择
+        
     )
     end_time = datetime.now()
     print(f"Simulation end: {end_time.isoformat(sep=' ', timespec='seconds')}")

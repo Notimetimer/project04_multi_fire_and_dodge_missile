@@ -224,19 +224,19 @@ if __name__=='__main__':
                                 # if id == blue_leader_id:
                                 #     our_enm_index_chosen.clear()
                                 #     env.allocatedIDs_b2r.clear()
-                            our_enm_index_chosen = set()
-                            our_enm_index_chosen.clear()
-                            # 把在途导弹的目标index写入集合
-                            for msl in our_alive_msl:
-                                our_enm_index_chosen.add(env.id2index(UAV.id, msl.target_id))
+                            # our_enm_index_chosen = set()
+                            # our_enm_index_chosen.clear()
+                            # # 把在途导弹的目标index写入集合
+                            # for msl in our_alive_msl:
+                            #     our_enm_index_chosen.add(env.id2index(UAV.id, msl.target_id))
                             
-                            # 决策前把“本机之前已被导弹选中的敌机”写进本机观测；Obs 是深拷贝，与 agent_inputs_ 不共享内存，两处都写
-                            enm_chosen_vec = np.zeros_like(agent_inputs_[id]['enm_chosen'])
-                            for chosen_i in our_enm_index_chosen:
-                                if 0 <= chosen_i < len(enm_chosen_vec):
-                                    enm_chosen_vec[chosen_i] = 1
-                            agent_inputs_[id]['enm_chosen'] = enm_chosen_vec
-                            Obs[id]['agent_input']['enm_chosen'] = enm_chosen_vec
+                            # # 决策前把“本机之前已被导弹选中的敌机”写进本机观测；Obs 是深拷贝，与 agent_inputs_ 不共享内存，两处都写
+                            # enm_chosen_vec = np.zeros_like(agent_inputs_[id]['enm_chosen'])
+                            # for chosen_i in our_enm_index_chosen:
+                            #     if 0 <= chosen_i < len(enm_chosen_vec):
+                            #         enm_chosen_vec[chosen_i] = 1
+                            # agent_inputs_[id]['enm_chosen'] = enm_chosen_vec
+                            # Obs[id]['agent_input']['enm_chosen'] = enm_chosen_vec
 
                         # side_word = 'red' if UAV.side == 'r' else 'blue'
                         # num_word = id if UAV.side == 'r' else id-200
@@ -277,15 +277,15 @@ if __name__=='__main__':
                             fire_target = int(fire_action['at'])
                             fire_flag = bool(fire_action['do'])
                         
-                        if USE_BLACKBOARD:
-                            # # 选完改变后续观测，表示有些目标已经被选了，后续决策的时候能看到对应位置的enm_chosen发生变化
-                            # # enm_idx 可能等于 enm_num（规则智能体的虚目标/null_token 槽位），越界的不计入
-                            # if not UAV.dead and 0 <= enm_idx < len(enm_chosen_vec):
-                            #     our_enm_index_chosen.add(enm_idx)
-                            if id == env.RUAV_ids[-1]:
-                                env.allocatedIDs_r2b = set([env.index2id(id, i) for i in our_enm_index_chosen])
-                            if id == env.BUAV_ids[-1]:
-                                env.allocatedIDs_b2r = set([env.index2id(id, i) for i in our_enm_index_chosen])
+                        # if USE_BLACKBOARD:
+                        #     # # 选完改变后续观测，表示有些目标已经被选了，后续决策的时候能看到对应位置的enm_chosen发生变化
+                        #     # # enm_idx 可能等于 enm_num（规则智能体的虚目标/null_token 槽位），越界的不计入
+                        #     # if not UAV.dead and 0 <= enm_idx < len(enm_chosen_vec):
+                        #     #     our_enm_index_chosen.add(enm_idx)
+                        #     if id == env.RUAV_ids[-1]:
+                        #         env.allocatedIDs_r2b = set([env.index2id(id, i) for i in our_enm_index_chosen])
+                        #     if id == env.BUAV_ids[-1]:
+                        #         env.allocatedIDs_b2r = set([env.index2id(id, i) for i in our_enm_index_chosen])
                         
                         # 决策瞬间的states和obs
                         Last_Obs[id] = copy.deepcopy(Obs[id])

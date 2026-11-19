@@ -72,7 +72,7 @@ if __name__ == '__main__':
         action_cycle_multiplier=ACTION_CYCLE_MULTIPLIER,
         red_init_num=red_init_num, blue_init_num=blue_init_num,
         red_init_ammo=init_cfg['red_init_ammo'], blue_init_ammo=init_cfg['blue_init_ammo'],
-        temperature=None, enm_chosen_visable=0, use_tacview=USE_TACVIEW)
+        temperature=None, use_tacview=USE_TACVIEW)
 
     print(f"\n红方(HanSAC) vs 蓝方(规则{stats['rules_num']})，共{N_EPISODES}场：")
     print(f"胜 {stats['wins']} / 负 {stats['loses']} / 平 {stats['draws']}，"

@@ -17,7 +17,6 @@
 - 测试（test_worker_han）开火不设阈值：与 PPO 一致，按 sigmoid 命中概率 Bernoulli 采样。
 
 有意简化/差异（相对 MAPPO 版基础设施）：
-- 不支持 enm_chosen_visable（队友目标黑板，默认本就关闭）；
 - collape_recover 参数保留入口兼容，但不再实现冻结恢复逻辑；
 - Elite_Fire_Stats 统计不保留（原实现只写不算）。
 """
@@ -325,7 +324,7 @@ def worker_process_han(rank, pipe, args, device_worker, dt_maneuver, seed, dt_mo
 def test_worker_han(model_state_dict, rules_num, env_args, device_name='cpu', num_runs=3,
                     vertices=None, dt_move=0.07, dt_maneuver=0.2, action_cycle_multiplier=10,
                     red_init_num=2, blue_init_num=2, red_init_ammo=4, blue_init_ammo=4,
-                    temperature=None, enm_chosen_visable=0, use_tacview=0):
+                    temperature=None, use_tacview=0):
     """周期性规则测试：与 PPO 测试口径对齐 —— 机动用 temperature=0.3 的 Categorical 采样，
     开火用 Bernoulli 概率采样（不用 argmax，也不设开火阈值）。"""
     import torch

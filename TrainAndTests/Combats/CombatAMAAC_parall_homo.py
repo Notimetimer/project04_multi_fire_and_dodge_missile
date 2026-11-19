@@ -149,7 +149,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                 blue_init_num = settings.get('blue_init_num', init_cfg['blue_init_num'])
                 red_init_ammo = settings.get('red_init_ammo', init_cfg['red_init_ammo'])
                 blue_init_ammo = settings.get('blue_init_ammo', init_cfg['blue_init_ammo'])
-                enm_chosen_visable = settings.get('enm_chosen_visable', 0)  # 是否接收可见性标记
+                
                 ppo_with_bern = settings.get('ppo_with_bern', 1)  # 0 时 RL 的 log_prob/熵不含 fire 分支
 
                 # 加载红方学生共享 actor 权重（学生 id 与环境红机 id 一致，全队共用一个实例）
@@ -230,29 +230,6 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                             UAV = env.find_uav_with_id(id)
                             
                             # 决策前把“本轮已被队友选中的敌机”写进本机观测；队长决策时先清空本轮记录
-                            if enm_chosen_visable:
-                                if UAV.side == 'r':
-                                    our_alive_msl = env.alive_r_missiles
-                                    # our_enm_index_chosen = red_enm_index_chosen
-                                    # if id == red_leader_id:
-                                    #     our_enm_index_chosen.clear()
-                                    #     env.allocatedIDs_r2b.clear()
-                                else:
-                                    our_alive_msl = env.alive_b_missiles
-                                    # our_enm_index_chosen = blue_enm_index_chosen
-                                    # if id == blue_leader_id:
-                                    #     our_enm_index_chosen.clear()
-                                    #     env.allocatedIDs_b2r.clear()
-                                our_enm_index_chosen = set()
-                                our_enm_index_chosen.clear()
-                                # 把在途导弹的目标index写入集合
-                                for msl in our_alive_msl:
-                                    our_enm_index_chosen.add(env.id2index(UAV.id, msl.target_id))
-                                enm_chosen_vec = np.zeros_like(agent_inputs_[id]['enm_chosen'])
-                                for chosen_i in our_enm_index_chosen:
-                                    if 0 <= chosen_i < len(enm_chosen_vec):
-                                        enm_chosen_vec[chosen_i] = 1
-                                agent_inputs_[id]['enm_chosen'] = enm_chosen_vec
                             
                             is_student = UAV.side == 'r'
                             # 保存上一步经验（仅学生，决策步对齐，统一走 append_experience）
@@ -306,11 +283,6 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                             # # enm_idx 可能等于 enm_num（规则智能体的虚目标/null_token 槽位），越界的不计入
                             # if not UAV.dead and 0 <= enm_idx < len(enm_chosen_vec):
                             #     our_enm_index_chosen.add(enm_idx)
-                            if enm_chosen_visable:
-                                if id == env.RUAV_ids[-1]:
-                                    env.allocatedIDs_r2b = set([env.index2id(id, i) for i in our_enm_index_chosen])
-                                if id == env.BUAV_ids[-1]:
-                                    env.allocatedIDs_b2r = set([env.index2id(id, i) for i in our_enm_index_chosen])
                             
                             if fire_flag:
                                 try:
@@ -456,7 +428,7 @@ def test_worker_amaac(model_state_dict, rules_num,
                 red_init_ammo=None, blue_init_ammo=None,
                 red_alive_num=None, blue_alive_num=None,
                 temperature=1.0,  # 玻尔兹曼采样温度，仅本测试函数使用；训练 worker_process 不传此参数
-                enm_chosen_visable=0,  # 0 不修改 enm_chosen；1 把“本轮队友已选敌机”写进本机观测
+                
                 ):
     # ---- 骨架说明：本函数逐行复制自 VsBaseline_MA.test_worker（统一评测只读，未改原件），
     # ---- 唯一实质差异：红方网络类 ActorWithATTN.ActorWrapper -> AMAACActorWrapper；
@@ -624,30 +596,7 @@ def test_worker_amaac(model_state_dict, rules_num,
                         UAV = test_env.find_uav_with_id(id)
 
                         # 决策前把“本轮已被队友选中的敌机”写进本机观测；队长决策时先清空本轮记录
-                        if enm_chosen_visable:
-                            if UAV.side == 'r':
-                                our_alive_msl = test_env.alive_r_missiles
-                                # our_enm_index_chosen = red_enm_index_chosen
-                                # if id == red_leader_id:
-                                #     our_enm_index_chosen.clear()
-                                #     test_env.allocatedIDs_r2b.clear()
-                            else:
-                                our_alive_msl = test_env.alive_b_missiles
-                                # our_enm_index_chosen = blue_enm_index_chosen
-                                # if id == blue_leader_id:
-                                #     our_enm_index_chosen.clear()
-                                #     test_env.allocatedIDs_b2r.clear()
-                            our_enm_index_chosen = set()
-                            our_enm_index_chosen.clear()
-                            # 把在途导弹的目标index写入集合
-                            for msl in our_alive_msl:
-                                our_enm_index_chosen.add(test_env.id2index(UAV.id, msl.target_id))
-                            enm_chosen_vec = np.zeros_like(agent_inputs_[id]['enm_chosen'])
-                            for chosen_i in our_enm_index_chosen:
-                                if 0 <= chosen_i < len(enm_chosen_vec):
-                                    enm_chosen_vec[chosen_i] = 1
-                            agent_inputs_[id]['enm_chosen'] = enm_chosen_vec
-
+                        
                         # Agent 产生动作：红方走 actor（采样），蓝方走规则
                         if UAV.side == 'r':
                             # rule_inputs 用 take_some_of_rule_inputs 取子集后单样本堆叠成
@@ -677,12 +626,7 @@ def test_worker_amaac(model_state_dict, rules_num,
                         # # enm_idx 可能等于 enm_num（规则智能体的虚目标/null_token 槽位），越界的不计入
                         # if not UAV.dead and 0 <= enm_idx < len(enm_chosen_vec):
                         #     our_enm_index_chosen.add(enm_idx)
-                        if enm_chosen_visable:
-                            if id == test_env.RUAV_ids[-1]:
-                                test_env.allocatedIDs_r2b = set([test_env.index2id(id, i) for i in our_enm_index_chosen])
-                            if id == test_env.BUAV_ids[-1]:
-                                test_env.allocatedIDs_b2r = set([test_env.index2id(id, i) for i in our_enm_index_chosen])
-                        
+
                         # # 【调试】检查状态
                         # if steps_of_this_eps % (10 * action_cycle_multiplier)==0:
                         #     print("ID:", id)
@@ -844,7 +788,7 @@ def run_AMAAC_simulation(
     supervised_fire_buffer_size = 1000, # [新增] 开火记录滚动缓冲容量（FIFO，像off-policy一样滚动更新）
     supervised_fire_batch_size = 128, # [新增] 每次监督更新从缓冲中采样的批大小
     ppo_with_bern = 1, # [新增] 0 时 PPO 更新跳过开火头 fc_bern（log_prob 不计入 bern 项）
-    enm_chosen_visable = 0, # 是否能看到队友的敌机选取
+    
 ):
     """多智能体 AMAAC 训练主函数（骨架复制自主方法 MAPPO 训练器，见文件头说明）。
     同构：全队共享一套 ActorWrapper/critic_wrapper/MAPPOHybrid，经验按学生 id 收集、更新前合并。
@@ -945,7 +889,7 @@ def run_AMAAC_simulation(
                 'use_supervised_fire': use_supervised_fire,
                 'supervised_fire_buffer_size': supervised_fire_buffer_size,
                 'supervised_fire_batch_size': supervised_fire_batch_size,
-                'ppo_with_bern': ppo_with_bern, 'enm_chosen_visable': enm_chosen_visable,
+                'ppo_with_bern': ppo_with_bern, 
             },
             'env_protocol': {
                 'dt_move': dt_move, 'dt_maneuver': dt_maneuver,
@@ -1198,7 +1142,7 @@ def run_AMAAC_simulation(
                                 'red_init_ammo': red_init_ammo,
                                 'blue_init_ammo': blue_init_ammo,
                                 'temperature': 0.3,  # 测试采样温度：<1趋于贪婪决策
-                                'enm_chosen_visable': enm_chosen_visable,
+                                
                             }
                         )
                         test_tasks.append(obj)
@@ -1315,7 +1259,7 @@ def run_AMAAC_simulation(
                     # 红蓝各自独立的位置打乱种子（每 episode 重新生成）
                     'red_shuffle_seed': int(np.random.randint(0, 2**31 - 1)),
                     'blue_shuffle_seed': int(np.random.randint(0, 2**31 - 1)),
-                    'enm_chosen_visable': enm_chosen_visable,
+                    
                     'ppo_with_bern': ppo_with_bern,
                 }
 
@@ -1717,7 +1661,7 @@ if __name__ == '__main__':
     resume_target_dir = None  # 指定中断续训目录；None 则开启新训练
     collape_recover = {"collapsed": False, "best_actor_name": None, "actor_frozen_batchs": 5}
     USE_SUPERVISED_FIRE = 1   # 开火命中监督更新（协议同主方法）
-    ENM_CHOSEN_VISABLE = 1    # 观测构造与主方法一致；AMAAC 网络不消费该字段（偏差4）
+    
     PPO_WITH_BERN = 1         # PPO 更新含开火头（协议同主方法）
     mission_name = 'AMAAC_homo'  # 批量试次时改为 AMAAC_2v2_<tag>_t<NNN>_s<seed>
     dt_decide = 2
@@ -1766,7 +1710,7 @@ if __name__ == '__main__':
         supervised_fire_buffer_size=1000,
         supervised_fire_batch_size=128,
         ppo_with_bern=PPO_WITH_BERN,
-        enm_chosen_visable=ENM_CHOSEN_VISABLE,
+        
     )
     print(f"Simulation end: {datetime.datetime.now().isoformat(sep=' ', timespec='seconds')}, "
           f"duration: {(datetime.datetime.now() - _t0).total_seconds() / 3600.0:.4f} hours")

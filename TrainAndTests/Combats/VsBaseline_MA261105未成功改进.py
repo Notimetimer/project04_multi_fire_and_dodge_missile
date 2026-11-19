@@ -78,7 +78,7 @@ def test_worker(model_state_dict, rules_num,
                 red_init_ammo=init_cfg['red_init_ammo'], blue_init_ammo=init_cfg['blue_init_ammo'],
                 red_alive_num=None, blue_alive_num=None,
                 temperature=1.0,  # 玻尔兹曼采样温度，仅本测试函数使用；训练 worker_process 不传此参数
-                enm_chosen_visable=0,  # 0 不修改 enm_chosen；1 把“本轮队友已选敌机”写进本机观测
+                
                 ):
     seed = 42
     random.seed(seed)
@@ -220,29 +220,6 @@ def test_worker(model_state_dict, rules_num,
                         UAV = test_env.find_uav_with_id(id)
 
                         # 决策前把“本轮已被队友选中的敌机”写进本机观测；队长决策时先清空本轮记录
-                        if enm_chosen_visable:
-                            if UAV.side == 'r':
-                                enm_uavs = test_env.BUAVs
-                                # our_alive_msl = test_env.alive_r_missiles
-                                # our_enm_index_chosen = red_enm_index_chosen
-                                # if id == red_leader_id:
-                                #     our_enm_index_chosen.clear()
-                                #     test_env.allocatedIDs_r2b.clear()
-                            else:
-                                enm_uavs = test_env.RUAVs
-                                # our_alive_msl = test_env.alive_b_missiles
-                                # our_enm_index_chosen = blue_enm_index_chosen
-                                # if id == blue_leader_id:
-                                #     our_enm_index_chosen.clear()
-                                #     test_env.allocatedIDs_b2r.clear()
-                            our_enm_index_chosen = set()
-                            enm_chosen_vec = np.zeros_like(agent_inputs_[id]['enm_chosen'])
-                            for enm in enm_uavs:
-                                idx = test_env.id2index(UAV.id, enm.id)
-                                enm_chosen_vec[idx] = enm.msl_num_chasing_me
-                                if enm.msl_num_chasing_me > 0:
-                                    our_enm_index_chosen.add(idx)
-                            agent_inputs_[id]['enm_chosen'] = enm_chosen_vec
 
                         # Agent 产生动作：红方走 actor（采样），蓝方走规则
                         if UAV.side == 'r':
@@ -273,12 +250,7 @@ def test_worker(model_state_dict, rules_num,
                         # # enm_idx 可能等于 enm_num（规则智能体的虚目标/null_token 槽位），越界的不计入
                         # if not UAV.dead and 0 <= enm_idx < len(enm_chosen_vec):
                         #     our_enm_index_chosen.add(enm_idx)
-                        if enm_chosen_visable:
-                            if id == test_env.RUAV_ids[-1]:
-                                test_env.allocatedIDs_r2b = set([test_env.index2id(id, i) for i in our_enm_index_chosen])
-                            if id == test_env.BUAV_ids[-1]:
-                                test_env.allocatedIDs_b2r = set([test_env.index2id(id, i) for i in our_enm_index_chosen])
-                        
+
                         # # 【调试】检查状态
                         # if steps_of_this_eps % (10 * action_cycle_multiplier)==0:
                         #     print("ID:", id)

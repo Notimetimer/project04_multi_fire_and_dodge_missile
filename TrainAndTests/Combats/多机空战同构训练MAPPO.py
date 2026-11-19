@@ -17,9 +17,9 @@ USE_SUPERVISED_FIRE = 1 # [新增] 开火命中监督更新开关：仅用 fire_
 PPO_WITH_BERN = 1 # 是否开启PPO的开火训练梯度
 INIT_FORMATION = 'random'
 
-ENM_CHOSEN_VISABLE = 0 # 是否能看到导弹的选择 1
+
 _red_n = load_init_states()['red_alive_num']
-mission_name = f'{_red_n}APPO_homo_SLA_{USE_SUPERVISED_FIRE}_blackboard_{ENM_CHOSEN_VISABLE}'
+mission_name = f'{_red_n}APPO_homo_SLA_{USE_SUPERVISED_FIRE}'
 
 # 超参数
 dt_decide = 2
@@ -84,7 +84,7 @@ if __name__=='__main__':
         supervised_fire_buffer_size = 1000, # [新增] 开火记录滚动缓冲容量（FIFO，像off-policy一样滚动更新）
         supervised_fire_batch_size = 128, # [新增] 每次监督更新从缓冲中采样的批大小
         ppo_with_bern = PPO_WITH_BERN, # [新增] 0 时 PPO 更新跳过开火头 fc_bern（log_prob 不计入 bern 项）
-        enm_chosen_visable = ENM_CHOSEN_VISABLE, # 是否能看到队友的选择
+        
         init_foramtion_shape = INIT_FORMATION,
     )
     end_time = datetime.now()

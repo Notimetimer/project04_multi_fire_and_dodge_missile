@@ -139,7 +139,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                 blue_init_num = settings.get('blue_init_num', init_cfg['blue_init_num'])
                 red_init_ammo = settings.get('red_init_ammo', init_cfg['red_init_ammo'])
                 blue_init_ammo = settings.get('blue_init_ammo', init_cfg['blue_init_ammo'])
-                enm_chosen_visable = settings.get('enm_chosen_visable', 0)  # 是否接收可见性标记
+                
                 ppo_with_bern = settings.get('ppo_with_bern', 1)  # 0 时 RL 的 log_prob/熵不含 fire 分支
 
                 # 加载红方学生共享 actor 权重（学生 id 与环境红机 id 一致，全队共用一个实例）
@@ -220,30 +220,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                             UAV = env.find_uav_with_id(id)
                             
                             # 决策前把“本轮已被队友选中的敌机”写进本机观测；队长决策时先清空本轮记录
-                            if enm_chosen_visable:
-                                if UAV.side == 'r':
-                                    our_alive_msl = env.alive_r_missiles
-                                    # our_enm_index_chosen = red_enm_index_chosen
-                                    # if id == red_leader_id:
-                                    #     our_enm_index_chosen.clear()
-                                    #     env.allocatedIDs_r2b.clear()
-                                else:
-                                    our_alive_msl = env.alive_b_missiles
-                                    # our_enm_index_chosen = blue_enm_index_chosen
-                                    # if id == blue_leader_id:
-                                    #     our_enm_index_chosen.clear()
-                                    #     env.allocatedIDs_b2r.clear()
-                                our_enm_index_chosen = set()
-                                our_enm_index_chosen.clear()
-                                # 把在途导弹的目标index写入集合
-                                for msl in our_alive_msl:
-                                    our_enm_index_chosen.add(env.id2index(UAV.id, msl.target_id))
-                                enm_chosen_vec = np.zeros_like(agent_inputs_[id]['enm_chosen'])
-                                for chosen_i in our_enm_index_chosen:
-                                    if 0 <= chosen_i < len(enm_chosen_vec):
-                                        enm_chosen_vec[chosen_i] = 1
-                                agent_inputs_[id]['enm_chosen'] = enm_chosen_vec
-                            
+
                             is_student = UAV.side == 'r'
                             # 保存上一步经验（仅学生，决策步对齐，统一走 append_experience）
                             if is_student and Last_Obs[id] is not None and count > 0:
@@ -296,12 +273,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                             # # enm_idx 可能等于 enm_num（规则智能体的虚目标/null_token 槽位），越界的不计入
                             # if not UAV.dead and 0 <= enm_idx < len(enm_chosen_vec):
                             #     our_enm_index_chosen.add(enm_idx)
-                            if enm_chosen_visable:
-                                if id == env.RUAV_ids[-1]:
-                                    env.allocatedIDs_r2b = set([env.index2id(id, i) for i in our_enm_index_chosen])
-                                if id == env.BUAV_ids[-1]:
-                                    env.allocatedIDs_b2r = set([env.index2id(id, i) for i in our_enm_index_chosen])
-                            
+
                             if fire_flag:
                                 try:
                                     env.fire_120(id, fire_target, tabu=0)
@@ -455,7 +427,7 @@ def run_MLP_simulation(
     supervised_fire_buffer_size = 1000, # [新增] 开火记录滚动缓冲容量（FIFO，像off-policy一样滚动更新）
     supervised_fire_batch_size = 128, # [新增] 每次监督更新从缓冲中采样的批大小
     ppo_with_bern = 1, # [新增] 0 时 PPO 更新跳过开火头 fc_bern（log_prob 不计入 bern 项）
-    enm_chosen_visable = 0, # 是否能看到队友的敌机选取
+    
 ):
     """多智能体 MAPPO 训练主函数。
     同构：全队共享一套 ActorWrapper/critic_wrapper/MAPPOHybrid，经验按学生 id 收集、更新前合并。
@@ -703,7 +675,7 @@ def run_MLP_simulation(
                             'red_init_ammo': red_init_ammo,
                             'blue_init_ammo': blue_init_ammo,
                             'temperature': 0.3,  # 测试采样温度：<1趋于贪婪决策
-                            'enm_chosen_visable': enm_chosen_visable,
+                            
                         }
                     )
                     test_tasks.append(obj)
@@ -820,7 +792,7 @@ def run_MLP_simulation(
                     # 红蓝各自独立的位置打乱种子（每 episode 重新生成）
                     'red_shuffle_seed': int(np.random.randint(0, 2**31 - 1)),
                     'blue_shuffle_seed': int(np.random.randint(0, 2**31 - 1)),
-                    'enm_chosen_visable': enm_chosen_visable,
+                    
                     'ppo_with_bern': ppo_with_bern,
                 }
 
