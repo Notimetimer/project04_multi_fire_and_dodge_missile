@@ -18,6 +18,8 @@
 - 开火进 RL 梯度（已声明偏差）：双 Q 覆盖"机动 × 开火"联合动作，开火位进入 soft value 与
   策略损失（不进入熵目标），因此 RL 梯度可以更新独立 fire_head；Lf（式 28）只做 BCE 且 backbone
   已 detach，梯度只落在 fire_head（与 PPO 的 supervised_fire_update 同口径）。
+- [A 方案·2026-11-18] 开火头已从 RL 策略梯度中移除：actor 步对 pi_joint 中的开火概率 detach，
+  fire_head 只由 Lf(BCE) 更新（等价 MAPPO 的 PPO_WITH_BERN=0 口径）；上面一段为旧口径。
 
 数据约定（与 CombatHanSAC_parall_homo.worker_process_han 对齐）：
 单步 transition = {
@@ -131,6 +133,8 @@ class HANSACHybrid:
        的共享骨干单次反传；
     2) 双 Q 覆盖"机动 × 开火"联合动作，开火进入 policy/Q，但不参与熵目标（熵只约束机动）；
     3) Lf 只更新独立 fire_head，backbone 侧 detach（与 PPO 的 supervised_fire_update 同口径）。
+    4) [A 方案·2026-11-18] 开火头不参与 RL 更新：actor 步 detach 开火概率，fire_head 仅由
+       Lf(BCE) 更新；双 Q 仍覆盖"机动 × 开火"联合动作，但开火位不再回传策略梯度。
     温度：αI（TIM）、αD（TDM）、αJ（按存活敌机数 Ñ 分桶的联合熵）三类，对应论文式(36)-(38)。"""
 
     def __init__(self, networks: HanWrapper,
@@ -334,7 +338,9 @@ class HANSACHybrid:
         # 策略损失（式 34：−J；熵项不加组概率权重）
         # Q 反传已释放计算图，这里对同一批数据重新前向一次，供策略/温度反传使用。
         if (self.update_count + 1) % self.actor_update_every == 0:
-            out_pi = ac.forward_sac(obs['agent_input'], obs['mask_input'], obs['rule_input'])
+            # [A方案] 火控不进 RL：开火概率 detach，Lpi 只更新机动骨干与 TIM/TDM 头
+            out_pi = ac.forward_sac(obs['agent_input'], obs['mask_input'], obs['rule_input'],
+                                    detach_fire=True)
             qmin, _ = self._soft_value_terms(out_pi, alpha_I, alpha_D, alpha_J)
             qmin = qmin.detach()   # actor/critic 分步更新：策略梯度不回传进 critic
             n_surv_pi = out_pi['enm_mask'].sum(-1).long()

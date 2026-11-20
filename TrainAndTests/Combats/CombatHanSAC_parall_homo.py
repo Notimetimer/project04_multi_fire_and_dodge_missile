@@ -295,8 +295,11 @@ def worker_process_han(rank, pipe, args, device_worker, dt_maneuver, seed, dt_mo
                 if episode_done:
                     outcome = env.r_outcome if env.r_outcome is not None else 0
                     # D_f 收全部飞机（红方 + 蓝方规则/历史 NN）的开火记录，与 PPO 口径一致
+                    # [A方案] 自 2026-11-18 起只收红方：蓝方开火记录不进 D_f（上面口径已弃用）。
                     fire_hit_records = []
                     for id in env.UAV_ids:
+                        if env.find_uav_with_id(id).side != 'r':
+                            continue
                         fire_hit_records += env.find_uav_with_id(id).fire_hit_records
                     msg['episode_end'] = {
                         'metrics': {

@@ -166,6 +166,9 @@ class HanWrapper(nn.Module):
        使 RL 梯度能更新开火头；论文式(19)(28) 把开火排除在 RL 梯度之外。
     3) 开火 BCE 监督只更新独立 fire_head（backbone 侧 detach），与 PPO 的
        supervised_fire_update 同口径；论文式(28) 未指定冻结范围。
+    4) [A方案·2026-11-18] 开火头不再由 RL 更新：actor 步把 pi_joint 中的开火概率
+       detach，fire_head 仅由 BCE 更新（等价 MAPPO 的 PPO_WITH_BERN=0）；上面第 2 条
+       描述的是旧口径，保留作历史对照。
     其余结构（式 9-18）与论文一致。
     """
     def __init__(self, fixed_dim, enm_shape, ally_shape,
@@ -191,6 +194,7 @@ class HanWrapper(nn.Module):
         # 式(18)：敌机嵌入 → 共享 MLP → TDM logits
         self.opp_pi_head = _mlp(embed_dim, head_hidden, N_TDM)
         # 开火头独立一层（与 PPO 的 fire_head 同口径）：监督梯度不回流骨干，RL 梯度经联合 Q 更新
+        # [A方案] 上面的"RL 梯度经联合 Q 更新"已停用：fire_head 只由 evaluate_fire 的 BCE 更新。
         self.fire_head = nn.Linear(embed_dim, 1)
 
         # 双 Q 覆盖"机动 × 开火"联合动作，输出顺序与 pi_joint 一致（a·2 + fire）：
@@ -243,8 +247,9 @@ class HanWrapper(nn.Module):
     # ------------------------------------------------------------------ 参数分组（actor/critic 独立优化）
     def actor_parameters(self):
         """策略侧参数：策略骨干 + TIM/TDM 机动头 + 开火头（开火头由 RL 与 BCE 共同更新）。"""
+        # [A方案] fire_head 已从 RL 侧移除：上面 docstring 是旧口径，开火头只由 BCE 优化器更新。
         return list(self.actor_backbone.parameters()) + list(self.tim_pi_head.parameters()) \
-            + list(self.opp_pi_head.parameters()) + list(self.fire_head.parameters())
+            + list(self.opp_pi_head.parameters())
 
     def fire_parameters(self):
         """开火监督专用参数：只有独立 fire_head（BCE 不回流骨干，与 PPO 口径一致）。"""
@@ -284,7 +289,7 @@ class HanWrapper(nn.Module):
         return gate
 
     # ------------------------------------------------------------------ 核心前向（可微，SAC 训练与采样共用）
-    def _policy_heads(self, e_f, e_e, enm_mask, rule_inputs, B):
+    def _policy_heads(self, e_f, e_e, enm_mask, rule_inputs, B, detach_fire=False):
         """式(17)(18)：ego → TIM logits；敌机 → TDM logits 与开火 logit。
 
         扁平顺序：[TIM(N_TIM)] + [敌机0 的 TDM(N_TDM), 敌机1 的 TDM(N_TDM), ...]，
@@ -292,6 +297,7 @@ class HanWrapper(nn.Module):
         开火门控作为硬 mask 叠到逐敌机 logit 上；不使用 RWR 规避掩码（见文件头说明）。
         联合分布 pi_joint 以 a·2 + fire 索引：TIM 的开火目标为 j*=argmax πF,j，
         TDM 的开火目标为其绑定的敌机。
+        detach_fire=True 时开火概率只提供数值、不向 fire_head 回传梯度（A 方案）。
         """
         device = self.device
         # 式(17)：ego 嵌入 → TIM logits
@@ -315,6 +321,8 @@ class HanWrapper(nn.Module):
         fire_gate = self._fire_gate(rule_inputs, enm_mask, B, device)
         fire_logits = fire_logits_raw.masked_fill(~fire_gate, -_MASK_VAL)
         p_fire = torch.sigmoid(fire_logits).masked_fill(~enm_mask, 0.0)   # (B, Ne)
+        if detach_fire:
+            p_fire = p_fire.detach()   # [A方案] 火控不进 RL：pi_joint 只取开火概率的数值
 
         # 开火目标：TIM 取 j*=argmax πF,j；TDM 取该机动绑定的敌机
         j_star = p_fire.argmax(dim=-1)                                   # (B,)
@@ -356,8 +364,9 @@ class HanWrapper(nn.Module):
         out, _, _ = self._forward_policy(agent_inputs, mask_inputs, rule_inputs)
         return out
 
-    def forward_sac(self, agent_inputs, mask_inputs, rule_inputs):
+    def forward_sac(self, agent_inputs, mask_inputs, rule_inputs, detach_fire=False):
         """返回扁平机动分布、双 Q、分组熵等全部训练所需量（带梯度）。
+        detach_fire=True 时 pi_joint 中的开火概率按常数处理（A 方案：fire_head 只由 BCE 更新）。
 
         扁平机动顺序：[TIM(11)] + [敌机0 的 TDM(6), 敌机1 的 TDM(6), ...]；
         联合（机动×开火）索引 = 机动 idx · 2 + fire，双 Q 宽度为 2A。
@@ -366,7 +375,7 @@ class HanWrapper(nn.Module):
         fixed, enm, ally, enm_mask, ally_mask = self._pack(agent_inputs, mask_inputs)
         B = fixed.shape[0]
         e_f, e_e = self.actor_backbone(fixed, enm, ally, enm_mask, ally_mask)
-        out = self._policy_heads(e_f, e_e, enm_mask, rule_inputs, B)
+        out = self._policy_heads(e_f, e_e, enm_mask, rule_inputs, B, detach_fire=detach_fire)
         pi, log_pi = out['pi'], out['log_pi']
         enm_mask = out['enm_mask']
         eps = 1e-8
@@ -492,6 +501,7 @@ class HanWrapper(nn.Module):
         梯度切断：backbone 输出 detach，只有独立 fire_head 收 BCE 梯度
         （与 PPO 的 supervised_fire_update 冻结其余参数同口径）；
         开火头本身仍由 SAC 的联合 Q 策略梯度正常更新。
+        [A方案] 上面最后一句已停用：actor 步已 detach 开火概率，fire_head 只由本函数（BCE）更新。
         """
         fixed, enm, ally, enm_mask, ally_mask = self._pack(agent_inputs, mask_inputs)
         e_f, e_e = self.actor_backbone(fixed, enm, ally, enm_mask, ally_mask)
