@@ -2,6 +2,7 @@ import os, sys
 from _context import *
 from TrainAndTests.Combats.CombatMAPPO_parall_homo import *
 from datetime import datetime
+from Algorithms.ActorWithATTN import load_mask_config
 
 # 指定中断续训的目录。如果为 None，则正常开启新训练。
 resume_target_dir = None
@@ -19,7 +20,9 @@ INIT_FORMATION = 'random'
 
 
 _red_n = load_init_states()['red_alive_num']
-mission_name = f'{_red_n}APPO_homo_SLA_{USE_SUPERVISED_FIRE}'
+# enm_chosen（队友目标黑板开关）来自 mask_config.json，写进实验名以便区分运行目录
+_ENM_CHOSEN = int(load_mask_config()['enm_chosen'])
+mission_name = f'{_red_n}APPO_homo_SLA_{USE_SUPERVISED_FIRE}_blackboard_{_ENM_CHOSEN}'
 
 # 超参数
 dt_decide = 2

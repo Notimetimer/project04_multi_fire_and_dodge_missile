@@ -20,6 +20,25 @@ _EVADE_HOR_MASK = torch.tensor([-1, -1, 0, 0, 0, -1, -1], dtype=torch.float32) *
 #               'r', encoding='utf-8') as _f:
 #         _FIRE_INCLUDED_IN_RL = bool(json.load(_f).get('fire_included_in_RL', 1))
 
+import json
+
+# enm_chosen 残差支路的开关（mask_config.json 的 "enm_chosen"）：
+# 构造网络时读取一次，之后 forward 不再读盘；缺省/读取失败时按关闭处理（只有 1 才启用）
+_MASK_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mask_config.json')
+
+
+def load_mask_config(override=None):
+    # 只关心 enm_chosen；ver/hor 是过时的接口字段，不再读取
+    cfg = {'enm_chosen': 0}
+    try:
+        with open(_MASK_CONFIG_PATH, 'r', encoding='utf-8') as f:
+            cfg['enm_chosen'] = int(json.load(f).get('enm_chosen', 0))
+    except Exception as e:
+        print(f"[mask_config] 加载 {_MASK_CONFIG_PATH} 失败，enm_chosen 默认关闭。错误: {e}")
+    if override and 'enm_chosen' in override:
+        cfg['enm_chosen'] = int(override['enm_chosen'])
+    return cfg
+
 # 单头交叉注意力模块：query 来自自身状态，key/value 来自实体序列。
 # 签名不再单独接收 embed_dim，强制 embed_dim == entity_dim。
 # 仅产生分数（供调用方采样选谁），不负责特征投影；调用方从原值切片。
@@ -151,6 +170,9 @@ class selector(nn.Module):
         self.ally_embed = nn.Linear(ally_shape[1], embed_dim)
         # enm_chosen 残差支路的嵌入参数 (1, d)：零初始化使支路初始输出为 0，初始前向行为与原计算图一致
         self.enm_chosen_embed = nn.Parameter(torch.zeros(1, embed_dim))
+        # 支路开关：mask_config.json 的 enm_chosen==1 时才启用（构造时读一次）；
+        # 关闭时参数仍保留在 state_dict 中以兼容旧权重，但不参与前向
+        self.use_enm_chosen = bool(load_mask_config().get('enm_chosen', 0))
 
         # 异构自注意力模块：让 fixed/enm/ally 在统一维度上交互
         self.het_attn = HeterogeneousSelfAttention(embed_dim)
@@ -175,7 +197,7 @@ class selector(nn.Module):
         # enm_chosen 残差支路：存在时 (B, Ne, 1) * (1, d) 广播为 (B, Ne, d) 叠加到 e_e；
         # 放在 het_attn 之前，让“已被队友选中”经由 Q/K/V 参与实体间交互；缺省走原计算图
         enm_chosen = agent_inputs.get('enm_chosen')
-        if enm_chosen is not None:
+        if self.use_enm_chosen and enm_chosen is not None:
             e_e = e_e + enm_chosen * self.enm_chosen_embed
 
         # 异构自注意力：三类实体在统一序列上交互，输出 e_f'/e_e'/e_a'
