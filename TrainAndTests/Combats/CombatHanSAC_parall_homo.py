@@ -43,7 +43,7 @@ import collections
 from _context import *
 import BasicRules_Homo
 # 必须先import环境再import算法，否则算法可能无法指向设置的算法模块
-from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward import ChooseStrategyEnv
+from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward_noFOX3 import ChooseStrategyEnv
 from Algorithms.HanWrapper import HanWrapper
 from Algorithms.HANSACHybrid import HANSACHybrid
 from Math_calculates.sub_of_angles import sub_of_radian, sub_of_degree
@@ -107,7 +107,7 @@ def worker_process_han(rank, pipe, args, device_worker, dt_maneuver, seed, dt_mo
     """
     import torch
     import numpy as np
-    from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward import ChooseStrategyEnv
+    from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward_noFOX3 import ChooseStrategyEnv
     from Algorithms.HanWrapper import HanWrapper
     from BasicRules_Homo import basic_rules
     from _context import take_some_of_rule_inputs, stack_field, load_obs_dims, load_init_states
@@ -332,6 +332,8 @@ def test_worker_han(model_state_dict, rules_num, env_args, device_name='cpu', nu
     开火用 Bernoulli 概率采样（不用 argmax，也不设开火阈值）。"""
     import torch
     import numpy as np
+    # [统一测试口径·2026-11-20] 测试局固定为规则对手，并沿用原件（含 FOX3）的奖励定义，
+    # 使胜率/KD/奖励在 HanSAC、QMIX、MAPPO 之间横向可比；训练侧 worker 仍用 noFOX3。
     from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward import ChooseStrategyEnv
     from Algorithms.HanWrapper import HanWrapper
     from BasicRules_Homo import basic_rules
