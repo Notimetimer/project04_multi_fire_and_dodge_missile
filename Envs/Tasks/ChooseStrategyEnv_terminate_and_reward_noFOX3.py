@@ -55,6 +55,7 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
         MSL_LOCK_WEIGHT = 5         # 导弹锁定
         MISS_WEIGHT = -3 # -5            # 脱靶
         ESCAPE_ONCE_WEIGHT = 5      # 逃脱一次
+        FOX3 = 5                   # 开火奖励
         MSL_IN_4KM_WEIGHT = 3       # 导弹首次进入4km（按枚计）
         
         # 各个分项总奖励
@@ -235,7 +236,7 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 # 航向偏左为正（边界在右），鼓励 -sin(φ)>0 即左滚远离右边界；
                 # 幅值越大表示航向越偏离"指向中心"方向，压坡度奖励越强
                 if d_hor <= 30e3:
-                    r_shaping += - border_LR * sin(ego.phi) * DENSE_REWARD_WEIGHT
+                    r_shaping += np.sign(-border_LR) * sin(ego.phi) * DENSE_REWARD_WEIGHT
 
             # 队友间距（直接取观测中已算好的 ally_dist，即本机到各队友的相对距离，无需再自算）差分缓存：每周期都更新，保证差分跨度恰好为一个周期
             # 死队友在观测里是填充值（ally_dist=100e3），用 mask_output['ally'] 剔除；全部阵亡则 teammate_dist 取 None
@@ -404,10 +405,10 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 ego.msl_in_4km_count = total_msl_4km
             
             # 开火惩罚，通过弹药下降沿判断
-            # [noFOX3 副本] 本副本不计 FOX3；弹药下降沿只用于识别开火事件并登记 D_f 记录。
             if ego.ammo < ego.last_ammo_whole_cycle:
                 current_target_id = ego.launched_aim120s[-1].target_id
                 events_this_cycle.append(f'向{current_target_id}开火')
+                reward_dict["event"] += FOX3 # 开火奖励
                 ego.last_ammo_whole_cycle = ego.ammo
 
                  # [新增] 开火记录：快照当前观测，登记最新发射的导弹，等待命中/脱靶回填

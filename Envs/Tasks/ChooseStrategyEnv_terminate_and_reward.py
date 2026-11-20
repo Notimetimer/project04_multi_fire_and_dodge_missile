@@ -229,7 +229,7 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 # 航向偏左为正（边界在右），鼓励 -sin(φ)>0 即左滚远离右边界；
                 # 幅值越大表示航向越偏离"指向中心"方向，压坡度奖励越强
                 if d_hor <= 30e3:
-                    r_shaping += - border_LR * sin(ego.phi) * DENSE_REWARD_WEIGHT
+                    r_shaping += np.sign(-border_LR) * sin(ego.phi) * DENSE_REWARD_WEIGHT
 
             # 队友间距（直接取观测中已算好的 ally_dist，即本机到各队友的相对距离，无需再自算）差分缓存：每周期都更新，保证差分跨度恰好为一个周期
             # 死队友在观测里是填充值（ally_dist=100e3），用 mask_output['ally'] 剔除；全部阵亡则 teammate_dist 取 None
