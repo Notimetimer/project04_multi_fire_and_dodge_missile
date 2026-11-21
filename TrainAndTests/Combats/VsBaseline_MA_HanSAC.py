@@ -48,7 +48,7 @@ if __name__ == '__main__':
     # 加载同构 actor（CombatHanSAC_parall_homo 产出：actor_rein{batch}.pt）
     upper_log_dir = r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat"
     LOG_DIR = os.path.join(upper_log_dir,
-                           "HanSAC_homo_JPO-run-20261118-212033",  # TODO 改成实际训练目录
+                           "HanSAC_homo_JPO-run-20261120-130601",  # TODO 改成实际训练目录
                            )
     actor_files = glob.glob(os.path.join(LOG_DIR, "actor_rein*.pt"))
     if not actor_files:

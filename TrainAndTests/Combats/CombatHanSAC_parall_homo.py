@@ -185,6 +185,10 @@ def worker_process_han(rank, pipe, args, device_worker, dt_maneuver, seed, dt_mo
                     'done': False,
                     'ep_return': 0.0,
                     'return_by_id': {id: 0.0 for id in red_ids},
+                    # [behavior·2026-11-20] 红方行为统计（与 MAPPO tensorboard 键名对齐）
+                    'threat_abs_by_id': {id: [] for id in red_ids},
+                    'oob_by_id': {id: 0 for id in red_ids},
+                    'ammo_exh_by_id': {id: 0 for id in red_ids},
                     'decisions': 0,
                     'frames': 0,
                     'max_decisions': max(1, int(round(args.max_episode_len / dt_maneuver)
@@ -257,6 +261,22 @@ def worker_process_han(rank, pipe, args, device_worker, dt_maneuver, seed, dt_mo
                             flight_cmds[id] = [0.0, 0.0, 0.0]
                     env.step(flight_cmds.values())
 
+                    # [behavior·2026-11-20] 红方逐帧行为：告警方位偏差 / 出界 / 打光中距弹
+                    for id in ep['red_ids']:
+                        u = env.find_uav_with_id(id)
+                        # 出界即死、死后位置不变，out_cage 仍为 True，故 dead & out_cage 判定出界死因
+                        if u.dead and env.out_cage(u):
+                            ep['oob_by_id'][id] = 1
+                        if u.ammo == 0:
+                            ep['ammo_exh_by_id'][id] = 1
+                        if not u.dead:
+                            _, _, state_obs = env.get_obs(id, reward_fn=1)
+                            rwr = state_obs.get('RWR_infos')
+                            if rwr and rwr.get('warning', 0) > 0:
+                                ep['threat_abs_by_id'][id].append(
+                                    float(np.arccos(np.clip(
+                                        rwr.get('cos_threat_delta_psi', 1.0), -1.0, 1.0))))
+
                     # 奖励结算
                     ep_return = 0.0
                     for id in env.UAV_ids:
@@ -301,6 +321,14 @@ def worker_process_han(rank, pipe, args, device_worker, dt_maneuver, seed, dt_mo
                         if env.find_uav_with_id(id).side != 'r':
                             continue
                         fire_hit_records += env.find_uav_with_id(id).fire_hit_records
+                    # [behavior·2026-11-20] 已结算开火/命中（按 id），只统计红方
+                    fire_cnt_by_id = {id: 0 for id in ep['red_ids']}
+                    hit_cnt_by_id = {id: 0 for id in ep['red_ids']}
+                    for id in ep['red_ids']:
+                        recs = [r for r in getattr(env.find_uav_with_id(id), 'fire_hit_records', [])
+                                if r.get('hit_record') is not None]
+                        fire_cnt_by_id[id] = len(recs)
+                        hit_cnt_by_id[id] = sum(1 for r in recs if r['hit_record'] == 1)
                     msg['episode_end'] = {
                         'metrics': {
                             'steps': ep['frames'],
@@ -311,6 +339,14 @@ def worker_process_han(rank, pipe, args, device_worker, dt_maneuver, seed, dt_mo
                             'draw': outcome == 0,
                             'BVR_perish_together': all(uav.dead for uav in env.UAVs)
                                                    and env.t <= args.max_episode_len - 10,
+                            # [behavior·2026-11-20] 与 MAPPO 同口径的行为指标
+                            'threat_delta_psi_abs_by_id': {
+                                id: (float(np.mean(v)) if len(v) > 0 else None)
+                                for id, v in ep['threat_abs_by_id'].items()},
+                            'out_of_bounds_by_id': ep['oob_by_id'],
+                            'ammo_exhausted_by_id': ep['ammo_exh_by_id'],
+                            'fire_count_by_id': fire_cnt_by_id,
+                            'hit_count_by_id': hit_cnt_by_id,
                         },
                         'opp_name': ep['opp_name'],
                         'fire_hit_records': fire_hit_records,
@@ -334,7 +370,7 @@ def test_worker_han(model_state_dict, rules_num, env_args, device_name='cpu', nu
     import numpy as np
     # [统一测试口径·2026-11-20] 测试局固定为规则对手，并沿用原件（含 FOX3）的奖励定义，
     # 使胜率/KD/奖励在 HanSAC、QMIX、MAPPO 之间横向可比；训练侧 worker 仍用 noFOX3。
-    from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward import ChooseStrategyEnv
+    from Envs.Tasks.ChooseStrategyEnv_terminate_and_reward_noFOX3 import ChooseStrategyEnv
     from Algorithms.HanWrapper import HanWrapper
     from BasicRules_Homo import basic_rules
     from _context import take_some_of_rule_inputs, stack_field, load_obs_dims
@@ -577,7 +613,28 @@ def run_HanSAC_simulation(
     if resume_dir is not None:
         agent_path = os.path.join(log_dir, "han_agent.pt")
         if os.path.exists(agent_path):
-            agent.load_state_dict(torch.load(agent_path, map_location=device))
+            _state = torch.load(agent_path, map_location=device)
+            # [续训·2026-11-20] 超参一致性校验：防止"新配置 + 旧权重"静默续训（如 γ 已改）
+            _hyper_chk = {'gamma': float(gamma), 'tau': float(tau),
+                          'batch_size': int(batch_size), 'buffer_size': int(buffer_size),
+                          'alpha_min': float(alpha_min)}
+            _hyper_old = _state.get('hyper') if isinstance(_state, dict) else None
+            if _hyper_old:
+                _diff = {k: (_hyper_old.get(k), v) for k, v in _hyper_chk.items()
+                         if k in _hyper_old and _hyper_old.get(k) != v}
+                if _diff:
+                    raise ValueError(
+                        f"续训超参与 checkpoint 不一致，已中止以防静默新训：{_diff}")
+            agent.load_state_dict(_state)
+            # [续训·2026-11-20] 恢复回放池：否则续训后空池会让末端门控长期关闭，
+            # 期间仍每个测试窗口产出 actor_rein 进历史池（未训练过的权重污染自博弈）
+            _buf_path = os.path.join(log_dir, "replay_buffer.pt")
+            if os.path.exists(_buf_path):
+                try:
+                    agent.load_buffer_state_dict(torch.load(_buf_path, map_location="cpu"))
+                    print(f"Loaded replay buffer: {len(agent.buffer)} transitions")
+                except Exception as _e:
+                    print(f"[Warn] replay buffer 加载失败，将从空池开始：{_e}")
             actor_files = glob.glob(os.path.join(log_dir, "actor_rein*.pt"))
             if actor_files:
                 batch_idx = max(int(re.search(r'actor_rein(\d+)', os.path.basename(f)).group(1))
@@ -1045,6 +1102,25 @@ def run_HanSAC_simulation(
                     for uid, r_id in m.get('return_by_id', {}).items():
                         if uid in batch_return_by_id:
                             batch_return_by_id[uid] += r_id
+                # [behavior·2026-11-20] 窗口内红方行为统计（与 MAPPO 键名一致）
+                batch_threat_by_id = {uid: [] for uid in red_student_ids}
+                batch_oob_by_id = {uid: 0 for uid in red_student_ids}
+                batch_ammo_exh_by_id = {uid: 0 for uid in red_student_ids}
+                batch_fire_by_id = {uid: 0 for uid in red_student_ids}
+                batch_hit_by_id = {uid: 0 for uid in red_student_ids}
+                for _, m in episodes_window:
+                    for uid in red_student_ids:
+                        _thr = (m.get('threat_delta_psi_abs_by_id') or {}).get(uid)
+                        if _thr is not None:
+                            batch_threat_by_id[uid].append(_thr)
+                        batch_oob_by_id[uid] += int(
+                            (m.get('out_of_bounds_by_id') or {}).get(uid, 0))
+                        batch_ammo_exh_by_id[uid] += int(
+                            (m.get('ammo_exhausted_by_id') or {}).get(uid, 0))
+                        batch_fire_by_id[uid] += int(
+                            (m.get('fire_count_by_id') or {}).get(uid, 0))
+                        batch_hit_by_id[uid] += int(
+                            (m.get('hit_count_by_id') or {}).get(uid, 0))
 
                 print(f"  [Batch {batch_idx}] Results: " + ', '.join(
                     f"{o}: {'Win' if m['win'] else ('Lose' if m['lose'] else 'Draw')}"
@@ -1063,6 +1139,20 @@ def run_HanSAC_simulation(
                 logger.add("train/2 draw", batch_draw_cnt / n_win_eps, step_axis)
                 logger.add("agent/buffer_size", len(agent.buffer), step_axis)
                 logger.add("agent/buffer_ended", agent.buffer.n_ended, step_axis)
+                # [behavior·2026-11-20] 红方行为指标：键名与 CombatMAPPO_parall_homo 一致，便于叠图
+                for uid in red_student_ids:
+                    if batch_threat_by_id[uid]:
+                        logger.add(f"behavior/abs_threat_delta_psi_id{uid}",
+                                   float(np.mean(batch_threat_by_id[uid])) * 180 / np.pi, step_axis)
+                    logger.add(f"behavior/out_of_bounds_rate_id{uid}",
+                               batch_oob_by_id[uid] / n_win_eps, step_axis)
+                    logger.add(f"behavior/ammo_exhausted_rate_id{uid}",
+                               batch_ammo_exh_by_id[uid] / n_win_eps, step_axis)
+                    logger.add(f"behavior/fire_count_id{uid}",
+                               batch_fire_by_id[uid] / n_win_eps, step_axis)
+                    if batch_fire_by_id[uid] > 0:
+                        logger.add(f"behavior/hit_rate_id{uid}",
+                                   batch_hit_by_id[uid] / batch_fire_by_id[uid], step_axis)
 
                 if last_update_metrics:
                     m = last_update_metrics
@@ -1101,6 +1191,9 @@ def run_HanSAC_simulation(
                 actor_team_key = f"actor_rein{batch_idx}"
                 torch.save(ac.state_dict(), os.path.join(log_dir, f"{actor_team_key}.pt"))
                 torch.save(agent.state_dict(), os.path.join(log_dir, "han_agent.pt"))
+                # [续训·2026-11-20] 回放池与权重同频落盘，续训时可直接恢复
+                torch.save(agent.buffer_state_dict(),
+                           os.path.join(log_dir, "replay_buffer.pt"))
                 print(f"Saved Checkpoint team: {actor_team_key}")
                 # 每次落盘新的 actor_rein 时记录：横轴当前步数，纵轴 batch_idx
                 logger.add("checkpoint/actor_rein_idx", batch_idx, step_axis)

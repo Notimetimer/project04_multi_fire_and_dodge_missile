@@ -427,10 +427,19 @@ class HANSACHybrid:
             'critic_optimizer': self.critic_optimizer.state_dict(),
             'actor_optimizer': self.actor_optimizer.state_dict(),
             'alpha_optimizer': self.alpha_optimizer.state_dict(),
+            # [续训·2026-11-20] 补 fire_optimizer：此前缺失会让 BCE 头的 Adam 动量在续训时丢失
+            'fire_optimizer': self.fire_optimizer.state_dict(),
             'log_alpha_I': float(self.log_alpha_I.detach().cpu()),
             'log_alpha_D': float(self.log_alpha_D.detach().cpu()),
             'log_alpha_J': [float(a) for a in self.log_alpha_J.detach().cpu()],
             'update_count': self.update_count,
+            # [续训·2026-11-20] 记录影响权重/目标的超参，续训时据此校验一致性
+            'hyper': {
+                'gamma': float(self.gamma), 'tau': float(self.tau),
+                'batch_size': int(self.batch_size), 'buffer_size': int(self.buffer.capacity),
+                'alpha_min': float(self.alpha_min),
+                'B_I': float(self.B_I), 'B_D': float(self.B_D),
+            },
         }
 
     def load_state_dict(self, state):
@@ -439,7 +448,24 @@ class HANSACHybrid:
         self.critic_optimizer.load_state_dict(state['critic_optimizer'])
         self.actor_optimizer.load_state_dict(state['actor_optimizer'])
         self.alpha_optimizer.load_state_dict(state['alpha_optimizer'])
+        # [续训·2026-11-20] fire_optimizer 为后加字段，旧 checkpoint 无此项时跳过
+        if state.get('fire_optimizer') is not None:
+            self.fire_optimizer.load_state_dict(state['fire_optimizer'])
         self.log_alpha_I.data = torch.tensor(state['log_alpha_I'], device=self.device)
         self.log_alpha_D.data = torch.tensor(state['log_alpha_D'], device=self.device)
         self.log_alpha_J.data = torch.tensor(state['log_alpha_J'], device=self.device)
         self.update_count = state.get('update_count', 0)
+
+    # [续训·2026-11-20] 回放池持久化：避免续训后空池让末端门控长期关闭、却仍产出 checkpoint
+    def buffer_state_dict(self):
+        b = self.buffer
+        return {'storage': list(b.storage), 'pos': int(b.pos),
+                'capacity': int(b.capacity),
+                'n_terminated': int(b.n_terminated), 'n_truncated': int(b.n_truncated)}
+
+    def load_buffer_state_dict(self, state):
+        b = self.buffer
+        b.storage = list(state['storage'])
+        b.pos = int(state['pos'])
+        b.n_terminated = int(state.get('n_terminated', 0))
+        b.n_truncated = int(state.get('n_truncated', 0))
