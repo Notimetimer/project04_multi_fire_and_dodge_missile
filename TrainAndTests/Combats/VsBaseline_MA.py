@@ -79,6 +79,7 @@ def test_worker(model_state_dict, rules_num,
                 red_alive_num=None, blue_alive_num=None,
                 red_init_formation = 'wall', blue_init_formation = 'wall', # 初始队形
                 temperature=1.0,  # 玻尔兹曼采样温度，仅本测试函数使用；训练 worker_process 不传此参数
+                enm_chosen_override=None,  # enm_chosen 支路开关覆盖：None 跟随 mask_config.json，0/1 直接生效
                 
                 ):
     seed = 42
@@ -152,6 +153,7 @@ def test_worker(model_state_dict, rules_num,
                 for rid in red_ids:
                     actor = ActorWrapper(
                         fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device=device,
+                        enm_chosen_override=enm_chosen_override,
                     )
                     if _is_single_sd:
                         # 同构：所有红机共享同一份权重

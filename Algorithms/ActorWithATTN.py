@@ -155,7 +155,7 @@ class HeterogeneousSelfAttention(nn.Module):
 # 选择器网络：用两个独立的交叉注意力模块分别压缩 enm / ally 的 seq_len 维度，
 # 选出一个敌机一个队友，把它们的嵌入与 fixed 拼接后交给 pilot。
 class selector(nn.Module):
-    def __init__(self, fixed_dim, enm_shape, ally_shape, embed_dim=64):
+    def __init__(self, fixed_dim, enm_shape, ally_shape, embed_dim=64, enm_chosen_override=None):
         super().__init__()
         self.fixed_dim = fixed_dim
         self.enm_shape = enm_shape
@@ -171,8 +171,12 @@ class selector(nn.Module):
         # enm_chosen 残差支路的嵌入参数 (1, d)：零初始化使支路初始输出为 0，初始前向行为与原计算图一致
         self.enm_chosen_embed = nn.Parameter(torch.zeros(1, embed_dim))
         # 支路开关：mask_config.json 的 enm_chosen==1 时才启用（构造时读一次）；
-        # 关闭时参数仍保留在 state_dict 中以兼容旧权重，但不参与前向
-        self.use_enm_chosen = bool(load_mask_config().get('enm_chosen', 0))
+        # 关闭时参数仍保留在 state_dict 中以兼容旧权重，但不参与前向。
+        # 调用方传入 enm_chosen_override（0/1）时优先级高于 json；None 表示沿用 json
+        if enm_chosen_override is None:
+            self.use_enm_chosen = bool(load_mask_config().get('enm_chosen', 0))
+        else:
+            self.use_enm_chosen = bool(int(enm_chosen_override))
 
         # 异构自注意力模块：让 fixed/enm/ally 在统一维度上交互
         self.het_attn = HeterogeneousSelfAttention(embed_dim)
@@ -365,7 +369,8 @@ class pilot(nn.Module):
 # 对外接口只有 (agent_inputs, mask_inputs, rule_inputs) → 完整动作与概率。
 class ActorWrapper(nn.Module):
     def __init__(self, fixed_dim, enm_shape, ally_shape,
-                 embed_dim=64, hidden_dims=(256, 256), device='cpu', ppo_with_bern=1):
+                 embed_dim=64, hidden_dims=(256, 256), device='cpu', ppo_with_bern=1,
+                 enm_chosen_override=None):
         super().__init__()
         self.fixed_dim = fixed_dim
         # fire_included_in_rl=0 时 RL 的动作 log_prob 与策略熵都不含 fire 分支，
@@ -378,7 +383,8 @@ class ActorWrapper(nn.Module):
         # selector 输出：e_f'(d) + 选中 e_e'(d) + 选中 e_a'(d) = 3*d
         self.input_dim = 3 * embed_dim
 
-        self.selector = selector(fixed_dim, enm_shape, ally_shape, embed_dim).to(device)
+        self.selector = selector(fixed_dim, enm_shape, ally_shape, embed_dim,
+                                 enm_chosen_override=enm_chosen_override).to(device)
         self.pilot = pilot(self.input_dim, hidden_dims).to(device)
 
     @property

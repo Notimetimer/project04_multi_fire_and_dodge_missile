@@ -105,7 +105,8 @@ def create_initial_state_worker(randomized=0):
     return DEFAULT_RED_BIRTH_STATE, DEFAULT_BLUE_BIRTH_STATE
 
 
-def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0.07, pomdp=1, vertices=None, use_tacview=0):
+def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0.07, pomdp=1, vertices=None, use_tacview=0,
+                   enm_chosen_override=None):
     """采样 worker：红方学生共享一个 ActorWrapper（同构），蓝方为规则或历史 nn（对手）。
     经验只按学生 id 分组保存在内存，堆叠后通过 pipe 传回 master，不写磁盘。"""
     import torch
@@ -161,6 +162,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                     student_actor = ActorWrapper(
                         fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape,
                         device=device_worker, ppo_with_bern=ppo_with_bern,
+                        enm_chosen_override=enm_chosen_override,
                     )
                 student_actor.load_state_dict(student_actor_weights)
                 student_actor.eval()
@@ -172,6 +174,7 @@ def worker_process(rank, pipe, args, device_worker, dt_maneuver, seed, dt_move=0
                         actor_dict[id] = ActorWrapper(
                             fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape,
                             device=device_worker, ppo_with_bern=ppo_with_bern,
+                            enm_chosen_override=enm_chosen_override,
                         )
                     actor_dict[id].load_state_dict(sd)
                     actor_dict[id].eval()
@@ -459,6 +462,7 @@ def run_MLP_simulation(
     ppo_with_bern = 1, # [新增] 0 时 PPO 更新跳过开火头 fc_bern（log_prob 不计入 bern 项）
     
     init_foramtion_shape = 'wall',
+    enm_chosen_override=None,  # enm_chosen 支路开关覆盖：None 跟随 mask_config.json，0/1 直接生效（含 worker 与周期测试）
 ):
     """多智能体 MAPPO 训练主函数。
     同构：全队共享一套 ActorWrapper/critic_wrapper/MAPPOHybrid，经验按学生 id 收集、更新前合并。
@@ -503,7 +507,7 @@ def run_MLP_simulation(
     # 4. 全队共享一套 actor/critic/MAPPOHybrid（完全同构）
     actor = ActorWrapper(
         fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device=device,
-        ppo_with_bern=ppo_with_bern)
+        ppo_with_bern=ppo_with_bern, enm_chosen_override=enm_chosen_override)
     critic = critic_wrapper(
         fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device=device)
     agent = MAPPOHybrid(
@@ -590,6 +594,7 @@ def run_MLP_simulation(
                            'dt_move': dt_move,
                            'pomdp': 1,
                            'vertices': vertices,
+                           'enm_chosen_override': enm_chosen_override,
                        })
         p.start()
         workers.append(p)
@@ -748,6 +753,7 @@ def run_MLP_simulation(
                                 'red_init_ammo': red_init_ammo,
                                 'blue_init_ammo': blue_init_ammo,
                                 'temperature': 0.3,  # 测试采样温度：<1趋于贪婪决策
+                                'enm_chosen_override': enm_chosen_override,  # 周期测试与训练同源开关
                                 
                             }
                         )

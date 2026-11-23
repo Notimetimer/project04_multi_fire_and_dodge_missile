@@ -31,11 +31,13 @@ if __name__=='__main__':
     RULES_NUM = 3      # 蓝方规则编号
     N_EPISODES = 3    # 测试场次  10
     TEMPERATURE = 0.3  # 采样温度：<1更贪婪（机动/目标选取决策趋于确定）
-    TEST_INIT_NUM = None # 初始每边飞机数目 None 为默认
+    TEST_INIT_NUM = 6 # 初始每边飞机数目 None 为默认
     USE_TACVIEW = 2 # 可视化方式
+    # enm_chosen 支路独立开关：None 跟随 mask_config.json；0/1 直接覆盖 json（优先级更高）
+    ENM_CHOSEN_OVERRIDE = 1 # None
     
-    RED_FORMATION = 'random'  # wall
-    BLUE_FORMATION = 'random'  # wall
+    RED_FORMATION = 'wall'  # wall
+    BLUE_FORMATION = 'wall'  # wall
     
     args.max_episode_len = 15*60
     args.R_cage = 62.00e3
@@ -46,7 +48,7 @@ if __name__=='__main__':
     # 加载同构训练目录下的单份 actor（CombatMAPPO_parall_homo 产出：actor_rein{batch}.pt）
     upper_log_dir = r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat"
     LOG_DIR = os.path.join(upper_log_dir,
-                           "2APPO_homo_SLA_1-run-20261119-172614", # "MAPPO_homo1v1-run-20261028-144554" # "MAPPO_homo-run-20261025-105746"
+                           "2APPO_homo_SLA_1_blackboard_1-run-20261122-212938", # "MAPPO_homo1v1-run-20261028-144554" # "MAPPO_homo-run-20261025-105746"
                            )
     actor_files = glob.glob(os.path.join(LOG_DIR, "actor_rein*.pt"))
     if not actor_files:
@@ -74,7 +76,8 @@ if __name__=='__main__':
         red_init_num=TEST_INIT_NUM, blue_init_num=TEST_INIT_NUM,
         red_alive_num=TEST_INIT_NUM, blue_alive_num=TEST_INIT_NUM,
         red_init_formation = RED_FORMATION, blue_init_formation = BLUE_FORMATION, # 初始队形
-        temperature=TEMPERATURE)
+        temperature=TEMPERATURE,
+        enm_chosen_override=ENM_CHOSEN_OVERRIDE)
 
     print(f"\n红方(神经网络) vs 蓝方(规则{stats['rules_num']})，共{N_EPISODES}场：")
     print(f"胜 {stats['wins']} / 负 {stats['loses']} / 平 {stats['draws']}，综合得分率 {stats['result']:.2%}，死光 {stats['perish_togethers']} 场")
