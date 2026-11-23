@@ -169,10 +169,13 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 m = msl_table.get(rec['msl_id'])
                 if m is None:
                     continue
+                # 导弹攻击的目标死了没
+                target=self.find_uav_with_id(m.target_id)
                 if m.hit_supposed:
                     rec['hit_record'] = 1
-                elif m.dead:
+                elif m.dead and not target.dead:
                     rec['hit_record'] = 0
+                # 如果目标比导弹先死，那就保持为None，丢弃这条数据
         # 终局强制结算：done=1 时仍未分辨命中/脱靶的记录整行删除
         if done and fire_hit_records:
             ego.fire_hit_records = [rec for rec in fire_hit_records if rec['hit_record'] is not None]
@@ -229,7 +232,8 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 # 航向偏左为正（边界在右），鼓励 -sin(φ)>0 即左滚远离右边界；
                 # 幅值越大表示航向越偏离"指向中心"方向，压坡度奖励越强
                 if d_hor <= 30e3:
-                    r_shaping += np.sign(-border_LR) * sin(ego.phi) * DENSE_REWARD_WEIGHT
+                    # r_shaping += np.sign(-border_LR) * sin(ego.phi) * DENSE_REWARD_WEIGHT
+                    r_shaping += -border_LR * sin(ego.phi) * DENSE_REWARD_WEIGHT
 
             # 队友间距（直接取观测中已算好的 ally_dist，即本机到各队友的相对距离，无需再自算）差分缓存：每周期都更新，保证差分跨度恰好为一个周期
             # 死队友在观测里是填充值（ally_dist=100e3），用 mask_output['ally'] 剔除；全部阵亡则 teammate_dist 取 None
