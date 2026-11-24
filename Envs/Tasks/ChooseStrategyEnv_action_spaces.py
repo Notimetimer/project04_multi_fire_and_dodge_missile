@@ -356,6 +356,7 @@ class ChooseStrategyEnv(Battle):
         # 队友的方位没有考虑在动作空间里，暂不做压缩
         
         # 敌机信息
+        enm_observable = enm_info["enm_observable"]
         cos_delta_psi = enm_info["cos_enm_delta_psi"]
         sin_delta_psi = enm_info["sin_enm_delta_psi"]
         delta_theta = enm_info["enm_delta_theta"]
@@ -393,9 +394,9 @@ class ChooseStrategyEnv(Battle):
         #     theta_desired = np.radians(-75)
         
         # 水平方向指令：
-        # 追踪
-        if action_h == 0:
-            delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
+        # # 追踪
+        # if action_h == 0:
+        #     delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
         # 左crank
         if action_h == 1:
             delta_psi_cmd = sub_of_radian(delta_psi - 55 * pi/180, 0)
@@ -418,11 +419,16 @@ class ChooseStrategyEnv(Battle):
             delta_psi_cmd = np.clip(sub_of_radian(delta_psi_temp, pi), -pi/2, pi/2)
 
         # 回中心(连续动作空间离散化禁止使用)
-        if action_h == 6:
-            line2center = np.array([self.horizontal_center[0]-ego.pos_[0], self.horizontal_center[1]-ego.pos_[2]])
-            psi2center = np.arctan2(line2center[1], line2center[0])
-            dist2center = norm(line2center)
-            delta_psi_cmd = sub_of_radian(psi2center, ego.psi) * dist2center/self.R_cage
+        enm_id = self.index2id(id, enm_index)
+        enm = self.find_uav_with_id(enm_id)
+        if action_h == 0 or 6:
+            if enm_observable >= 1: # 如果能锁定敌机，径直飞，否则占中心
+                delta_psi_cmd = np.clip(delta_psi, -pi/2, pi/2)
+            else:
+                line2center = np.array([self.horizontal_center[0]-ego.pos_[0], self.horizontal_center[1]-ego.pos_[2]])
+                psi2center = np.arctan2(line2center[1], line2center[0])
+                dist2center = norm(line2center)
+                delta_psi_cmd = sub_of_radian(psi2center, ego.psi) * dist2center/self.R_cage
 
         # 给对比算法新增的韩浩然TIM动作
         # 直飞
