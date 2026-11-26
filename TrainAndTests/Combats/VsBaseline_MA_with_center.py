@@ -1,13 +1,9 @@
-"额外输出双杀率"
 """
-多智能体基线测试：红方神经网络（ActorWrapper，采样决策） vs 蓝方规则（basic_rules）
-以 BasicRules_Homo带Actor测试.py 为蓝本，流程向 BasicRules_Homo.py 靠拢：
-测试不存经验池，每帧每机只调一次 get_obs；沿用 test worker(model_state_dict, ...) 接口，
-函数内把 state_dict load 到各红机独立的 ActorWrapper；主程序以随机初始化网络传入。
+按统一规则指派目标机，不再允许agent自主选对手。
+敌机排序：[未被选中的由近到远，被选中的由近到远]顺序排序
+”选中“是逐id做的，不仅是”目标被导弹占用“，还有"前面有队友选了这个敌机"
+每个agent只能选排在第一位的，不允许自己决定。
 
-支持同构/异构两种输入：
-- 同构：model_state_dict 为单份 state_dict，所有红机共享同一份权重；
-- 异构：model_state_dict 为 {id: state_dict}，每架红机按 id 加载各自的权重。
 """
 
 import os
@@ -21,6 +17,14 @@ import time
 import random
 import re
 from math import *
+
+import matplotlib
+matplotlib.use('Agg')   # 无界面后端：只写图片文件，不弹窗
+matplotlib.rcParams['svg.fonttype'] = 'none'   # SVG 内保留文字而非路径，便于检索与二次编辑
+import matplotlib.pyplot as plt
+
+# 水平动作编号 -> 名称，顺序与 ActorWithATTN 的 hor 定义一致
+_HOR_NAMES = ['Fwd', 'R-Fwd', 'Right', 'Back', 'Left', 'L-Fwd', 'Patrol']
 
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(project_root)
@@ -64,6 +68,34 @@ def creat_initial_state():
 # 初始数量/挂载：显式传参优先，否则统一从 init_states.json 读取
 init_cfg = load_init_states()
 
+
+def _plot_hor_curves(records, episode_idx, save_path):
+    """绘制红方各机每个决策时刻的水平动作编号曲线，每架飞机一个 subplot。
+
+    records: {uav_id: {'t': [秒...], 'hor': [动作编号...]}}
+    """
+    ids = sorted(records.keys())
+    n = max(len(ids), 1)
+    fig, axes = plt.subplots(n, 1, sharex=True, figsize=(12, 1.6 * n + 0.8))
+    if n == 1:
+        axes = [axes]
+    for ax, uid in zip(axes, ids):
+        ts = records[uid]['t']
+        hs = records[uid]['hor']
+        # 阶梯图：该动作一直保持到下一个决策点
+        ax.step(ts, hs, where='post', color='C0', linewidth=1.2)
+        ax.set_yticks(range(len(_HOR_NAMES)))
+        ax.set_yticklabels(_HOR_NAMES, fontsize=8)
+        ax.set_ylim(-0.5, len(_HOR_NAMES) - 0.5)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylabel(f'Red {uid}', fontsize=9)
+    axes[-1].set_xlabel('time (s)')
+    fig.suptitle(f'Horizontal action of red UAVs (episode {episode_idx})', fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.savefig(save_path, format='svg')
+    plt.close(fig)
+
+
 # ==========================================
 # 多智能体测试 Worker：红方神经网络 vs 蓝方规则
 # ==========================================
@@ -77,7 +109,9 @@ def test_worker(model_state_dict, rules_num,
                 red_init_num=init_cfg['red_init_num'], blue_init_num=init_cfg['blue_init_num'],
                 red_init_ammo=init_cfg['red_init_ammo'], blue_init_ammo=init_cfg['blue_init_ammo'],
                 red_alive_num=None, blue_alive_num=None,
+                red_init_formation = 'wall', blue_init_formation = 'wall', # 初始队形
                 temperature=1.0,  # 玻尔兹曼采样温度，仅本测试函数使用；训练 worker_process 不传此参数
+                enm_chosen_override=None,  # enm_chosen 支路开关覆盖：None 跟随 mask_config.json，0/1 直接生效
                 
                 ):
     seed = 42
@@ -88,6 +122,11 @@ def test_worker(model_state_dict, rules_num,
     胜负直接读环境端导出的 r_outcome（1 胜 / -1 负 / 0 平，红方视角）。
     """
     device = torch.device(device_name)
+
+    # 观测中允许保留的敌机数固定为训练规模，直接读取 init_states.json，
+    # 不随 test_worker 的 red/blue_init_num、red/blue_alive_num 输入改变
+    initial_alive_r = init_cfg['red_alive_num']
+    initial_alive_b = init_cfg['blue_alive_num']
 
     # 防止传入None
     if None in [red_init_num, blue_init_num, red_alive_num, blue_alive_num]:
@@ -119,6 +158,15 @@ def test_worker(model_state_dict, rules_num,
     t_bias = 0
     R_kill_count = 0
     B_kill_count = 0
+
+    # 每次运行前清空上一轮的水平动作曲线，确保 plots/ 只保留本次运行的产物（每次运行都覆盖刷新）
+    _plot_dir = os.path.join(project_root, 'plots')
+    if os.path.isdir(_plot_dir):
+        for _old_svg in glob.glob(os.path.join(_plot_dir, 'hor_curve_ep*.svg')):
+            try:
+                os.remove(_old_svg)
+            except OSError:
+                pass
     
     try:
         for i_episode in range(num_runs):
@@ -132,10 +180,11 @@ def test_worker(model_state_dict, rules_num,
                 red_alive_num=red_alive_num, blue_alive_num=blue_alive_num,
                 # 红蓝各自独立的位置打乱种子（np.random 已在函数入口固定，序列可复现且场间不同）
                 seed=(int(np.random.randint(0, 2**31 - 1)), int(np.random.randint(0, 2**31 - 1))),
+                red_init_formation = red_init_formation, blue_init_formation = blue_init_formation, # 初始队形
                 )
             # 初始存活的飞机数量
-            initial_alive_r = len(test_env.alive_r_uavs)
-            initial_alive_b = len(test_env.alive_b_uavs)
+            episode_initial_alive_r = len(test_env.alive_r_uavs)
+            episode_initial_alive_b = len(test_env.alive_b_uavs)
 
             # 首场 reset 后为每架红机各建一个独立 ActorWrapper 并加载权重，按 id 索引
             if actor_dict is None:
@@ -150,6 +199,7 @@ def test_worker(model_state_dict, rules_num,
                 for rid in red_ids:
                     actor = ActorWrapper(
                         fixed_dim=fixed_dim, enm_shape=enm_shape, ally_shape=ally_shape, device=device,
+                        enm_chosen_override=enm_chosen_override,
                     )
                     if _is_single_sd:
                         # 同构：所有红机共享同一份权重
@@ -172,6 +222,13 @@ def test_worker(model_state_dict, rules_num,
             # 各机上一决策步的动作缓存（按 id 保存，供执行阶段逐机取用）
             maneuver_cmds_all = {}
             target_index_all = {}
+
+            # 红方每架飞机每个决策点的水平动作编号（秒-动作编号曲线），每场独立统计
+            hor_curve_records = {
+                _id: {'t': [], 'hor': []}
+                for _id in test_env.UAV_ids
+                if test_env.find_uav_with_id(_id).side == 'r'
+            }
 
             done = False
 
@@ -216,24 +273,54 @@ def test_worker(model_state_dict, rules_num,
                 # --- 智能体决策 ---
                 # 判断是否到达了决策点（每 10 步）
                 if steps_of_this_eps % action_cycle_multiplier == 0:
+                    # 找出所有被导弹选中的敌机
+                    allocatedIDs_r2b = test_env.allocatedIDs_r2b
+                    allocatedIDs_b2r = test_env.allocatedIDs_b2r
                     for id in test_env.UAV_ids:
                         UAV = test_env.find_uav_with_id(id)
-
+                        # TODO 找出所有没被导弹选中且存活的敌机
+                        our_enm_chosen_ids = allocatedIDs_r2b if UAV.side == 'r' else allocatedIDs_b2r
+                        enm_uavs = test_env.BUAVs if UAV.side == 'r' else test_env.RUAVs
+                        enm_infos = rule_inputs_[id]['enm_infos']
+                        
+                        # TODO 对敌机进行排序，确保顺序为：[未被分配的存活敌机按距离递增排列，被分配的存活敌机按距离递增排列，死亡敌机按id递增排列]
+                        # 之后抽取有限个敌机index并修改mask_inputs_，对红方看蓝方，数量为json中的blue_alive_num,否则为red_alive_num，把超出
+                        # 的部分修改mask_inputs_到0
+                        enm_indices = sorted(
+                            range(len(enm_uavs)),
+                            key=lambda i: (
+                                2 if enm_uavs[i].dead else (1 if enm_uavs[i].id in our_enm_chosen_ids else 0),
+                                0.0 if enm_uavs[i].dead else float(enm_infos[i]['enm_dist']),
+                                enm_uavs[i].id,
+                            )
+                        )
+                        visible_enm_num = initial_alive_b if UAV.side == 'r' else initial_alive_r
+                        visible_enm_indices = set(enm_indices[:visible_enm_num])
+                        for enm_index in range(len(mask_inputs_[id]['enm'])):
+                            if enm_index not in visible_enm_indices:
+                                mask_inputs_[id]['enm'][enm_index] = 0
+                        
                         # 决策前把“本轮已被队友选中的敌机”写进本机观测；队长决策时先清空本轮记录
-
                         # Agent 产生动作：红方走 actor（采样），蓝方走规则
                         if UAV.side == 'r':
+                            # 集中指派排序第一的敌机：先取其环境 id，再转换为该机观测中的原始槽位 idx
+                            center_enm_id = enm_uavs[enm_indices[0]].id
+                            center_enm_idx = test_env.id2index(UAV.id, center_enm_id)
                             # rule_inputs 用 take_some_of_rule_inputs 取子集后单样本堆叠成
                             # selector 期望的 dict-of-array（[B=1]）格式
                             actor_rule = stack_field([take_some_of_rule_inputs(rule_inputs_[id])])
                             with torch.no_grad():
                                 actor_out = actor_dict[id].get_action(
                                     agent_inputs_[id], mask_inputs_[id], actor_rule,
-                                    temperature=temperature)
+                                    temperature=temperature, enm_idx=center_enm_idx)
                             vert = int(actor_out['vert_idx'].item())
                             hor = int(actor_out['hor_idx'].item())
                             fire = int(actor_out['fire'].item())
                             enm_idx = int(actor_out['enm_idx'].item())
+                            # 记录本决策时刻的水平动作（时间取当前仿真时间，单位 s）
+                            if id in hor_curve_records:
+                                hor_curve_records[id]['t'].append(float(test_env.t))
+                                hor_curve_records[id]['hor'].append(hor)
                             maneuver_cmds_all[id] = [vert, hor]
                             target_index_all[id] = enm_idx
                             fire_target = enm_idx
@@ -246,17 +333,10 @@ def test_worker(model_state_dict, rules_num,
                             fire_target = int(fire_action['at'])
                             fire_flag = bool(fire_action['do'])
 
-                        # # 选完改变后续观测，表示有些目标已经被选了，后续决策的时候能看到对应位置的enm_chosen发生变化
-                        # # enm_idx 可能等于 enm_num（规则智能体的虚目标/null_token 槽位），越界的不计入
-                        # if not UAV.dead and 0 <= enm_idx < len(enm_chosen_vec):
-                        #     our_enm_index_chosen.add(enm_idx)
-
-                        # # 【调试】检查状态
-                        # if steps_of_this_eps % (10 * action_cycle_multiplier)==0:
-                        #     print("ID:", id)
-                        #     print("环境侧记录选取结果", test_env.allocatedIDs_r2b if UAV.side == 'r' else test_env.allocatedIDs_b2r)
-                        #     print("enm_index_chosen:", red_enm_index_chosen if UAV.side == 'r' else blue_enm_index_chosen)
-                        #     print()
+                        # 如果这架飞机存活，那么our_enm_chosen_ids会被改变，后续飞机将看到这个目标被选取
+                        if not UAV.dead:
+                            our_enm_chosen_ids.add(test_env.index2id(UAV.id, fire_target))
+                        
                             
                         # 不考虑同时攻击多个目标
                         if fire_flag:
@@ -301,12 +381,21 @@ def test_worker(model_state_dict, rules_num,
             perish_togethers += all(uav.dead for uav in test_env.UAVs) and test_env.t <= env_args.max_episode_len - 10
 
             # 记录测试方击杀/死亡数
-            R_kill_count += initial_alive_b - len(test_env.alive_b_uavs)
-            B_kill_count += initial_alive_r - len(test_env.alive_r_uavs)
+            test_env.update_entity_alives() # 更新存活表
+            R_kill_count += episode_initial_alive_b - len(test_env.alive_b_uavs)
+            B_kill_count += episode_initial_alive_r - len(test_env.alive_r_uavs)
             
             # 仿真残余清理
             test_env.clear_render(t_bias=t_bias)
             t_bias += test_env.t
+
+            # 本场结束后绘制红方各机的 秒-水平动作编号 曲线（每机一个 subplot）
+            if any(rec['hor'] for rec in hor_curve_records.values()):
+                plot_dir = os.path.join(project_root, 'plots')
+                os.makedirs(plot_dir, exist_ok=True)
+                svg_path = os.path.join(plot_dir, f'hor_curve_ep{i_episode+1}.svg')
+                _plot_hor_curves(hor_curve_records, i_episode + 1, svg_path)
+                print(f"已保存水平动作曲线：{svg_path}")
 
             # 时间记录
             ep_cost = time.time() - ep_start
@@ -373,7 +462,8 @@ if __name__=='__main__':
     RULES_NUM = 5      # 蓝方规则编号
     N_EPISODES = 3    # 测试场次  10
     TEMPERATURE = 0.3  # 采样温度：<1更贪婪（机动/目标选取决策趋于确定）
-
+    AMOUNT_FOR_ONE_SIDE = 6
+    
     args.max_episode_len = 15*60
     args.R_cage = 62.00e3
 
@@ -383,30 +473,48 @@ if __name__=='__main__':
     # 加载指定训练目录下最新一批 actor（异构：每架红机一份权重，打包为 {id: state_dict}）
     upper_log_dir = r"D:\3_Machine_Learning_in_Python\project04_multi_fire_and_dodge_missile\logs\combat"
     LOG_DIR = os.path.join(upper_log_dir, 
-                           "MAPPO_hetero-run-20261018-001650"
+                           "2APPO_homo_SLA_1_blackboard_1-run-20261125-130128"
                            )
-    actor_files = glob.glob(os.path.join(LOG_DIR, "actor_rein*_*.pt"))
-    if not actor_files:
-        raise FileNotFoundError(f"未在 {LOG_DIR} 找到 actor_rein*_*.pt")
-    # 文件名形如 actor_rein{batch}_{id}.pt，解析出 (batch, id) 后取最大 batch 的一批
-    parsed = []
-    for f in actor_files:
-        m = re.match(r'actor_rein(\d+)_(\d+)\.pt', os.path.basename(f))
-        if m:
-            parsed.append((int(m.group(1)), int(m.group(2)), f))
-    latest_batch = max(b for b, _, _ in parsed)
+    # 异构命名：actor_rein{batch}_{id}.pt
+    actor_files_het = glob.glob(os.path.join(LOG_DIR, "actor_rein*_*.pt"))
+    # 同构命名：actor_rein{batch}.pt，锚定结尾避免把 actor_rein10_3.pt 误认成 batch=10
+    actor_files_homo = [f for f in glob.glob(os.path.join(LOG_DIR, "actor_rein*.pt"))
+                        if re.match(r'actor_rein\d+\.pt$', os.path.basename(f))]
+    if actor_files_het:
+        # 文件名形如 actor_rein{batch}_{id}.pt，解析出 (batch, id) 后取最大 batch 的一批
+        parsed = []
+        for f in actor_files_het:
+            m = re.match(r'actor_rein(\d+)_(\d+)\.pt$', os.path.basename(f))
+            if m:
+                parsed.append((int(m.group(1)), int(m.group(2)), f))
+        latest_batch = max(b for b, _, _ in parsed)
     
-    # 加载的版本号
-    loaded_version = latest_batch
+        # 加载的版本号
+        loaded_version = latest_batch
     
-    model_state_dict = {
-        uid: torch.load(path, map_location='cpu')
-        for b, uid, path in parsed if b == loaded_version
-    }
-    print(f"加载最新 actor：batch={loaded_version}，红机 id={sorted(model_state_dict.keys())}")
-
+        model_state_dict = {
+            uid: torch.load(path, map_location='cpu')
+            for b, uid, path in parsed if b == latest_batch
+        }
+        print(f"加载最新 actor：batch={loaded_version}，红机 id={sorted(model_state_dict.keys())}")
+    elif actor_files_homo:
+        # 同构：单份权重，所有红机共享（test_worker 内会按单份 state_dict 分发）
+        parsed = []
+        for f in actor_files_homo:
+            m = re.match(r'actor_rein(\d+)\.pt$', os.path.basename(f))
+            if m:
+                parsed.append((int(m.group(1)), f))
+        loaded_version = max(b for b, _ in parsed)
+        model_state_dict = torch.load(dict(parsed)[loaded_version], map_location='cpu')
+        print(f"加载最新 actor：batch={loaded_version}（同构单份权重）")
+    else:
+        raise FileNotFoundError(f"未在 {LOG_DIR} 找到 actor_rein{{batch}}_{{id}}.pt 或 actor_rein{{batch}}.pt")
+    
     stats = test_worker(
         model_state_dict, RULES_NUM, args, num_runs=N_EPISODES, vertices=vertices,
+        dt_maneuver=1,
+        red_init_num=AMOUNT_FOR_ONE_SIDE, blue_init_num=AMOUNT_FOR_ONE_SIDE,
+        red_alive_num=AMOUNT_FOR_ONE_SIDE, blue_alive_num=AMOUNT_FOR_ONE_SIDE,
         save_record=True, temperature=TEMPERATURE)
 
     print(f"\n红方(神经网络) vs 蓝方(规则{stats['rules_num']})，共{N_EPISODES}场：")
