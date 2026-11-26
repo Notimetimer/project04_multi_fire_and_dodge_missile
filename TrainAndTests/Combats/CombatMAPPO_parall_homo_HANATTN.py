@@ -699,17 +699,30 @@ def run_MLP_simulation(
     _setup_trial_artifacts(log_dir, _trial_cfg)
 
     # 中断续训：加载最新 actor_rein{latest_batch}.pt 和 critic.pt（同构单份）
+    resumed_ckpt_key = None  # 实际加载成功的 checkpoint 键，供后面把横轴步数对齐到该版本
     if resume_dir is not None and os.path.exists(resume_dir):
         actor_files = glob.glob(os.path.join(log_dir, "actor_rein*.pt"))
         if actor_files:
             def extract_batch(f):
                 m = re.search(r'actor_rein(\d+)', os.path.basename(f))
                 return int(m.group(1)) if m else -1
-            latest_batch = max(extract_batch(f) for f in actor_files)
-            ap = os.path.join(log_dir, f"actor_rein{latest_batch}.pt")
-            if os.path.exists(ap):
-                actor.load_state_dict(torch.load(ap, map_location=device))
-                print(f"Loaded shared actor from: {ap}")
+            # 从新到旧逐个尝试加载：最后一次 torch.save 可能被中断而留下损坏文件，
+            # 直接取 max 会让整个续训失败；这里回退到最近一个可加载版本并打印警告
+            candidates = sorted(actor_files, key=extract_batch, reverse=True)
+            loaded = False
+            for f in candidates:
+                try:
+                    actor.load_state_dict(torch.load(f, map_location=device))
+                except Exception as e:
+                    print(f"Checkpoint 不可用，跳过 {os.path.basename(f)}：{type(e).__name__}: {e}")
+                    continue
+                latest_batch = extract_batch(f)
+                resumed_ckpt_key = f"actor_rein{latest_batch}"
+                print(f"Loaded shared actor from: {f}")
+                loaded = True
+                break
+            if not loaded:
+                raise RuntimeError(f"续训失败：{log_dir} 下没有任何可加载的 actor_rein*.pt（疑似全部损坏）")
             cp = os.path.join(log_dir, "critic.pt")
             if os.path.exists(cp):
                 critic.load_state_dict(torch.load(cp, map_location=device))
@@ -832,6 +845,19 @@ def run_MLP_simulation(
 
     # 训练循环变量
     total_steps_of_maneuver = available_opps.get("__LAST_UPDATE_STEP__", 0)
+
+    # 续训对齐：available_opps 的步数每个 batch 都写，而权重每 save_interval_of_batch 个 batch 才落盘，
+    # 二者最多差出一个保存间隔（上面两个实际 run 分别领先 2 和 4 个 batch）。这里把横轴步数改取
+    # “实际加载的 checkpoint”对应的步数，保证曲线 x 轴与真正在训的策略一致。
+    if resumed_ckpt_key is not None:
+        _ckpt_dp = save_point_steps.get(resumed_ckpt_key)
+        if _ckpt_dp is not None:
+            _aligned_steps = int(_ckpt_dp * action_cycle_multiplier)
+            if _aligned_steps != total_steps_of_maneuver:
+                print(f"[Resume] 步数对齐：{total_steps_of_maneuver} -> {_aligned_steps}"
+                      f"（与加载的 {resumed_ckpt_key} 一致）")
+                total_steps_of_maneuver = _aligned_steps
+
     if collape_recover["collapsed"]:
         actor_freeze_until = batch_idx + int(collape_recover["actor_frozen_batchs"])
     else:
@@ -842,6 +868,15 @@ def run_MLP_simulation(
     test_window_idx = 0   # 测试窗口计数器，用于 checkpoint 序号；与 batch_idx（同步 barrier 计数）解耦
 
     current_max_steps_of_maneuver = int(max_steps_of_maneuver)
+
+    # 续训追加预算：恢复步数已达（甚至超过）本次传入的上限时，旧逻辑会让 while 一次都不执行，
+    # 续训表现为“启动即停在 Target steps reached”。这里改为“本次启动再给一整份预算”，
+    # 即上限 = 恢复步数 + max_steps_of_maneuver，并把实际采用的上限打印出来供反查。
+    if resume_dir is not None and total_steps_of_maneuver >= current_max_steps_of_maneuver:
+        _extended_max = int(total_steps_of_maneuver + max_steps_of_maneuver)
+        print(f"[Resume] 恢复步数 {total_steps_of_maneuver} 已达/超过原上限 {current_max_steps_of_maneuver}，"
+              f"本次追加一整份预算，上限改为 {_extended_max}")
+        current_max_steps_of_maneuver = _extended_max
 
     # 学生 id 独立的全局 Buffer
     empty_transition_dict = {'obs': [], 'states': [], 'actions': [],
@@ -1369,7 +1404,14 @@ def run_MLP_simulation(
         # 【新增】明确告知用户 Worker 当前状态
         print("All simulation workers are now idling safely. System is paused.") 
         
-        inp = input(f"Enter new max_steps_of_maneuver (current {total_steps_of_maneuver}), or press Enter to exit: ")
+        try:
+            inp = input(f"Enter new max_steps_of_maneuver (current {total_steps_of_maneuver}), or press Enter to exit: ")
+        except EOFError:
+            # 非交互式运行（IDE 直接 Run / stdin 被重定向）时 input() 会抛 EOFError；
+            # 按“不追加步数”处理，保证后续 Cleanup 能把 status.json 正常写成 completed，
+            # 而不是留下一条永远 running 的失败记录
+            print("stdin 不可用（非交互式运行），按不追加步数处理并退出。")
+            inp = ""
         
         if not inp.strip():
             print("No input provided. Exiting training.")
