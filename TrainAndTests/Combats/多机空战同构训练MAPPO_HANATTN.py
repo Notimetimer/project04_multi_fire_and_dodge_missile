@@ -31,12 +31,12 @@ collape_recover={ # 是否是崩盘后恢复
         }
 
 USE_SUPERVISED_FIRE = 1 # 开火命中监督更新开关：仅用 fire_obs->hit_record 监督开火头（pilot.fire_head）
-PPO_WITH_BERN = 1 # 是否开启PPO的开火训练梯度
+PPO_WITH_BERN = 0 # 是否开启PPO的开火训练梯度 1:联合训练，0:只用有监督控制开火
 INIT_FORMATION = 'random'
 
 
 _red_n = load_init_states()['red_alive_num']
-mission_name = f'{_red_n}MAPPO_homo_HANATTN_SLA_{USE_SUPERVISED_FIRE}'
+mission_name = f'{_red_n}MAPPO_homo_HANATTN_SLA_{USE_SUPERVISED_FIRE}_PPO_fire_{PPO_WITH_BERN}'
 
 # 决策周期：dt_decide 固定取 DECISION_PERIOD_S（见文件首部唯一开关）
 dt_decide = DECISION_PERIOD_S
