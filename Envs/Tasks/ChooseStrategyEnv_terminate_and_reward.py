@@ -209,9 +209,13 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 ego_has_lock = any(temp["enm_locked"] for temp in enm_infos)
                 ego_is_locked = any(temp["locked_by_enm"] for temp in enm_infos)
                 ata_list = [temp["enm_ATA"] for temp in enm_infos]
+                dist_list = [temp["enm_dist"] for temp in enm_infos]
                 min_enm_ATA = min(ata_list)
                 max_enm_ATA = max(ata_list)
                 mean_enm_ATA = float(np.mean(ata_list))
+                # 最近距离和索引
+                min_enm_dist = min(dist_list)
+                closest_enm_index = dist_list.index(min_enm_dist)
             else:
                 ego_has_lock = False
                 ego_is_locked = False
@@ -296,6 +300,11 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                 else:
                     self.b_ignored_enm_num = ignored_enm_num
                 
+                # 进入不可逃逸区只有banzai
+                if min_enm_dist <= 18e3:
+                    ATA_closet = ata_list[closest_enm_index]
+                    r_shaping += np.clip(1 - ATA_closet/(pi/3), -1, 1) * DENSE_REWARD_WEIGHT * 3
+                
                 # 制导时
                 if missile_t_fly < 40:
                     # 开火后下高
@@ -338,9 +347,9 @@ class ChooseStrategyEnv(BaseChooseStrategyEnv):
                     if teammate_dist < 40e3:
                         # 过近：距离扩大给正奖励，收缩给惩罚
                         r_shaping += (1.0 if teammate_dist >= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT * 0.75 #/1.2
-                    elif teammate_dist > 60e3:
-                        # 过远：距离收缩给正奖励，扩大给惩罚
-                        r_shaping += (1.0 if teammate_dist <= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT * 0.75 #/1.2
+                    # elif teammate_dist > 60e3:
+                    #     # 过远：距离收缩给正奖励，扩大给惩罚
+                    #     r_shaping += (1.0 if teammate_dist <= teammate_dist_prev else -1.0) * DENSE_REWARD_WEIGHT * 0.75 #/1.2
                 
                 # 没有导弹处于中制导阶段
                 if (not missile_in_mid_term):
