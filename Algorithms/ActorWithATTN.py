@@ -1,3 +1,7 @@
+"""
+使用残差路径直接把enm_chosen特征作用到自注意力输入前
+"""
+
 import os
 from math import *
 import numpy as np
